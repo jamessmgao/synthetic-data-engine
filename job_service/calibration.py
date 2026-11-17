@@ -57,16 +57,26 @@ def choose_operator(pass_count: int, rollouts: list[dict], used: list[str]) -> s
     return (fresh or order)[0]
 
 
+def failing_tests(verifier_stdout: str) -> list[str]:
+    """`FAILED path::test - message` lines from pytest's -rA summary."""
+    return [line.removeprefix("FAILED ").strip() for line in verifier_stdout.splitlines() if line.startswith("FAILED ")]
+
+
 def evidence(rollouts: list[dict]) -> str:
-    """One line per scored run, for the revision prompt."""
+    """One line per scored run, for the revision prompt.
+
+    Uses the trace parser's `failure` record when there is one, else the
+    failing pytest lines the Job Service read from the verifier output
+    (`failing_tests`)."""
     lines = []
     for r in sorted(rollouts, key=lambda r: r["slot"]):
-        metrics = r.get("trace_metrics") or {}
-        took = f", {metrics['duration_seconds']:.0f}s" if metrics.get("duration_seconds") else ""
+        seconds = (r.get("trace_metrics") or {}).get("duration_seconds") or (r.get("result") or {}).get("duration_sec")
+        took = f", {seconds:.0f}s" if seconds else ""
         if r["outcome"] == Outcome.VALID_PASS:
             lines.append(f"- run {r['slot']}: passed{took}")
             continue
         failure = r.get("failure") or {}
-        why = failure.get("explanation") or ", ".join(failure.get("failing_tests") or []) or "no explanation recorded"
+        tests = failure.get("failing_tests") or r.get("failing_tests") or []
+        why = failure.get("explanation") or "; ".join(tests) or "no explanation recorded"
         lines.append(f"- run {r['slot']}: failed{took}: {why}")
     return "\n".join(lines)

@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+.claude
+.pytest_cache
+**/__pycache__
+work
+output
+jobs
+trials
+*.excalidraw
+image.png

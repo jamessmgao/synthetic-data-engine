@@ -254,6 +254,27 @@ def test_too_hard_is_made_easier_then_accepted_at_v2(svc):
     assert "ACCEPTED: v2 passed 1/5" in (svc.accepted_dir / "queue-drain-bug" / "verdict.md").read_text()
 
 
+def test_revision_evidence_from_executor_rows_without_a_trace_parser(svc):
+    """The executor writes result.trial / duration_sec but no `failure`; the
+    failing tests come from the verifier output in its trace dir."""
+    svc.submit_batch(1, "b-1")
+    build(svc, 1, "sha1")
+    for slot in range(1, 6):
+        rid = rollout_job_id(T, 1, slot, 0)
+        stdout = svc.artifacts.trace_dir(rid) / "trial-x" / "verifier" / "test-stdout.txt"
+        stdout.parent.mkdir(parents=True)
+        stdout.write_text(
+            "PASSED tests/test_outputs.py::test_happy_path\n"
+            f"FAILED tests/test_outputs.py::test_crash_recovery - AssertionError: lost job {slot}\n"
+        )
+        settle(svc, rid, outcome="VALID_FAIL", reward=0.0, result={"trial": "trial-x", "duration_sec": 120.4})
+    svc.reconcile()
+    evidence = svc.store.job(job_id(T, 2, "generate"))["input"]["evidence"]
+    assert evidence.splitlines()[0] == (
+        "- run 1: failed, 120s: tests/test_outputs.py::test_crash_recovery - AssertionError: lost job 1"
+    )
+
+
 # --- invalid rollouts ------------------------------------------------------------
 
 

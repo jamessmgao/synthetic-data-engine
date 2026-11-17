@@ -1,73 +1,12 @@
-"""
-Status vocabularies (docs/PRD.md §3) and the API's request/response bodies.
-
-Statuses are stored as text and validated here, so adding one is a code
-change, not a migration.
-"""
-
-from enum import StrEnum
+"""The API's request/response bodies. Status vocabularies live in shared.contracts.models."""
 
 from pydantic import BaseModel, Field
 
+from shared.contracts.models import RejectReason, Stage, TaskStatus
+
+from job_service.service import MAX_BATCH_COUNT
+
 BATCH_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
-MAX_BATCH_COUNT = 50
-
-
-class TaskStatus(StrEnum):
-    CREATED = "CREATED"
-    CALIBRATING = "CALIBRATING"
-    ACCEPTED = "ACCEPTED"
-    REJECTED = "REJECTED"
-
-
-class RejectReason(StrEnum):
-    EXHAUSTED = "exhausted"
-    INVALID = "invalid"
-    INFRA_UNRESOLVED = "infra_unresolved"
-
-
-class Stage(StrEnum):
-    """Stage of a task's current version."""
-
-    QUEUED = "QUEUED"
-    GENERATING = "GENERATING"
-    BUILDING = "BUILDING"
-    VALIDATING = "VALIDATING"
-    EVALUATING = "EVALUATING"
-    BAND_OK = "BAND_OK"
-    OUT_OF_BAND = "OUT_OF_BAND"
-    INVALID = "INVALID"
-    UNRESOLVED = "UNRESOLVED"
-
-
-class JobType(StrEnum):
-    GENERATE = "generate"
-    VALIDATE = "validate"
-    ROLLOUT = "rollout"
-
-
-# Finish what's started: rollouts before validations before new drafts.
-JOB_PRIORITY = {JobType.ROLLOUT: 30, JobType.VALIDATE: 20, JobType.GENERATE: 10}
-
-
-class JobStatus(StrEnum):
-    READY = "READY"
-    LEASED = "LEASED"
-    DONE = "DONE"
-    DEAD = "DEAD"
-
-
-class Outcome(StrEnum):
-    # rollout jobs
-    VALID_PASS = "VALID_PASS"
-    VALID_FAIL = "VALID_FAIL"
-    INVALID = "INVALID"
-    # generate / validate jobs
-    OK = "OK"
-    FAILED = "FAILED"
-
-
-SCORED_OUTCOMES = (Outcome.VALID_PASS, Outcome.VALID_FAIL)
 
 
 class BatchRequest(BaseModel):
@@ -81,8 +20,17 @@ class BatchSubmitted(BaseModel):
     created: bool  # False when this exact batch already existed
 
 
+class BatchListItem(BaseModel):
+    batch_id: str
+    tasks: int
+    accepted: int
+    rejected: int
+    created_at: str
+
+
 class TaskSummary(BaseModel):
     id: str
+    name: str | None
     status: TaskStatus
     reason: RejectReason | None
     current_version: int

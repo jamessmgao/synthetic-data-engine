@@ -1,110 +1,49 @@
 """
-Service functions behind the API (docs/PRD.md §4). The `sde` CLI calls these
-directly, so everything here takes a connection and returns plain data.
+Read models behind the API (docs/PRD.md §4): batch status, the task verdict and
+the batch report, computed from the `pipeline` store. Submission goes through
+`JobService.submit_batch`; nothing here writes.
 
-Contract for what workers write into `jobs` (read here, written elsewhere):
+What workers write and these read (see job_service/service.py):
   - generate: `input.origin` in {initial, repair, revision}, optional
     `input.operator`; on success `outcome=OK` and `bundle_sha256`.
-  - validate: `result.gates` = {schema: bool, structural: bool, lint: bool,
-    oracle: [reward, reward], nop: reward}; `outcome=OK` only if all passed.
+  - validate: `result.gates` = {name: {"passed": bool, ...}}; `outcome=OK`
+    only if every gate passed.
   - rollout: `slot` 1..N, `outcome` VALID_PASS | VALID_FAIL | INVALID.
 """
 
-import json
-import secrets
-import sqlite3
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
+from typing import Any
 
-from .config import Settings
-from .db import parse_ts, transaction, utcnow
-from .models import (
-    JOB_PRIORITY,
-    SCORED_OUTCOMES,
-    JobStatus,
-    JobType,
-    Outcome,
-    Stage,
-    TaskStatus,
-)
+from shared.storage.sql import SqlStore, row_dict
+from shared.contracts.models import SCORED_OUTCOMES, JobStatus, JobType, Outcome, Stage, TaskStatus
+
+from job_service.calibration import eval_config, in_band
+from job_service.service import decision_text
+from job_service.verdict import pass_pattern
 
 
 class NotFound(Exception):
     pass
 
 
-class Conflict(Exception):
-    pass
-
-
-def _json(text: str | None):
-    return json.loads(text) if text else None
-
-
-def new_batch_id() -> str:
-    return f"b-{datetime.now(UTC):%Y%m%d}-{secrets.token_hex(3)}"
-
-
-def task_ids_for(batch_id: str, count: int) -> list[str]:
-    return [f"{batch_id}-t{i:02d}" for i in range(1, count + 1)]
-
-
-def submit_batch(conn: sqlite3.Connection, count: int, batch_id: str | None = None) -> dict:
-    """Create `count` tasks and their v1 generate jobs in one transaction.
-
-    Idempotent on `batch_id`: ids are deterministic, so repeating a submission
-    inserts nothing. Repeating it with a different count is a Conflict.
-    """
-    batch_id = batch_id or new_batch_id()
-    task_ids = task_ids_for(batch_id, count)
-    now = utcnow()
-    with transaction(conn):
-        existing = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE batch_id = ?", (batch_id,)
-        ).fetchone()[0]
-        if existing and existing != count:
-            raise Conflict(f"batch {batch_id!r} already exists with {existing} tasks, not {count}")
-        for task_id in task_ids:
-            conn.execute(
-                "INSERT OR IGNORE INTO tasks (id, batch_id, status, current_version, stage,"
-                " created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)",
-                (task_id, batch_id, TaskStatus.CREATED, Stage.QUEUED, now, now),
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO jobs (id, task_id, version, type, input, status, due_at,"
-                " priority, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
-                (
-                    f"{task_id}-v1-generate-r0",
-                    task_id,
-                    JobType.GENERATE,
-                    json.dumps({"origin": "initial"}),
-                    JobStatus.READY,
-                    now,
-                    JOB_PRIORITY[JobType.GENERATE],
-                    now,
-                ),
-            )
-    return {"batch_id": batch_id, "task_ids": task_ids, "created": existing == 0}
-
-
-def _batch_rows(conn: sqlite3.Connection, batch_id: str) -> tuple[list[sqlite3.Row], dict]:
-    """The batch's tasks (in submission order) and their jobs grouped by task id."""
-    tasks = conn.execute(
-        "SELECT * FROM tasks WHERE batch_id = ? ORDER BY id", (batch_id,)
-    ).fetchall()
+def _batch_rows(store: SqlStore, batch_id: str) -> tuple[list[dict], dict[str, list[dict]]]:
+    """The batch's tasks (in id order) and their jobs grouped by task id."""
+    tasks = store.batch_tasks(batch_id)
     if not tasks:
         raise NotFound(f"batch {batch_id!r} not found")
-    jobs_by_task = defaultdict(list)
-    for job in conn.execute(
+    jobs_by_task: dict[str, list[dict]] = defaultdict(list)
+    rows = store.conn.execute(
         "SELECT j.* FROM jobs j JOIN tasks t ON t.id = j.task_id"
         " WHERE t.batch_id = ? ORDER BY j.created_at, j.id",
         (batch_id,),
-    ):
+    ).fetchall()
+    for job in map(row_dict, rows):
         jobs_by_task[job["task_id"]].append(job)
     return tasks, jobs_by_task
 
 
-def _scored_rollouts(jobs, version: int) -> dict[int, str]:
+def _scored(jobs: list[dict], version: int) -> dict[int, str]:
     """slot -> VALID_PASS / VALID_FAIL for one version."""
     return {
         j["slot"]: j["outcome"]
@@ -113,31 +52,41 @@ def _scored_rollouts(jobs, version: int) -> dict[int, str]:
     }
 
 
-def pass_pattern(jobs, version: int, n_runs: int) -> str:
-    scored = _scored_rollouts(jobs, version)
-    marks = {Outcome.VALID_PASS: "✓", Outcome.VALID_FAIL: "✗"}
-    return "".join(marks.get(scored.get(slot), "·") for slot in range(1, n_runs + 1))
-
-
 def _sum_cost(jobs) -> float | None:
     """Sum of recorded costs; None if nothing has a recorded cost yet."""
     costs = [j["cost_usd"] for j in jobs if j["cost_usd"] is not None]
     return round(sum(costs), 6) if costs else None
 
 
-def get_batch(conn: sqlite3.Connection, batch_id: str, settings: Settings) -> dict:
-    tasks, jobs_by_task = _batch_rows(conn, batch_id)
+def _gate_passed(gate: Any) -> bool:
+    return gate is True or (isinstance(gate, dict) and gate.get("passed") is True)
+
+
+def list_batches(store: SqlStore) -> list[dict]:
+    rows = store.conn.execute(
+        """SELECT batch_id, COUNT(*) AS tasks, MIN(created_at) AS created_at,
+                  COUNT(*) FILTER (WHERE status = 'ACCEPTED') AS accepted,
+                  COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected
+             FROM tasks GROUP BY batch_id ORDER BY MIN(created_at) DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_batch(store: SqlStore, batch_id: str) -> dict:
+    tasks, jobs_by_task = _batch_rows(store, batch_id)
+    n_runs = eval_config()["n_runs"]
     return {
         "batch_id": batch_id,
         "counts_by_status": dict(Counter(t["status"] for t in tasks)),
         "tasks": [
             {
                 "id": t["id"],
+                "name": t["name"],
                 "status": t["status"],
                 "reason": t["reason"],
                 "current_version": t["current_version"],
                 "stage": t["stage"],
-                "pass_pattern": pass_pattern(jobs_by_task[t["id"]], t["current_version"], settings.n_runs),
+                "pass_pattern": pass_pattern(jobs_by_task[t["id"]], t["current_version"], n_runs),
                 "cost_usd": _sum_cost(jobs_by_task[t["id"]]),
             }
             for t in tasks
@@ -145,24 +94,23 @@ def get_batch(conn: sqlite3.Connection, batch_id: str, settings: Settings) -> di
     }
 
 
-def _version_view(task: sqlite3.Row, version: int, jobs, settings: Settings) -> dict:
+def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> dict:
     vjobs = [j for j in jobs if j["version"] == version]
     generates = [j for j in vjobs if j["type"] == JobType.GENERATE]
     validates = [j for j in vjobs if j["type"] == JobType.VALIDATE]
-    scored = _scored_rollouts(jobs, version)
+    scored = _scored(jobs, version)
     pass_count = sum(o == Outcome.VALID_PASS for o in scored.values())
 
     # The version's origin is its first non-repair generate job.
-    first = next((j for j in generates if (_json(j["input"]) or {}).get("origin") != "repair"), None)
-    first_input = _json(first["input"]) if first else {}
+    first = next((j for j in generates if (j["input"] or {}).get("origin") != "repair"), None)
+    first_input = (first or {}).get("input") or {}
     built = [j for j in generates if j["outcome"] == Outcome.OK]
 
     if version == task["current_version"]:
         state = task["stage"]
-    elif len(scored) == settings.n_runs:
-        # Only an out-of-band (or ambiguous-task) version is ever superseded.
-        in_band = settings.band_low <= pass_count <= settings.band_high
-        state = Stage.BAND_OK if in_band else Stage.OUT_OF_BAND
+    elif len(scored) == n_runs:
+        # Only an out-of-band version is ever superseded by a revision.
+        state = Stage.BAND_OK if in_band(pass_count) else Stage.OUT_OF_BAND
     else:
         state = Stage.INVALID
 
@@ -172,95 +120,59 @@ def _version_view(task: sqlite3.Row, version: int, jobs, settings: Settings) -> 
         "operator": first_input.get("operator"),
         "state": state,
         "bundle_sha256": built[-1]["bundle_sha256"] if built else None,
-        "repairs": sum((_json(j["input"]) or {}).get("origin") == "repair" for j in generates),
-        "gates": (_json(validates[-1]["result"]) or {}).get("gates") if validates else None,
-        "pass_count": pass_count if len(scored) == settings.n_runs else None,
-        "pass_pattern": pass_pattern(jobs, version, settings.n_runs),
+        "repairs": sum((j["input"] or {}).get("origin") == "repair" for j in generates),
+        "gates": (validates[-1]["result"] or {}).get("gates") if validates else None,
+        "pass_count": pass_count if len(scored) == n_runs else None,
+        "pass_pattern": pass_pattern(jobs, version, n_runs),
         "cost_usd": _sum_cost(vjobs),
     }
 
 
-def _decision(task: sqlite3.Row, jobs, settings: Settings) -> str:
-    if task["status"] == TaskStatus.ACCEPTED:
-        v = task["accepted_version"]
-        passes = sum(o == Outcome.VALID_PASS for o in _scored_rollouts(jobs, v).values())
-        return (
-            f"ACCEPTED: v{v} passed {passes}/{settings.n_runs} valid rollouts "
-            f"(band {settings.band_low}–{settings.band_high})"
-        )
-    if task["status"] == TaskStatus.REJECTED:
-        return f"REJECTED ({task['reason']}) at v{task['current_version']}"
-    return f"PENDING: v{task['current_version']} is {task['stage']}"
-
-
-def get_task(conn: sqlite3.Connection, task_id: str, settings: Settings) -> dict:
+def get_task(store: SqlStore, task_id: str) -> dict:
     """The verdict for one task: every version, gate, rollout and the decision."""
-    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    task = store.task(task_id)
     if task is None:
         raise NotFound(f"task {task_id!r} not found")
-    jobs = conn.execute(
-        "SELECT * FROM jobs WHERE task_id = ? ORDER BY created_at, id", (task_id,)
-    ).fetchall()
+    jobs = store.task_jobs(task_id)
+    n_runs = eval_config()["n_runs"]
     rollouts = sorted(
         (j for j in jobs if j["type"] == JobType.ROLLOUT),
-        key=lambda j: (j["version"], j["slot"] or 0, j["retry"]),
+        key=lambda j: (j["version"], j["slot"], j["retry"]),
     )
     return {
-        "task": {
-            "id": task["id"],
-            "batch_id": task["batch_id"],
-            "name": task["name"],
-            "slot": _json(task["slot"]),
-            "status": task["status"],
-            "reason": task["reason"],
-            "current_version": task["current_version"],
-            "stage": task["stage"],
-            "accepted_version": task["accepted_version"],
-            "created_at": task["created_at"],
-            "updated_at": task["updated_at"],
-        },
-        "versions": [
-            _version_view(task, v, jobs, settings) for v in range(1, task["current_version"] + 1)
-        ],
+        "task": {k: task[k] for k in (
+            "id", "batch_id", "name", "slot", "status", "reason", "current_version", "stage",
+            "accepted_version", "created_at", "updated_at",
+        )},
+        "versions": [_version_view(task, v, jobs, n_runs) for v in range(1, task["current_version"] + 1)],
         "rollouts": [
-            {
-                "id": j["id"],
-                "version": j["version"],
-                "slot": j["slot"],
-                "retry": j["retry"],
-                "status": j["status"],
-                "outcome": j["outcome"],
-                "reward": j["reward"],
-                "error": j["error"],
-                "trace_uri": j["trace_uri"],
-                "trace_metrics": _json(j["trace_metrics"]),
-                "failure": _json(j["failure"]),
-                "cost_usd": j["cost_usd"],
-            }
+            {k: j[k] for k in (
+                "id", "version", "slot", "retry", "status", "outcome", "reward", "error",
+                "trace_uri", "trace_metrics", "failure", "cost_usd",
+            )}
             for j in rollouts
         ],
-        "decision": _decision(task, jobs, settings),
+        "decision": decision_text(task, jobs),
         "reason": task["reason"],
         "cost_usd": _sum_cost(jobs),
     }
 
 
-def batch_report(conn: sqlite3.Connection, batch_id: str, settings: Settings) -> dict:
+def batch_report(store: SqlStore, batch_id: str) -> dict:
     """summary.json (docs/PRD.md §4). Counts are over initial candidates (tasks),
     not versions; `null` means not measured yet, never zero."""
-    tasks, jobs_by_task = _batch_rows(conn, batch_id)
+    tasks, jobs_by_task = _batch_rows(store, batch_id)
     all_jobs = [j for t in tasks for j in jobs_by_task[t["id"]]]
+    cfg = eval_config()
 
-    def any_validate(task_id, check) -> bool:
-        return any(
-            check(j) for j in jobs_by_task[task_id] if j["type"] == JobType.VALIDATE and j["status"] == JobStatus.DONE
-        )
+    def validates(task_id):
+        return [j for j in jobs_by_task[task_id] if j["type"] == JobType.VALIDATE and j["status"] == JobStatus.DONE]
 
-    histogram = {str(n): 0 for n in range(settings.n_runs + 1)}
+    histogram = {str(n): 0 for n in range(cfg["n_runs"] + 1)}
     for t in tasks:
         for v in range(1, t["current_version"] + 1):
-            scored = _scored_rollouts(jobs_by_task[t["id"]], v)
-            if len(scored) == settings.n_runs:
+            scored = _scored(jobs_by_task[t["id"]], v)
+            if len(scored) == cfg["n_runs"]:
                 histogram[str(sum(o == Outcome.VALID_PASS for o in scored.values()))] += 1
 
     rollouts = [j for j in all_jobs if j["type"] == JobType.ROLLOUT]
@@ -270,8 +182,9 @@ def batch_report(conn: sqlite3.Connection, batch_id: str, settings: Settings) ->
     accepted = [t for t in tasks if t["status"] == TaskStatus.ACCEPTED]
 
     finished = [j["finished_at"] for j in all_jobs if j["finished_at"]]
+    started = min(t["created_at"] for t in tasks)
     wall_clock = (
-        round((parse_ts(max(finished)) - parse_ts(min(t["created_at"] for t in tasks))).total_seconds())
+        round((datetime.fromisoformat(max(finished)) - datetime.fromisoformat(started)).total_seconds())
         if finished
         else None
     )
@@ -282,17 +195,17 @@ def batch_report(conn: sqlite3.Connection, batch_id: str, settings: Settings) ->
         "batch_id": batch_id,
         "candidates": len(tasks),
         "structural_pass": sum(
-            any_validate(t["id"], lambda j: ((_json(j["result"]) or {}).get("gates") or {}).get("structural") is True)
+            any(_gate_passed(((j["result"] or {}).get("gates") or {}).get("structural")) for j in validates(t["id"]))
             for t in tasks
         ),
-        "functional_pass": sum(any_validate(t["id"], lambda j: j["outcome"] == Outcome.OK) for t in tasks),
+        "functional_pass": sum(any(j["outcome"] == Outcome.OK for j in validates(t["id"])) for t in tasks),
         "accepted_v1": sum(t["accepted_version"] == 1 for t in accepted),
         "accepted_total": len(accepted),
         "rejected": dict(Counter(t["reason"] for t in tasks if t["status"] == TaskStatus.REJECTED)),
         "in_progress": sum(t["status"] in (TaskStatus.CREATED, TaskStatus.CALIBRATING) for t in tasks),
         "pass_count_histogram": histogram,
         "valid_rollouts": sum(j["outcome"] in SCORED_OUTCOMES for j in rollouts),
-        "invalid_rollouts": sum(j["outcome"] == Outcome.INVALID for j in rollouts),
+        "invalid_rollouts": sum(j["outcome"] == Outcome.INVALID or j["status"] == JobStatus.DEAD for j in rollouts),
         "cost_usd": {
             "authoring": authoring,
             "evaluation": evaluation,

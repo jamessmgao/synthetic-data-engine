@@ -211,6 +211,18 @@ class JobService:
         row = conn.execute("SELECT id, type, due_at FROM jobs WHERE id = ?", (job["id"],)).fetchone()
         return [dict(row)]
 
+    def failing_tests(self, rollout: dict[str, Any]) -> list[str]:
+        """Failing pytest lines from a failed rollout's verifier output, if it's
+        on this machine (the executor's trace dir: <trial>/verifier/test-stdout.txt)."""
+        trial = (rollout.get("result") or {}).get("trial")
+        if rollout["outcome"] != Outcome.VALID_FAIL or not trial:
+            return []
+        stdout = self.artifacts.trace_dir(rollout["id"]) / trial / "verifier" / "test-stdout.txt"
+        try:
+            return calibration.failing_tests(stdout.read_text(errors="replace"))
+        except OSError:
+            return []
+
     def _destinations(self, task: dict[str, Any]) -> list[Path]:
         """Where an accepted task goes: output/accepted/<name>/, or
         <name>-<task id>/ if another task already took the name."""
@@ -350,11 +362,12 @@ class _Step:
             return self.reject(Stage.OUT_OF_BAND, RejectReason.EXHAUSTED)
         used = [(j.get("input") or {}).get("operator") for j in self.all_jobs if j["type"] == JobType.GENERATE]
         operator = calibration.choose_operator(passes, list(scored.values()), [op for op in used if op])
+        runs = [{**r, "failing_tests": self.svc.failing_tests(r)} for r in scored.values()]
         self.n += 1
         self.insert(id=job_id(tid, self.n, "generate"), type=JobType.GENERATE, input={
             "origin": "revision", "bundle_sha256": sha, "operator": operator,
             "result": f"{passes} of {self.svc.n_runs} runs passed.",
-            "evidence": calibration.evidence(list(scored.values())),
+            "evidence": calibration.evidence(runs),
         })
         self.set(current_version=self.n, stage=Stage.QUEUED, bundle_sha256=None)
         return True

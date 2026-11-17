@@ -1,57 +1,51 @@
 import json
-import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.config import Settings
-from api.db import connect, utcnow
+from shared.storage import from_env
+from shared.storage.sql import insert_job, job_id, rollout_job_id
+from shared.contracts.models import JobType
 
 KEY = "test-key"
 AUTH = {"X-Api-Key": KEY}
+GOOD_GATES = {g: {"passed": True} for g in ("structural", "lint", "oracle1", "oracle2", "nop")}
 
 
 @pytest.fixture
-def settings(tmp_path):
-    return Settings(db_path=tmp_path / "sde.db", api_key=KEY)
+def backend(tmp_path):
+    return from_env({"SDE_WORK_DIR": str(tmp_path / "work")})
 
 
 @pytest.fixture
-def client(settings):
-    return TestClient(create_app(settings))
+def client(backend):
+    return TestClient(create_app(backend, api_key=KEY))
 
 
-@pytest.fixture
-def conn(settings, client):  # client first, so the schema exists
-    c = connect(settings.db_path)
-    yield c
-    c.close()
-
-
-def add_job(conn, task_id, version, type_, **cols):
+def add_job(backend, task_id, version, type_, id, status="DONE", **cols):
     """Write a settled job row the way a worker would."""
-    slot = cols.pop("slot", None)
-    retry = cols.pop("retry", 0)
-    job_id = f"{task_id}-v{version}-{type_}{slot or ''}-r{retry}"
-    for key in ("input", "result", "failure", "trace_metrics"):
-        if key in cols:
-            cols[key] = json.dumps(cols[key])
-    now = utcnow()
-    base = dict(id=job_id, task_id=task_id, version=version, type=type_, slot=slot, retry=retry,
-                status="DONE", due_at=now, priority=0, created_at=now, finished_at=now)
-    base.update(cols)
-    names = ", ".join(base)
-    conn.execute(f"INSERT INTO jobs ({names}) VALUES ({', '.join('?' * len(base))})", tuple(base.values()))
+    slot, retry = cols.pop("slot", 0), cols.pop("retry", 0)
+    job_input = cols.pop("input", None)
+    with backend.store.tx() as conn:
+        insert_job(conn, id=id, task_id=task_id, version=version, type=JobType(type_), slot=slot, retry=retry,
+                   input=job_input)
+        cols = {k: json.dumps(v) if isinstance(v, (dict, list)) else v for k, v in cols.items()}
+        sets = "".join(f", {k} = ?" for k in cols)
+        conn.execute(f"UPDATE jobs SET status = ?, finished_at = created_at{sets} WHERE id = ?",
+                     (status, *cols.values(), id))
 
 
-def add_rollouts(conn, task_id, version, pattern, cost=0.01):
-    for slot, mark in enumerate(pattern, start=1):
-        add_job(conn, task_id, version, "rollout", slot=slot, config_hash="cfg1", cost_usd=cost,
-                outcome="VALID_PASS" if mark == "1" else "VALID_FAIL", reward=float(mark))
+def rollout(backend, task_id, version, slot, outcome, retry=0, **cols):
+    reward = {"VALID_PASS": 1.0, "VALID_FAIL": 0.0}.get(outcome)
+    add_job(backend, task_id, version, "rollout", rollout_job_id(task_id, version, slot, retry), slot=slot,
+            retry=retry, outcome=outcome, reward=reward, config_hash="cfg1", **cols)
 
 
-GOOD_GATES = {"schema": True, "structural": True, "lint": True, "oracle": [1, 1], "nop": 0}
+def set_task(backend, task_id, **fields):
+    with backend.store.tx() as conn:
+        conn.execute(f"UPDATE tasks SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                     (*fields.values(), task_id))
 
 
 # --- auth and health --------------------------------------------------------
@@ -62,46 +56,33 @@ def test_requires_api_key(client):
     assert client.post("/v1/batches", json={"count": 1}, headers={"X-Api-Key": "wrong"}).status_code == 401
 
 
-def test_closed_without_configured_key(tmp_path):
-    client = TestClient(create_app(Settings(db_path=tmp_path / "sde.db", api_key="")))
+def test_closed_without_configured_key(backend):
+    client = TestClient(create_app(backend, api_key=""))
     assert client.get("/v1/batches/x", headers={"X-Api-Key": ""}).status_code == 503
 
 
 def test_healthz_needs_no_key(client):
-    r = client.get("/healthz")
-    assert r.status_code == 200 and r.json() == {"status": "ok", "db": "ok"}
+    body = client.get("/healthz").json()
+    assert body["status"] == "ok" and body["backends"]["store"] == "sqlite"
 
 
 # --- submission -------------------------------------------------------------
 
 
-def test_submit_creates_tasks_and_generate_jobs(client, conn):
+def test_submit_goes_through_the_job_service(client, backend):
     r = client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH)
     assert r.status_code == 202
     assert r.json() == {"batch_id": "b-1", "task_ids": ["b-1-t01", "b-1-t02", "b-1-t03"], "created": True}
-
-    tasks = conn.execute("SELECT id, status, stage, current_version FROM tasks ORDER BY id").fetchall()
-    assert [tuple(t) for t in tasks] == [(f"b-1-t0{i}", "CREATED", "QUEUED", 1) for i in (1, 2, 3)]
-    jobs = conn.execute("SELECT id, type, status, input FROM jobs ORDER BY id").fetchall()
-    assert [j["id"] for j in jobs] == [f"b-1-t0{i}-v1-generate-r0" for i in (1, 2, 3)]
-    assert all(j["type"] == "generate" and j["status"] == "READY" for j in jobs)
-    assert json.loads(jobs[0]["input"]) == {"origin": "initial"}
+    gen = backend.store.job(job_id("b-1-t01", 1, "generate"))
+    assert gen["status"] == "READY" and gen["input"]["origin"] == "initial" and gen["input"]["spec"]
 
 
-def test_submit_is_idempotent_on_batch_id(client, conn):
+def test_submit_is_idempotent_and_409_on_conflict(client, backend):
     first = client.post("/v1/batches", json={"count": 2, "batch_id": "b-1"}, headers=AUTH).json()
     again = client.post("/v1/batches", json={"count": 2, "batch_id": "b-1"}, headers=AUTH)
-    assert again.status_code == 202
-    assert again.json() == {**first, "created": False}
-    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 2
-
-
-def test_submit_conflicting_count_is_409(client, conn):
-    client.post("/v1/batches", json={"count": 2, "batch_id": "b-1"}, headers=AUTH)
-    r = client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH)
-    assert r.status_code == 409
-    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
+    assert again.status_code == 202 and again.json() == {**first, "created": False}
+    assert client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH).status_code == 409
+    assert len(backend.store.batch_tasks("b-1")) == 2
 
 
 def test_submit_generates_batch_id(client):
@@ -114,30 +95,6 @@ def test_submit_validation_is_422(client, body):
     assert client.post("/v1/batches", json=body, headers=AUTH).status_code == 422
 
 
-def test_concurrent_submissions_create_one_batch(settings, client, conn):
-    from api import service
-
-    errors = []
-
-    def submit():
-        c = connect(settings.db_path)
-        try:
-            service.submit_batch(c, 5, "b-race")
-        except Exception as e:  # pragma: no cover - reported below
-            errors.append(e)
-        finally:
-            c.close()
-
-    threads = [threading.Thread(target=submit) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert errors == []
-    assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 5
-    assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 5
-
-
 # --- status, verdict, report ------------------------------------------------
 
 
@@ -148,32 +105,37 @@ def test_unknown_ids_are_404(client):
 
 
 @pytest.fixture
-def worked_batch(client, conn):
+def worked_batch(client, backend):
     """t01: v1 too easy (5/5), v2 accepted at 2/5. t02: rejected invalid. t03: mid-evaluation."""
     client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH)
+    t1, t2, t3 = "b-1-t01", "b-1-t02", "b-1-t03"
 
-    add_job(conn, "b-1-t01", 1, "validate", outcome="OK", result={"gates": GOOD_GATES})
-    add_rollouts(conn, "b-1-t01", 1, "11111")
-    add_job(conn, "b-1-t01", 2, "generate", outcome="OK", bundle_sha256="sha-v2", cost_usd=0.5,
-            input={"origin": "revision", "operator": "increase_diagnosis_depth"})
-    add_job(conn, "b-1-t01", 2, "validate", outcome="OK", result={"gates": GOOD_GATES})
-    # An invalid (timed-out) rollout retried in the same slot.
-    add_job(conn, "b-1-t01", 2, "rollout", slot=1, retry=0, outcome="INVALID", error="AgentTimeoutError")
-    add_job(conn, "b-1-t01", 2, "rollout", slot=1, retry=1, outcome="VALID_FAIL", reward=0.0,
-            config_hash="cfg1", failure={"explanation": "missed the retry path", "attribution": "model"})
-    for slot, mark in zip(range(2, 6), "1010"):
-        add_job(conn, "b-1-t01", 2, "rollout", slot=slot, config_hash="cfg1",
-                outcome="VALID_PASS" if mark == "1" else "VALID_FAIL", reward=float(mark))
-    conn.execute("UPDATE tasks SET status='ACCEPTED', current_version=2, stage='BAND_OK',"
-                 " accepted_version=2 WHERE id='b-1-t01'")
+    add_job(backend, t1, 1, "validate", job_id(t1, 1, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
+    for slot in range(1, 6):
+        rollout(backend, t1, 1, slot, "VALID_PASS", cost_usd=0.01)
+    add_job(backend, t1, 2, "generate", job_id(t1, 2, "generate"), outcome="OK", bundle_sha256="sha-v2",
+            cost_usd=0.5, input={"origin": "revision", "operator": "increase_diagnosis_depth"})
+    add_job(backend, t1, 2, "validate", job_id(t1, 2, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
+    # A timed-out rollout retried in the same slot.
+    rollout(backend, t1, 2, 1, "INVALID", retry=0, error="AgentTimeoutError")
+    rollout(backend, t1, 2, 1, "VALID_FAIL", retry=1,
+            failure={"explanation": "missed the retry path", "attribution": "model"})
+    for slot, outcome in zip(range(2, 6), ("VALID_PASS", "VALID_FAIL", "VALID_PASS", "VALID_FAIL")):
+        rollout(backend, t1, 2, slot, outcome)
+    set_task(backend, t1, status="ACCEPTED", current_version=2, stage="BAND_OK", accepted_version=2)
 
-    add_job(conn, "b-1-t02", 1, "validate", outcome="FAILED",
-            result={"gates": {**GOOD_GATES, "oracle": [0, 0]}})
-    conn.execute("UPDATE tasks SET status='REJECTED', reason='invalid', stage='INVALID' WHERE id='b-1-t02'")
+    failed = {**GOOD_GATES, "oracle1": {"passed": False, "reward": 0.0}}
+    add_job(backend, t2, 1, "validate", job_id(t2, 1, "validate", 0), outcome="FAILED", result={"gates": failed})
+    set_task(backend, t2, status="REJECTED", reason="invalid", stage="INVALID")
 
-    add_job(conn, "b-1-t03", 1, "validate", outcome="OK", result={"gates": GOOD_GATES})
-    add_job(conn, "b-1-t03", 1, "rollout", slot=2, outcome="VALID_PASS", reward=1.0, config_hash="cfg1")
-    conn.execute("UPDATE tasks SET status='CALIBRATING', stage='EVALUATING' WHERE id='b-1-t03'")
+    add_job(backend, t3, 1, "validate", job_id(t3, 1, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
+    rollout(backend, t3, 1, 2, "VALID_PASS")
+    set_task(backend, t3, status="CALIBRATING", stage="EVALUATING")
+
+
+def test_batch_list(client, worked_batch):
+    (item,) = client.get("/v1/batches", headers=AUTH).json()
+    assert (item["batch_id"], item["tasks"], item["accepted"], item["rejected"]) == ("b-1", 3, 1, 1)
 
 
 def test_batch_status(client, worked_batch):
@@ -188,6 +150,7 @@ def test_batch_status(client, worked_batch):
 def test_task_verdict(client, worked_batch):
     body = client.get("/v1/tasks/b-1-t01", headers=AUTH).json()
     assert body["decision"] == "ACCEPTED: v2 passed 2/5 valid rollouts (band 1–3)"
+    assert body["task"]["slot"]["taxonomy"]["domain"]
     v1, v2 = body["versions"]
     assert (v1["state"], v1["pass_count"], v1["origin"]) == ("OUT_OF_BAND", 5, "initial")
     assert (v2["state"], v2["pass_count"], v2["operator"]) == ("BAND_OK", 2, "increase_diagnosis_depth")
@@ -223,12 +186,3 @@ def test_fresh_report_has_nulls_not_zeros(client):
     r = client.get("/v1/batches/b-new/report", headers=AUTH).json()
     assert r["cost_usd"] == {"authoring": None, "evaluation": None, "total": None, "per_accepted": None}
     assert r["wall_clock_s"] is None and r["config_hash"] is None
-
-
-def test_scored_slot_is_unique(client, conn):
-    import sqlite3
-
-    client.post("/v1/batches", json={"count": 1, "batch_id": "b-1"}, headers=AUTH)
-    add_job(conn, "b-1-t01", 1, "rollout", slot=1, retry=0, outcome="VALID_PASS", reward=1.0)
-    with pytest.raises(sqlite3.IntegrityError):
-        add_job(conn, "b-1-t01", 1, "rollout", slot=1, retry=1, outcome="VALID_FAIL", reward=0.0)

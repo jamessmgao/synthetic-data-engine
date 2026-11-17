@@ -1,12 +1,16 @@
-"""Run the API service: `SDE_API_KEY=... python -m api [--host H] [--port P]`."""
+"""Run the API service: `SDE_API_KEY=... python -m api [--host H] [--port P]`.
+
+Backends come from the environment (DATABASE_URL, REDIS_URL, S3_*, SDE_WORK_DIR);
+see shared/storage/__init__.py.
+"""
 
 import argparse
+import os
 import sys
 
 import uvicorn
 
 from .app import create_app
-from .config import Settings
 
 
 def main() -> None:
@@ -15,10 +19,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
-    settings = Settings.from_env()
-    if not settings.api_key:
+    if not os.environ.get("SDE_API_KEY"):
         sys.exit("Set SDE_API_KEY: requests must send it as the X-Api-Key header.")
-    uvicorn.run(create_app(settings), host=args.host, port=args.port)
+    uvicorn.run(create_app(), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

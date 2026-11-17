@@ -20,5 +20,9 @@ trials/
 .harbor/
 dist.tar.gz
 
-# Pipeline state (SQLite DB, bundles, traces)
+# Claude Code worktrees
+.claude/worktrees/
+
+# Pipeline working state (database, bundles, transcripts, traces) and old run records
 work/
+records/

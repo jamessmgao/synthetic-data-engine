@@ -1,0 +1,127 @@
+# Local stack with the production backends: Postgres, single-node Redis, and an
+# S3-compatible object store (RustFS; MinIO no longer publishes public images).
+# Run from the repo root (see the Makefile):
+#
+#   make deps-up        only Postgres + Redis + S3 (run workers/tests on the host)
+#   make up             the whole stack, workers included
+#   make test-infra     the infrastructure tests against these backends
+#
+# Commands per process (override via env; the defaults assume every branch is merged):
+#   SDE_GENERATE_CMD     generation worker + the one reconciler (shared/jobs/worker.py)
+#   SDE_JOB_SERVICE_CMD  Job Service loop (api-service)
+#   SDE_VALIDATE_CMD     build + validate worker (shared/jobs/worker.py → task-builder gates)
+#   SDE_EXECUTOR_CMD     rollout executor (executor-worker)
+#   SDE_API_CMD          the API (api-service)
+# Set one to "" to leave that process out.
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql://sde:sde@postgres:5432/sde
+  REDIS_URL: redis://redis:6379/0
+  S3_BUCKET: sde-artifacts
+  S3_ENDPOINT_URL: http://s3:9000
+  AWS_ACCESS_KEY_ID: sde-dev
+  AWS_SECRET_ACCESS_KEY: sde-dev-secret
+  AWS_DEFAULT_REGION: us-east-1
+  # Harbor and Docker need the work dir at the same path in the container and on
+  # the host, because task containers are started by the host's Docker daemon.
+  SDE_WORK_DIR: ${PWD}/work
+  SDE_DOCKER_SLOTS: ${SDE_DOCKER_SLOTS:-4}
+
+x-depends: &depends
+  postgres: {condition: service_healthy}
+  redis: {condition: service_healthy}
+  s3: {condition: service_healthy}
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    environment:
+      POSTGRES_USER: sde
+      POSTGRES_PASSWORD: sde
+      POSTGRES_DB: sde
+    ports: ["${SDE_PG_PORT:-5432}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sde"]
+      interval: 2s
+      retries: 30
+
+  redis:
+    image: redis:7.4.1-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["${SDE_REDIS_PORT:-6379}:6379"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  # Local stand-in for S3. Console at http://localhost:9001 (sde-dev / sde-dev-secret).
+  s3:
+    image: rustfs/rustfs:1.0.4
+    environment:
+      RUSTFS_ACCESS_KEY: sde-dev
+      RUSTFS_SECRET_KEY: sde-dev-secret
+    ports: ["${SDE_S3_PORT:-9000}:9000", "${SDE_S3_CONSOLE_PORT:-9001}:9001"]
+    volumes: [s3data:/data]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "9000"]
+      interval: 2s
+      retries: 60
+
+  api:
+    profiles: [app]
+    build: {context: .., dockerfile: deploy/Dockerfile, target: control}
+    command: ["sh", "-c", "${SDE_API_CMD:-uvicorn api.app:app --host 0.0.0.0 --port 8000}"]
+    environment:
+      <<: *backend-env
+      API_ADMIN_TOKEN: ${API_ADMIN_TOKEN:-dev-token}
+    ports: ["${SDE_API_PORT:-8000}:8000"]
+    depends_on: *depends
+    restart: unless-stopped
+
+  # ×1: generation + Job Service + the one reconciler.
+  worker-control:
+    profiles: [app]
+    build: {context: .., dockerfile: deploy/Dockerfile, target: control}
+    command:
+      - python
+      - -m
+      - shared.jobs.supervise
+      - ${SDE_GENERATE_CMD-python -m generator.service generate --with-reconciler}
+      - ${SDE_JOB_SERVICE_CMD-python -m job_service run}
+    environment:
+      <<: *backend-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://gateway.example.com/openrouter/api/v1}
+    volumes: ["${PWD}/work:${PWD}/work", "${PWD}/output:/app/output"]
+    depends_on: *depends
+    restart: unless-stopped
+
+  # ×N: Docker jobs (build + validate, rollouts). Scale with --scale worker-runner=N;
+  # SDE_DOCKER_SLOTS caps concurrent Docker jobs across all copies.
+  worker-runner:
+    profiles: [app]
+    build: {context: .., dockerfile: deploy/Dockerfile, target: runner}
+    command:
+      - python
+      - -m
+      - shared.jobs.supervise
+      - ${SDE_VALIDATE_CMD-python -m validator.service validate}
+      - ${SDE_EXECUTOR_CMD-python -m evaluation.executor}
+    environment:
+      <<: *backend-env
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://gateway.example.com/openrouter/api/v1}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - "${PWD}/work:${PWD}/work"
+    depends_on: *depends
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  s3data:
