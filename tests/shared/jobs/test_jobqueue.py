@@ -92,6 +92,31 @@ def test_high_cpu_load_stops_new_docker_work(backend, jq, monkeypatch):
     assert jq.claim("rollout", "w1", docker_slots=5) is not None
 
 
+def test_docker_claims_are_paced_per_process(backend, jq, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT, n=2)
+    monkeypatch.setattr(jqmod, "free_memory_pct", lambda: 60.0)
+    monkeypatch.setattr(jqmod, "cpu_load_pct", lambda: 10.0)
+    monkeypatch.setattr(jqmod, "_last_docker_claim", [-1e9])
+    monkeypatch.setattr(jqmod, "DOCKER_CLAIM_SPACING_S", 3600)
+    assert jq.claim("rollout", "w1", docker_slots=5) is not None
+    assert jq.claim("rollout", "w1", docker_slots=5) is None  # too soon after the last one
+    monkeypatch.setattr(jqmod, "DOCKER_CLAIM_SPACING_S", 0)
+    assert jq.claim("rollout", "w1", docker_slots=5) is not None
+
+
+def test_cpu_load_reads_loadavg_and_is_none_off_linux(tmp_path, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+
+    monkeypatch.setattr(jqmod.os, "cpu_count", lambda: 2)
+    f = tmp_path / "loadavg"
+    f.write_text("1.80 1.20 0.90 3/400 12345\n")
+    assert jqmod.cpu_load_pct(str(f)) == 90.0
+    assert jqmod.cpu_load_pct(str(tmp_path / "missing")) is None
+
+
 def test_a_suspect_is_not_starved_by_a_busy_process(backend, jq, monkeypatch):
     """An executor always holds a rollout, so crash isolation alone never let it take
     an abandoned one; after the wait cap it may (still isolated)."""

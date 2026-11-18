@@ -1,0 +1,50 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "synthetic-data-engine/durable-reservation-retry"
+description = "Fix durable inventory idempotency and lease recovery in a Python reservation service."
+keywords = [ "distributed-concurrency", "idempotency", "python", "recovery", "sqlite",]
+[[task.authors]]
+name = "synthetic-data-engine task pipeline"
+
+[metadata]
+author_name = "synthetic-data-engine task pipeline"
+difficulty = "medium"
+category = "distributed-systems"
+tags = [ "python", "sqlite", "distributed-concurrency", "idempotency", "recovery",]
+expert_time_estimate_min = 25.0
+junior_time_estimate_min = 50.0
+
+[metadata.generation]
+author_mode = "agent"
+dial = 2
+job_id = "p1-local-1-t01-v1-create"
+model = "z-ai/glm-5.1"
+origin = "initial"
+prompt_sha256 = "d2b483f2f346d97873278fe91aaf5ad106902334c3b6c5593bd4e70091a3f5e4"
+shape = "fix"
+world_sha256 = "e2f2eb03422bd35b88fdf3852d323e762f4716e5d338f4e1fd8d8436b5863910"
+
+[verifier]
+timeout_sec = 900.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+user = "agent"
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 900.0
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

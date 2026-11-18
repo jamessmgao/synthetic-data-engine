@@ -129,8 +129,17 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    "Mistakes earlier drafts made", "python:3.12-slim-bookworm",  # system.md, images filled in
                    "# plausible_wrong_fix: <the plausible_wrong_fix text>", "setup_errors",
                    "the test that replays the world's counterexample MUST be among the failures",
-                   "sde-task schema", "--as all", "20 minutes", "absolute paths (`/app/...`)",
-                   "## How Harbor runs your task"):
+                   "sde-task schema", "--as all", "20 minutes", "by absolute paths `/app/...`",
+                   # Tuning: invariants as properties over seeded schedules; no hooks; exact values.
+                   "One dedicated test per invariant in world.json", "at least 20 fixed seeds",
+                   "after every step", "Exact expected values", "Do not document crash hooks or stage names",
+                   "no hook, no stages", "never by\n  importing internals",
+                   # Invariants are numbered for the `# invariant: N` markers sde-task check enforces.
+                   "1. confirmed reservations never exceed stock", "`# invariant: N`", "rng = random.Random(seed)",
+                   "## How Harbor runs your task",
+                   # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
+                   "where a crash or fault hook fires", "BAD (an earlier draft", "GOOD (the same guarantees",
+                   "Never nest heredocs"):
         assert needle in text, needle
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]  # every template slot filled
     assert "{base_images}" not in text and "This is a revision" not in text
@@ -138,13 +147,32 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
     assert "Return exactly one JSON object that matches the provided schema" not in text
 
 
+def test_the_leak_review_flags_counterexample_shaped_text_and_crash_hooks():
+    from validator import gates
+
+    for needle in ("describes the failing scenario itself", "where a crash or fault hook fires",
+                   "tick --milliseconds 30001", "must reuse that exact durable result",
+                   "A crash hook or stage list in the instruction", "SEMANTICALLY", "Synonyms and paraphrases count",
+                   "without reading\nand reasoning about the code", '"direct"', '"strong_hint"'):
+        assert needle in gates.LEAK_SYSTEM, needle
+
+
 def test_the_world_instruction_has_the_scaffolds_and_the_time_box():
     from generator import author
 
     text = author.render_world_instruction(WORLD["spec"])
     for needle in ("/opt/sde/scaffold/", "sde_sched.py", "sde_fault.py", "sde_repro.py", "30 minutes",
-                   "300-800 lines of code in 2-4 modules", "never from size"):
+                   "300-800 lines of code in 2-4 modules", "never from size",
+                   # Tuning: a local patch is not enough; faults from outside; the wrong fix's shape.
+                   "A local patch must not be\n   enough", "No documented fault hooks or stage names",
+                   "must make the simple, visible symptom\n   go away", "never document `SDE_FAULTS`"):
         assert needle in text, needle
+    assert "STOP_AFTER=inventory" in text  # named only as the thing not to do
+    from shared.taskformat import world_check
+
+    # Every file the world_check gate requires (or may use) is asked for by name.
+    for rel in (*(p for p in world_check.REQUIRED if p != "environment/Dockerfile"), "repro/dependent_check.sh"):
+        assert f"`{rel}`" in text, rel
     for name in ("sde_sched.py", "sde_fault.py", "sde_repro.py"):  # the files it names exist
         assert (Path(__file__).resolve().parent.parent / "authoring" / "scaffold" / name).is_file()
 
@@ -155,6 +183,7 @@ def test_every_family_brief_names_its_scaffolds_and_the_scope():
     for family in FAMILY_BRIEFS:
         brief = brief_for(family)
         assert "Scaffolds (/opt/sde/scaffold): sde_" in brief and "300-800 lines in 2-4 modules" in brief
+        assert "Why a local patch fails here: " in brief and "no documented crash hook" in brief
 
 
 def test_every_shape_and_dial_renders(work):
@@ -284,8 +313,11 @@ def fake_llm(monkeypatch, verdict="clean", leaks=(), cost=0.03):
     calls = []
 
     def complete(messages, response_format, llm_dir=None, cache_key=None):
-        calls.append({"llm_dir": llm_dir, "user": messages[1]["content"]})
-        return llm.Completion(content=json.dumps({"verdict": verdict, "leaks": list(leaks)}), finish_reason="stop",
+        calls.append({"llm_dir": llm_dir, "user": messages[1]["content"], "key": cache_key})
+        content = {"leak-blind": {"predicted_fix": "unclear", "predicted_failure": "unclear"},
+                   "leak-judge": {"match": "none", "why": "-"}}.get(cache_key, {"verdict": verdict,
+                                                                              "leaks": list(leaks)})
+        return llm.Completion(content=json.dumps(content), finish_reason="stop",
                               model="z-ai/glm-5.1", prompt_tokens=1, completion_tokens=1, reasoning_tokens=0,
                               gateway_cost_usd=None, cost_usd=cost, duration_sec=1.0, transport_retries=0,
                               request_sha256="r1", cached=False)
@@ -297,15 +329,21 @@ def fake_llm(monkeypatch, verdict="clean", leaks=(), cost=0.03):
 def test_create_runs_the_leak_review_and_validate_adopts_it(work, monkeypatch):
     calls = fake_llm(monkeypatch)
     out, _ = create(work, leak_review=None)  # the real gate_leak
-    assert out["outcome"] == "OK" and out["cost_usd"] == pytest.approx(1.25 + 0.03)
-    assert out["result"]["leak"]["passed"] and out["result"]["leak"]["adopted"] is False and len(calls) == 1
+    # Three calls: the semantic review, the blind prediction, the judgement (0.03 each).
+    assert out["outcome"] == "OK" and out["cost_usd"] == pytest.approx(1.25 + 3 * 0.03)
+    assert out["result"]["leak"]["passed"] and out["result"]["leak"]["adopted"] is False
+    assert [c["key"] for c in calls] == ["leak-review", "leak-blind", "leak-judge"]
+    # The reviewer sees the world the task came from (its counterexample and fix); the
+    # blind predictor sees the instruction only.
+    assert out["result"]["leak"]["had_world"] and "A reads stock=1" in calls[0]["user"]
+    assert calls[1]["user"].startswith("INSTRUCTION\n\n") and "A reads stock=1" not in calls[1]["user"]
     sha = out["result"]["bundle_sha256"]
     assert (work / "leak_reviews" / sha / "review.json").is_file()
     from validator import gates
 
     gate = gates.gate_leak(Path(out["result"]["bundle_path"]), work / "traces" / "t-1-v1-validate-r0")
     assert gate.passed and gate.detail["adopted"] is True and gate.detail["cost_usd"] == 0.0
-    assert len(calls) == 1  # validate did not call the model again
+    assert len(calls) == 3  # validate did not call the model again
 
 
 def test_a_leak_found_at_create_is_the_authors_fault_with_feedback(work, monkeypatch):
@@ -316,7 +354,7 @@ def test_a_leak_found_at_create_is_the_authors_fault_with_feedback(work, monkeyp
     r = out["result"]
     assert (out["outcome"], r["failure_kind"]) == ("FAILED", "author")
     assert quote in r["feedback"] and r["feedback"] == out["error"] and r["bundle_sha256"]  # repair starts here
-    assert out["cost_usd"] == pytest.approx(1.28) and r["leak"]["passed"] is False
+    assert out["cost_usd"] == pytest.approx(1.25 + 3 * 0.03) and r["leak"]["passed"] is False
 
 
 def test_a_failed_review_call_does_not_fail_the_create(work):
@@ -361,7 +399,10 @@ def test_world_mutation_instruction():
                    "generate_counterexample", "/input/parent/", "/logs/artifacts/world/",
                    "the parent w1", '"lineage": {"mutations": [{"defeats":', "sde-world check /logs/artifacts/world",
                    "confirmed reservations never exceed stock", "counterfactual_failure",
-                   "30 minutes", "300-800 lines", "/opt/sde/scaffold/"):
+                   "30 minutes", "300-800 lines", "/opt/sde/scaffold/",
+                   "nor describe the failing schedule", "describe its schedule",
+                   "If the strategy that passed was a local fix", "size-adding changes",
+                   "no documented crash hook or stage names"):
         assert needle in text, needle
     assert "the fix was process-local" in text
     assert text.count('"operators": ["add_persistent_state"]') == 0  # this mutation isn't listed as history
@@ -400,7 +441,10 @@ def test_a_draft_that_fails_sde_task_check_is_sent_back_with_its_bundle(work):
 
 
 def test_a_draft_that_passes_the_check_goes_on(work):
-    out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED)), self_check=_real_guard)
+    # The world fixture has two invariants: each needs a marked test.
+    tests = draft_with()["test_outputs"] + "\n\n# invariant: 1\n# invariant: 2\n"
+    out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED, test_outputs=tests)),
+                    self_check=_real_guard)
     assert out["outcome"] == "OK", out["error"]
     assert out["result"]["self_check"] == {"by": "pipeline", "runs": {}}
 

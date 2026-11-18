@@ -28,7 +28,10 @@ $family_brief
 2. **State its invariants** before looking for a failure: the guarantees a correct
    implementation must preserve (durability of acknowledged writes, no oversell,
    exact semantics preserved, global optimality, ...). Two or more that interact
-   are best: fixing one naively should risk another.
+   are best: fixing one naively should risk another. Phrase each as an OUTCOME an
+   observer can check ("each request ID debits its quantity at most once"), never as
+   the mechanism that ensures it ("later deliveries must reuse the stored result"):
+   the task's instruction is built from them, and a mechanism there is the fix.
 3. **Find the counterexample by EXECUTING the system.** Drive it with a deterministic
    scheduler, fault injector or crafted input until an invariant is violated, and
    record the exact sequence. Do not just reason about it: run it and watch it break.
@@ -37,11 +40,21 @@ $family_brief
    exits 1 when the invariant is violated, 0 when it holds. It must give the same
    answer every run (no sleeps-as-synchronization, no wall-clock races, fixed seeds).
 5. **Write the real fix** in `world_fix/fix.sh` (it edits the world's code in place):
-   afterwards repro.sh exits 0 and every invariant holds.
+   afterwards repro.sh exits 0 and every invariant holds. **A local patch must not be
+   enough.** Either the correct fix touches 2 or more modules, or a module elsewhere
+   depends on the current (buggy) behavior: a derived value, a cache, a report, a
+   downstream consumer, an ordering another stage relies on. Then the obvious one-file
+   patch breaks that dependent. Earlier, the only task that beat the agents was like
+   this: a purity fix in one module silently broke another module's totals, which had
+   relied on the old side effect.
 6. **Name the plausible wrong fix**: the change a capable engineer would most likely
-   make first, which makes the visible symptom go away but still violates an
-   invariant (e.g. a process-local dedup set where the guarantee must survive
-   restarts). Check that it really fails on your world.
+   make first, and check it on your world. It must make the simple, visible symptom
+   go away (the first reproduction an agent would write: one crash, one retry, the
+   reported input) and fail only on a deeper schedule (another crash point, a second
+   retry, a concurrent worker) or on the dependent. A wrong fix that does not even fix
+   the visible symptom is not plausible; one that survives every schedule is not wrong.
+   Example: a process-local dedup set fixes a retry within one process and fails when
+   the worker is killed and restarted.
 
 # Scaffolds: use these instead of writing your own
 
@@ -53,7 +66,11 @@ world does not depend on this container:
   each point another may run; a seed or a recorded schedule picks the order, and
   `explore(build, check, seeds)` returns the first schedule that breaks an invariant.
 - `sde_fault.py`: planned faults: a crash at a named point (on its Nth hit), a dropped
-  or duplicated message, a torn write, from a plan in `SDE_FAULTS`.
+  or duplicated message, a torn write, from a plan in `SDE_FAULTS`. The plan belongs to
+  the repro and the tests: never document `SDE_FAULTS` in the README or the task, and
+  give points neutral names (`p1`, `p2`, ... in code order would still reveal order:
+  prefer one generic `faults.point("io")` before every write, with the plan choosing
+  the Nth hit), so the point names do not map out the stages.
 - `sde_repro.py`: the repro harness: replays `repro/sequence.json`, checks your
   invariants, exits 1 violated / 0 holds / 2 harness broken.
 
@@ -83,6 +100,14 @@ costs time.
   TODOs that point at the defect or the fix. Symptoms are realistic, nothing more.
 - **Not padded.** No unrelated files, filler data or obscure APIs: the difficulty is
   causal, not volume.
+- **No documented fault hooks or stage names.** Do not give the system an env var,
+  flag or command that crashes it at a named stage (`STOP_AFTER=inventory`): it tells
+  the agent where the failure is and in what order the stages run. Inject faults
+  from outside instead, the way the tests will: kill the process (SIGKILL) at seeded
+  points from a test-side harness, or drive the scaffold's `sde_fault` from the
+  repro and the tests. The system itself only has to survive being killed at any
+  moment and restarted. If a hook is truly unavoidable, it must not reveal the order
+  of the stages or which one matters.
 - **Not dependent on unstated values.** Anything a later task will need (ports,
   credentials, paths, formats) is discoverable in the world itself.
 
@@ -103,8 +128,15 @@ costs time.
 Write the world to `/logs/artifacts/world/`:
 
 - `environment/`: the system, with its `Dockerfile` (the system at `/app` is a good default);
-- `repro/repro.sh`: the deterministic reproduction;
+- `repro/repro.sh`: the deterministic reproduction (the deep schedule);
+- `repro/symptom_check.sh`: the visible symptom only, the first reproduction an agent
+  would write (one crash, one retry, the reported input): exits 1 on the world, 0
+  once the symptom is gone;
 - `world_fix/fix.sh`: the real fix;
+- `world_fix/wrong_fix.sh`: the plausible wrong fix, implemented as an engineer would
+  write it (it edits the world in place, like fix.sh);
+- `repro/dependent_check.sh` (needed when fix.sh changes only one file): the dependent
+  module's behavior, exits 0 on the world and after fix.sh, 1 after wrong_fix.sh;
 - `world.json`:
 
 ```json
@@ -119,18 +151,25 @@ Write the world to `/logs/artifacts/world/`:
 
 (The pipeline fills in `lineage`.)
 
-Both scripts run INSIDE the world's image: they are copied to `/world/repro/repro.sh`
-and `/world/world_fix/fix.sh` and started from the image's `WORKDIR`, so refer to the
-system by absolute paths (`/app/...`). For the fixed world the check runs
-`bash /world/world_fix/fix.sh && bash /world/repro/repro.sh`.
+Every script runs INSIDE the world's image, in a fresh container: they are copied to
+`/world/repro/` and `/world/world_fix/` and started from the image's `WORKDIR`, so
+refer to the system by absolute paths (`/app/...`). For the fixed world the check
+runs `bash /world/world_fix/fix.sh && bash /world/repro/repro.sh` (and likewise
+`wrong_fix.sh && ...`).
 
 # Check before you finish
 
     sde-world check /logs/artifacts/world
 
-It builds the world, runs repro.sh twice on it (must exit 1 both times; any other
-exit code means the script itself failed) and twice after world_fix/fix.sh (must
-exit 0 both times). It saves its result to `/logs/artifacts/world_check.json`, which
-the pipeline reads: a world without a passing self-check is rejected.
+It builds the world and checks, stopping at the first failure (exit codes other
+than 0/1 mean a script itself failed):
+- repro.sh exits 1 twice on the world, and symptom_check.sh exits 1;
+- after fix.sh: repro.sh exits 0 twice, and symptom_check.sh exits 0;
+- the fix is not local: fix.sh changes 2+ files of the system, or dependent_check.sh
+  exits 0 on the world and after fix.sh, and 1 after wrong_fix.sh;
+- after wrong_fix.sh: symptom_check.sh exits 0 (it fools a quick check) and
+  repro.sh exits 1 (it is still wrong).
+It saves its result to `/logs/artifacts/world_check.json`, which the pipeline reads:
+a world without a passing self-check is rejected.
 
 Finish only when it exits 0.

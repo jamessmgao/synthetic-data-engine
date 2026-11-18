@@ -126,7 +126,9 @@ MUTATION_OPERATORS = {
     "add_persistent_state": "Make the relevant state survive restarts, so a process-local or in-memory fix "
                             "fails after a restart and recovery/replay must be handled.",
     "extend_cross_component_dependency": "Move the root cause so the symptom shows in a different component "
-                                         "from the cause, so patching where the symptom shows is not enough.",
+                                         "from the cause, or make another module depend on the current "
+                                         "behavior (a derived value, cache, report or consumer), so patching "
+                                         "one place is not enough: the correct fix spans 2+ modules.",
     "add_semantic_edge_case": "Add a realistic case (aliasing, an unusual control flow, a boundary value) on "
                               "which the passing fix silently gives a wrong answer.",
     "add_realistic_distractor": "Add a plausible but wrong lead (a suspicious-looking but correct component, a "
@@ -139,7 +141,9 @@ MUTATION_OPERATORS = {
                                      "deadlines, happens-before), so an order-blind fix fails.",
     "remove_cues": "Keep the world's behavior exactly the same; rewrite the cited cue sentences (in the "
                    "instruction-facing docs, README, logs, comments, names) at the interface level, so they "
-                   "no longer point at the cause or the fix.",
+                   "no longer point at the cause or the fix, nor describe the failing schedule: no step "
+                   "sequence, no trigger input or time step, and no documented crash hook or stage names "
+                   "(faults are injected from outside: the tests kill the process).",
 }
 
 
@@ -172,7 +176,10 @@ def world_summary(world: dict) -> str:
                      f"environment: {spec.get('environment')}; verification: {spec.get('verification')}.")
     if spec.get("seed"):
         lines.append(f"The requester's idea: {spec['seed']}")
-    lines += ["", "Invariants:", _bullets(world.get("invariants") or []), "", "Counterexample (hidden from the agent):",
+    invariants = world.get("invariants") or []
+    numbered = "\n".join(f"{n}. {i}" for n, i in enumerate(invariants, 1)) or "- (none recorded)"
+    lines += ["", "Invariants (each needs a dedicated test marked `# invariant: N`):", numbered, "",
+              "Counterexample (hidden from the agent):",
               _bullets(ce.get("sequence") or []), f"Reproduce: {ce.get('reproduce', 'repro/repro.sh')}",
               f"Observed: {ce.get('observed', '(not recorded)')}", "",
               f"Plausible wrong fix (the task's wrong_fix_script): {world.get('plausible_wrong_fix') or '(not recorded)'}"]

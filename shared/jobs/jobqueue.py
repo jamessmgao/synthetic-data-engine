@@ -18,6 +18,7 @@ Guarantees, on SQLite and PostgreSQL alike:
 """
 
 import json
+import logging
 import os
 import socket
 import time
@@ -79,6 +80,8 @@ class JobQueue:
             if row:
                 if candidate:
                     self.queue.claimed(candidate)
+                if row.get("needs_docker"):
+                    _last_docker_claim[0] = time.monotonic()
                 return row
             if candidate:
                 self.queue.missed(candidate)
@@ -96,16 +99,24 @@ class JobQueue:
         jobs (create / revise) stay: the claim itself still checks each job.
 
         The slots are a ceiling; the machine is the real limit. Below
-        SDE_MIN_FREE_MEMORY_PCT free memory, or above SDE_MAX_CPU_PCT CPU load, no new
+        SDE_MIN_FREE_MEMORY_PCT free memory, or at SDE_MAX_CPU_LOAD_PCT load average, no new
         Docker work is claimed (cap 0): a runner fills up to about 80% and stops there
         instead of OOM-killing trials or starving the solver harness (terminus-2's
         tmux send-keys timed out at 8 rollouts on 2 vCPU)."""
         if docker_slots is None and agent_slots is None:
             return types, docker_slots
         free, cpu = free_memory_pct(), cpu_load_pct()
-        if docker_slots is not None and ((free is not None and free < MIN_FREE_MEMORY_PCT)
-                                         or (cpu is not None and cpu > MAX_CPU_PCT)):
+        low_memory = free is not None and free < MIN_FREE_MEMORY_PCT
+        high_load = cpu is not None and cpu >= MAX_CPU_LOAD_PCT
+        if docker_slots is not None and (low_memory or high_load):
+            _note_guard("memory" if low_memory else "cpu", free, cpu)
             return [t for t in types if t not in DOCKER_JOB_TYPES], 0
+        if docker_slots is not None and time.monotonic() - _last_docker_claim[0] < DOCKER_CLAIM_SPACING_S:
+            # Pace Docker claims: the load average lags a burst of builds by a minute,
+            # so without this one fast node took 8 jobs at once while others sat idle.
+            types = [t for t in types if t not in DOCKER_JOB_TYPES]
+            if not types:
+                return types, docker_slots
         load = docker_load(self.store.conn, host)
         if docker_slots is not None and load["docker"] >= docker_slots:
             return [t for t in types if t not in DOCKER_JOB_TYPES], docker_slots
@@ -162,6 +173,13 @@ class JobQueue:
                 (str(status), utcnow(), *values.values(), job_id, token),
             )
             if cur.rowcount != 1:
+                # The task was cancelled (or decided) while this ran: its job was closed, so
+                # the result is dropped and nothing is handed off. What it spent is still
+                # recorded, so the reports and the budget see the money.
+                if values.get("cost_usd") is not None:
+                    c.execute("""UPDATE jobs SET cost_usd = ? WHERE id = ? AND lease_token = ? AND status = 'DEAD'
+                                    AND error LIKE 'cancelled:%' AND cost_usd IS NULL""",
+                              (values["cost_usd"], job_id, token))
                 return False
             parent = row_dict(c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
             more = then(c, parent) if then is not None else []
@@ -199,16 +217,33 @@ class JobQueue:
         self.queue.publish(rows)
 
 
+log = logging.getLogger("jobqueue")
 MIN_FREE_MEMORY_PCT = float(os.environ.get("SDE_MIN_FREE_MEMORY_PCT", "20"))
-MAX_CPU_PCT = float(os.environ.get("SDE_MAX_CPU_PCT", "85"))
+# A backstop, not the limit (the slot ceilings are set from load-test data): the
+# 1-minute load average, not instant CPU %, which image builds make too bursty.
+MAX_CPU_LOAD_PCT = float(os.environ.get("SDE_MAX_CPU_LOAD_PCT", "90"))
+_guard_logged: dict[str, float] = {}
+# Seconds between one process's Docker claims (0 = off; the AWS deploy sets 10).
+DOCKER_CLAIM_SPACING_S = float(os.environ.get("SDE_DOCKER_CLAIM_SPACING_S", "0"))
+_last_docker_claim = [-1e9]
 
 
-def cpu_load_pct() -> float | None:
-    """The 1-minute load average as a percentage of the machine's CPUs (the host's,
-    from inside a container), or None where unknown."""
+def _note_guard(reason: str, free: float | None, cpu: float | None) -> None:
+    """Log a guard skip, at most once a minute per reason (grep 'guard:' in the load test)."""
+    now = time.monotonic()
+    if now - _guard_logged.get(reason, -1e9) >= 60:
+        _guard_logged[reason] = now
+        log.warning("guard: %s, no new Docker work (free memory %s%%, load %s%%)", reason,
+                    None if free is None else round(free), None if cpu is None else round(cpu))
+
+
+def cpu_load_pct(loadavg: str = "/proc/loadavg") -> float | None:
+    """The 1-minute load average as a percentage of the CPUs (from inside a container,
+    /proc/loadavg is the host's), or None where unknown (not Linux: no guard)."""
     try:
-        return 100.0 * os.getloadavg()[0] / (os.cpu_count() or 1)
-    except (OSError, AttributeError):
+        with open(loadavg) as f:
+            return 100.0 * float(f.read().split()[0]) / (os.cpu_count() or 1)
+    except (OSError, ValueError, IndexError):
         return None
 
 

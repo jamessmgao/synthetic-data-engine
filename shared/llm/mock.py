@@ -30,6 +30,7 @@ FIXTURE = os.environ.get("SDE_MOCK_FIXTURE") or os.path.join(
 # Canned answers by response-format name; anything else is built from its schema.
 _REGISTERED: dict[str, Any] = {
     "leak_review": {"leaks": [], "verdict": "clean"},
+    "blind_judgement": {"match": "none", "why": "mock"},  # the schema's first enum value is a leak
 }
 
 

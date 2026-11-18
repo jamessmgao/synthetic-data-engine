@@ -30,3 +30,15 @@ def test_llm_complete_uses_the_mock_when_enabled(monkeypatch):
                        {"json_schema": {"name": "pass_review", "schema": {"type": "object", "required": ["a"],
                                                                           "properties": {"a": {"type": "string"}}}}})
     assert json.loads(out.content) == {"a": "mock"} and out.model == "mock"
+
+
+def test_mock_answers_pass_the_leak_gate():
+    """Load tests measure the clean path: no mock answer may read as a leak."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "validator"))
+    from validator import gates
+
+    assert json.loads(mock.content_for(gates.LEAK_FORMAT))["verdict"] == "clean"
+    assert json.loads(mock.content_for(gates.JUDGE_FORMAT))["match"] != "specific"

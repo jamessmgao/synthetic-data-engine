@@ -33,6 +33,7 @@ from shared.contracts.models import (
     LEASE_TTL_S,
     MAX_JOB_ATTEMPTS,
     PRIORITY,
+    TERMINAL_SQL,
     JobStatus,
     JobType,
     needs_docker,
@@ -50,6 +51,9 @@ SCHEMA = [
         name             TEXT,
         accepted_version INTEGER,
         batch_id         TEXT,
+        cancelled_at     TEXT,
+        cancelled_by     TEXT,
+        cancel_note      TEXT,
         created_at       TEXT NOT NULL,
         updated_at       TEXT NOT NULL
     )""",
@@ -388,7 +392,7 @@ def claim(
                  WHERE type IN ({t_marks}) AND due_at <= ?
                    AND (status = 'READY' OR (status = 'LEASED' AND lease_until < ?))
                    AND attempts < ?
-                   AND task_id NOT IN (SELECT id FROM tasks WHERE status IN ('ACCEPTED', 'REJECTED'))
+                   AND task_id NOT IN (SELECT id FROM tasks WHERE status IN {TERMINAL_SQL})
                    {filters}
                  ORDER BY priority DESC, due_at
                  LIMIT 1)
@@ -489,6 +493,9 @@ class SqlStore:
             task_cols = {d[0] for d in conn.execute("SELECT * FROM tasks LIMIT 0").description}
             if "batch_id" not in task_cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN batch_id TEXT")
+            for col in ("cancelled_at", "cancelled_by", "cancel_note"):  # a user's cancel (tasks.cancel)
+                if col not in task_cols:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS tasks_batch ON tasks (batch_id)")
             if self.url.startswith(("postgresql://", "postgres://")):
                 conn.execute("ALTER TABLE tasks ALTER COLUMN batch_id DROP NOT NULL")  # no-op when nullable
@@ -563,15 +570,16 @@ class SqlStore:
             """SELECT batch_id, COUNT(*) AS tasks,
                       COUNT(*) FILTER (WHERE status = 'ACCEPTED') AS accepted,
                       COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected,
+                      COUNT(*) FILTER (WHERE status = 'CANCELLED') AS cancelled,
                       MIN(created_at) AS created_at
                  FROM tasks WHERE batch_id IS NOT NULL
                 GROUP BY batch_id ORDER BY MIN(created_at) DESC, batch_id DESC"""
         ).fetchall()
         out = []
         for r in rows:
-            counts = {k: int(r[k]) for k in ("tasks", "accepted", "rejected")}
+            counts = {k: int(r[k]) for k in ("tasks", "accepted", "rejected", "cancelled")}
             out.append({"batch_id": r["batch_id"], **counts,
-                        "in_progress": counts["tasks"] - counts["accepted"] - counts["rejected"],
+                        "in_progress": counts["tasks"] - counts["accepted"] - counts["rejected"] - counts["cancelled"],
                         "created_at": r["created_at"]})
         return out
 
@@ -601,10 +609,10 @@ class SqlStore:
     def claimable_ids(self) -> list[dict[str, Any]]:
         """Every job a worker could claim now or later (for rebuilding a queue)."""
         rows = self.conn.execute(
-            """SELECT id, type, due_at FROM jobs
+            f"""SELECT id, type, due_at FROM jobs
                 WHERE (status = 'READY' OR (status = 'LEASED' AND lease_until < ?))
                   AND attempts < ?
-                  AND task_id NOT IN (SELECT id FROM tasks WHERE status IN ('ACCEPTED', 'REJECTED'))""",
+                  AND task_id NOT IN (SELECT id FROM tasks WHERE status IN {TERMINAL_SQL})""",
             (time.time(), MAX_JOB_ATTEMPTS),
         ).fetchall()
         return list(rows)

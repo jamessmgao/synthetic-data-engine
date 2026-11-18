@@ -232,9 +232,19 @@ def gate_wrong_fix(bundle_dir: Path, trace_dir: Path) -> Gate:
 # alone did not stop this (pipeline-hard, h6), and it made tasks too easy.
 
 LEAK_SYSTEM = """You review a benchmark task before an AI agent attempts it. You get the
-author's hidden notes (root cause, solution subgoals, correctness constraints)
-and the instruction the agent will read. Decide whether the instruction gives
-away the root cause or the fix.
+author's hidden notes (root cause, solution subgoals, correctness constraints), the
+world the task was written from when there is one (its counterexample, invariants,
+plausible wrong fix and the real fix), the reference solution, and the instruction
+the agent will read. Decide whether the instruction gives away the root cause, the
+fix or the failing sequence, literally OR SEMANTICALLY.
+
+Go through the instruction sentence by sentence and ask: does this sentence,
+paraphrased, tell the agent what the fix does, where it goes, which mechanism to
+use, or which sequence breaks the system? Synonyms and paraphrases count: "reuse
+the prior durable result for that request ID" is "make the effect idempotent on the
+request ID". Then ask of the whole instruction: could an agent reproduce the
+counterexample, or arrive at the fix, from the instruction alone, without reading
+and reasoning about the code? If so, the sentences that make it possible are leaks.
 
 A LEAK is a sentence of the instruction that tells the agent where the defect
 is or what change to make. For example, it:
@@ -243,10 +253,23 @@ is or what change to make. For example, it:
   user observes;
 - states a requirement in words that amount to the patch (for example "the
   check must compare against totals computed independently from raw events"
-  when the bug is that it compares against the wrong totals);
+  when the bug is that it compares against the wrong totals, or "any later
+  delivery of that request ID must reuse that exact durable result" when the
+  fix is to key the effect on the request ID);
 - singles out exactly the cases the planted defects break (for example
   "including transactions with three or more entries" when the bug drops the
-  third entry).
+  third entry);
+- describes the failing scenario itself: the sequence of steps, the schedule or
+  interleaving, where a crash or fault hook fires relative to the system's effects
+  (for example "the worker exits after the inventory update is durable and before
+  its remaining completion work"), or the exact input or time step that triggers
+  it (for example "use tick --milliseconds 30001 to expire the lease" when that
+  expiry is the counterexample). Discovering the failing sequence is the task.
+
+A crash hook or stage list in the instruction (an env var that stops the process
+at a named stage) is a leak: it maps out where the failure is. Documenting a clock
+or other control command by its interface is not a leak; saying which use of it
+breaks the system is.
 
 NOT a leak:
 - user-visible symptoms;
@@ -256,9 +279,43 @@ NOT a leak:
   part of the interface the tests check;
 - general rules that cover the broken case among many others.
 
-Flag only real leaks. Quote each leaking sentence exactly as it appears in the
-instruction, and say what it reveals. Return verdict "leak" if there is at
-least one leak; otherwise "clean" with an empty list."""
+Flag only real leaks. For each, quote the sentence exactly as it appears in the
+instruction, say which part of the fix or the counterexample it reveals, and grade
+it: "direct" (it states the fix, its location, its mechanism or the failing
+sequence, in any words) or "strong_hint" (it narrows the search to it without
+stating it). Return verdict "leak" if there is a direct finding or two or more
+strong hints; otherwise "clean" (list any single strong hint anyway)."""
+
+# The second, independent check: a reviewer without the hidden notes predicts the fix
+# from the instruction alone; a third call judges the prediction against the real fix.
+BLIND_SYSTEM = """You are a strong software engineer. You get only a task's instruction,
+not its code. Predict, as specifically as the instruction lets you: (1) the change
+that fixes the problem: its mechanism and where it goes, and (2) the sequence of
+events that makes the system fail today. If the instruction does not let you tell,
+say so instead of guessing a generic answer."""
+
+BLIND_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "blind_prediction", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False, "required": ["predicted_fix", "predicted_failure"],
+        "properties": {"predicted_fix": {"type": "string"}, "predicted_failure": {"type": "string"}}}},
+}
+
+JUDGE_SYSTEM = """You compare an engineer's prediction, made from a task's instruction
+alone, with the task's real fix and counterexample. Answer "specific" only if the
+prediction names the real fix's mechanism AND where it applies (or the real failing
+sequence), so that the agent would not need to investigate the code to find it.
+Answer "generic" if it is only a reasonable general remedy any careful engineer
+would list (add validation, make it transactional, add retries), and "none" if it
+does not match."""
+
+JUDGE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "blind_judgement", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False, "required": ["match", "why"],
+        "properties": {"match": {"type": "string", "enum": ["specific", "generic", "none"]},
+                       "why": {"type": "string"}}}},
+}
 
 LEAK_FORMAT = {
     "type": "json_schema",
@@ -266,8 +323,9 @@ LEAK_FORMAT = {
         "type": "object", "additionalProperties": False, "required": ["leaks", "verdict"],
         "properties": {
             "leaks": {"type": "array", "items": {
-                "type": "object", "additionalProperties": False, "required": ["quote", "reveals"],
-                "properties": {"quote": {"type": "string"}, "reveals": {"type": "string"}}}},
+                "type": "object", "additionalProperties": False, "required": ["quote", "reveals", "severity"],
+                "properties": {"quote": {"type": "string"}, "reveals": {"type": "string"},
+                               "severity": {"type": "string", "enum": ["direct", "strong_hint"]}}}},
             "verdict": {"type": "string", "enum": ["clean", "leak"]},
         }}},
 }
@@ -285,6 +343,51 @@ def _hidden_notes(readme: str) -> str:
         end = readme.find("\n## ", start + 4)
         parts.append(readme[start:end if end != -1 else None].strip())
     return "\n\n".join(parts)
+
+
+CONTEXT_CHARS = 12_000  # per hidden file shown to the reviewer
+
+
+def _world_dir(bundle_dir: Path) -> Path | None:
+    """The world a content-addressed bundle was written from (task.toml's generation
+    world_sha256, under <work>/worlds/), if it is here."""
+    import tomllib
+
+    try:
+        meta = tomllib.loads((bundle_dir / "task.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    sha = ((meta.get("metadata") or {}).get("generation") or {}).get("world_sha256")
+    if not sha or bundle_dir.parent.name != "bundles":
+        return None
+    world = bundle_dir.parent.parent / "worlds" / sha
+    return world if (world / "world.json").is_file() else None
+
+
+def _world_context(bundle_dir: Path) -> str:
+    """The world's counterexample, invariants, wrong fix and real fix, for the reviewer."""
+    world = _world_dir(bundle_dir)
+    if world is None:
+        return ""
+    meta = json.loads((world / "world.json").read_text())
+    ce = meta.get("counterexample") or {}
+    parts = ["## World invariants", *(f"- {i}" for i in meta.get("invariants") or []),
+             "", "## Counterexample (the failing sequence)", *(f"{n}. {s}" for n, s in
+                                                              enumerate(ce.get("sequence") or [], 1)),
+             f"Observed: {ce.get('observed', '')}", "", f"## Plausible wrong fix\n{meta.get('plausible_wrong_fix', '')}"]
+    if (fix := world / "world_fix" / "fix.sh").is_file():
+        parts += ["", "## The real fix (world_fix/fix.sh)", fix.read_text()[:CONTEXT_CHARS]]
+    return "\n".join(parts)
+
+
+def _solution_context(bundle_dir: Path) -> str:
+    """The reference solution (solution/, the wrong fix left out)."""
+    sol = bundle_dir / "solution"
+    if not sol.is_dir():
+        return ""
+    files = [p for p in sorted(sol.rglob("*")) if p.is_file() and p.name != "wrong_fix.sh"]
+    return "\n\n".join(f"## solution/{p.relative_to(sol)}\n{p.read_text(errors='replace')[:CONTEXT_CHARS]}"
+                       for p in files)
 
 
 def _normalized(text: str) -> str:
@@ -317,24 +420,17 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     if not notes:
         return Gate("leak", True, {"skipped": "no hidden spec in the bundle", "cost_usd": 0.0})
     instruction = (bundle_dir / "instruction.md").read_text()
+    hidden = "\n\n".join(filter(None, [f"HIDDEN AUTHOR NOTES\n\n{notes}",
+                                       (w := _world_context(bundle_dir)) and f"THE WORLD\n\n{w}",
+                                       (s := _solution_context(bundle_dir)) and f"REFERENCE SOLUTION\n\n{s}"]))
 
     review_dir = leak_review_dir(bundle_dir, trace_dir)
     record_path = review_dir / "review.json"
-    if record_path.exists():
-        record = json.loads(record_path.read_text())
+    record = json.loads(record_path.read_text()) if record_path.exists() else None
+    if record is not None and record.get("version") == LEAK_RECORD_VERSION:
         record["adopted"], record["cost_usd"] = True, 0.0
-    else:
-        from shared.llm import llm  # shared/llm/llm.py
-        messages = [{"role": "system", "content": LEAK_SYSTEM},
-                    {"role": "user", "content": f"HIDDEN AUTHOR NOTES\n\n{notes}\n\n"
-                                                f"INSTRUCTION SHOWN TO THE AGENT\n\n{instruction}"}]
-        completion = llm.complete(messages, LEAK_FORMAT, llm_dir=review_dir / "llm", cache_key="leak-review")
-        try:
-            review = json.loads(completion.content)
-        except json.JSONDecodeError:
-            review = {"leaks": [], "verdict": "unparseable"}
-        record = {"review": review, "request_sha256": completion.request_sha256,
-                  "cost_usd": 0.0 if completion.cached else completion.cost_usd, "adopted": False}
+    else:  # none yet, or one from before the blind check: review again
+        record = _leak_calls(review_dir, hidden, instruction)
         record_path.parent.mkdir(parents=True, exist_ok=True)
         record_path.write_text(json.dumps(record, indent=1) + "\n")
 
@@ -344,18 +440,72 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     haystack = _normalized(instruction)
     confirmed = [x for x in review.get("leaks", []) if x.get("quote") and _normalized(x["quote"]) in haystack]
     unverified = [x for x in review.get("leaks", []) if x not in confirmed]
+    direct = [x for x in confirmed if x.get("severity", "direct") == "direct"]  # ungraded = direct, as before
+    hints = [x for x in confirmed if x.get("severity") == "strong_hint"]
+    blind = record.get("blind") or {}
+    blind_leak = (blind.get("judge") or {}).get("match") == "specific"
     detail = {"verdict": review.get("verdict"), "leaks": confirmed, "unverified_quotes": unverified,
+              "direct": len(direct), "strong_hints": len(hints), "blind": blind, "blind_leak": blind_leak,
+              "had_world": "THE WORLD" in hidden, "calls": record.get("calls", []),
               "request_sha256": record.get("request_sha256"), "cost_usd": record["cost_usd"],
               "adopted": record.get("adopted", False)}
-    if not confirmed:
+    review_leak = bool(direct) or len(hints) >= 2
+    if not review_leak and not blind_leak:
         return Gate("leak", True, detail)
-    listed = "\n".join(f"- \"{x['quote']}\"\n  reveals: {x['reveals']}" for x in confirmed)
-    feedback = ("A reviewer compared the instruction with your hidden spec and found sentences that give "
-                f"away the root cause or the fix:\n{listed}\n\nRewrite them so the instruction states what "
-                "must be true in terms of the system's interface (commands, inputs, outputs, files), without "
-                "naming the faulty code or describing the change. Keep every requirement the tests check, and "
-                "do not single out the exact cases the defect breaks.")
+    parts = []
+    if review_leak:
+        listed = "\n".join(f"- \"{x['quote']}\" ({x.get('severity', 'direct')})\n  reveals: {x['reveals']}"
+                           for x in [*direct, *hints])
+        parts.append("A reviewer compared the instruction with the hidden fix and counterexample and found "
+                     f"sentences that give them away, literally or in other words:\n{listed}")
+    if blind_leak:
+        parts.append("A second reviewer who saw ONLY the instruction predicted the real fix:\n"
+                     f"  predicted: {(blind.get('prediction') or {}).get('predicted_fix', '')}\n"
+                     f"  judged a specific match: {blind['judge'].get('why', '')}")
+    feedback = ("\n\n".join(parts) + "\n\nRewrite the instruction so it states what must be true through the "
+                "system's interface (commands, inputs, outputs, files) and the symptom users saw, without the "
+                "fix's mechanism or location, the failing sequence, crash hooks or stage names. Keep every "
+                "requirement the tests check, and do not single out the exact cases the defect breaks.")
     return Gate("leak", False, detail, feedback)
+
+
+LEAK_RECORD_VERSION = 2
+
+
+def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:
+    """The three calls: the semantic review, the blind prediction, its judgement. Each is
+    recorded (llm/) with its cost."""
+    from shared.llm import llm  # shared/llm/llm.py
+
+    calls, cost = [], 0.0
+
+    def call(system: str, user: str, fmt: dict, key: str) -> dict:
+        nonlocal cost
+        completion = llm.complete([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                                  fmt, llm_dir=review_dir / "llm", cache_key=key)
+        spent = 0.0 if completion.cached else completion.cost_usd
+        cost += spent
+        calls.append({"call": key, "request_sha256": completion.request_sha256, "cost_usd": spent})
+        try:
+            return json.loads(completion.content)
+        except json.JSONDecodeError:
+            return {"unparseable": True}
+
+    review = call(LEAK_SYSTEM, f"{hidden}\n\nINSTRUCTION SHOWN TO THE AGENT\n\n{instruction}", LEAK_FORMAT,
+                  "leak-review")
+    if review.get("unparseable"):
+        review = {"leaks": [], "verdict": "unparseable"}
+    if not config.LEAK_BLIND:
+        return {"version": LEAK_RECORD_VERSION, "review": review, "blind": {"skipped": "SDE_LEAK_BLIND=0"},
+                "calls": calls, "request_sha256": calls[0]["request_sha256"], "cost_usd": round(cost, 6),
+                "adopted": False}
+    prediction = call(BLIND_SYSTEM, f"INSTRUCTION\n\n{instruction}", BLIND_FORMAT, "leak-blind")
+    judge = call(JUDGE_SYSTEM, f"{hidden}\n\nPREDICTION FROM THE INSTRUCTION ALONE\n\n"
+                               f"Fix: {prediction.get('predicted_fix', '')}\n"
+                               f"Failure: {prediction.get('predicted_failure', '')}", JUDGE_FORMAT, "leak-judge")
+    return {"version": LEAK_RECORD_VERSION, "review": review, "blind": {"prediction": prediction, "judge": judge},
+            "calls": calls, "request_sha256": calls[0]["request_sha256"], "cost_usd": round(cost, 6),
+            "adopted": False}
 
 
 def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:

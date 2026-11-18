@@ -101,7 +101,9 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | Non
         return False
     finally:
         done.set()
-    if lost.is_set() or not jq.settle(job_id, token, fields, then=handoff):
+    # Settle even when the lease is lost: it is fenced, so it changes nothing then,
+    # except that a job closed by a cancel still records what it spent.
+    if not jq.settle(job_id, token, fields, then=handoff) or lost.is_set():
         log.warning("%s: lease lost before settling; result dropped", job_id)
         return False
     log.info("%s: %s%s", job_id, fields.get("outcome"),

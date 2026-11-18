@@ -564,6 +564,11 @@ def make_world(root: Path, **over) -> Path:
         "environment/dedup.py": "def dedup(xs):\n    return list(xs)\n",
         "repro/repro.sh": "cd /app && python3 -c 'import sys, dedup; sys.exit(0 if dedup.dedup([1, 1]) == [1] else 1)'\n",
         "world_fix/fix.sh": "printf 'def dedup(xs):\\n    return list(dict.fromkeys(xs))\\n' > /app/dedup.py\n",
+        # The symptom an agent checks first (adjacent duplicates), the wrong fix that hides it,
+        # and a dependent the one-file wrong fix breaks.
+        "repro/symptom_check.sh": "cd /app && python3 -c 'import sys, dedup; sys.exit(0 if dedup.dedup([1, 1]) == [1] else 1)'\n",
+        "repro/dependent_check.sh": "true\n",
+        "world_fix/wrong_fix.sh": "# plausible_wrong_fix: drop only adjacent duplicates\ntrue\n",
         "world.json": json.dumps({"spec": {}, "invariants": ["dedup output has no duplicates"],
                                   "counterexample": {"sequence": ["dedup([1, 1])", "returns [1, 1]"],
                                                      "reproduce": "repro/repro.sh"},
@@ -591,9 +596,21 @@ class FakeDocker:
         self.argv.append(list(args))
         if args[0] == "build":
             return self.build, "" if self.build == 0 else "COPY failed: dedup.py not found"
+        if args[0] == "run" and "-d" in args:
+            return 0, "cid\n"
+        if args[0] == "diff":
+            return 0, "C /app/dedup.py\n"
         if args[0] == "run":
-            queue = self.fixed if "world_fix/fix.sh &&" in args[-1] else self.unfixed
-            return queue.pop(0), "repro output"
+            from shared.taskformat import world_check as wc
+            script = args[-1]
+            if script == wc.REPRO:
+                return self.unfixed.pop(0), "repro output"
+            if script == f"{wc.FIX} && {wc.REPRO}":
+                return self.fixed.pop(0), "repro output"
+            # The rest of a good world (see tests/shared/taskformat/test_world_check.py).
+            return {wc.SYMPTOM: 1, f"{wc.FIX} && {wc.SYMPTOM}": 0, f"{wc.WRONG} && {wc.SYMPTOM}": 0,
+                    f"{wc.WRONG} && {wc.REPRO}": 1, wc.DEPENDENT: 0, f"{wc.FIX} && {wc.DEPENDENT}": 0,
+                    f"{wc.WRONG} && {wc.DEPENDENT}": 1}[script], "output"
         return 0, ""
 
 
@@ -605,13 +622,15 @@ def test_world_check_passes_a_real_fixable_counterexample(tmp_path, monkeypatch)
     assert res["outcome"] == "OK", res["feedback"]
     checks = res["result"]["checks"]
     assert checks["repro_fails"]["exit_codes"] == [1, 1] and checks["repro_passes_with_fix"]["exit_codes"] == [0, 0]
-    assert fake.calls.count("run") == 4 and fake.calls[-1] == "rmi"
+    assert fake.calls[-1] == "rmi"
     # No host bind mounts (the check also runs through a Docker socket inside the
     # authoring container): the scripts are baked into a derived check image.
     runs = [a for a in fake.argv if a[0] == "run"]
     image = [a for a in fake.argv if a[0] == "build"][0][3]  # build -q -t <image>
     assert image.startswith("sde-world-w0rld-") and len(image) > len("sde-world-w0rld-")
-    assert all("-v" not in a for a in runs) and all(a[-4] == f"{image}-check" for a in runs)
+    assert all("-v" not in a for a in runs)
+    assert all(a[-4] == f"{image}-check" for a in runs if "--rm" in a)
+    assert all(a[-2] == f"{image}-check" for a in runs if "-d" in a)
     assert all(a[2:6] == ["--cpus", "1", "--memory", "2g"] for a in runs)
     world = make_world(tmp_path)
     check_build = [a for a in fake.argv if a[0] == "build"][1]
@@ -702,8 +721,10 @@ def leak_bundle(tmp_path: Path, instruction: str) -> Path:
     return b
 
 
-def fake_review(monkeypatch, review: dict) -> FakeModel:
-    fake = FakeModel(json.dumps(review))
+def fake_review(monkeypatch, review: dict, judge: str = "none") -> FakeModel:
+    """The leak gate's three calls: the review, the blind prediction, its judgement."""
+    fake = FakeModel(json.dumps(review), json.dumps({"predicted_fix": "unclear", "predicted_failure": "unclear"}),
+                     json.dumps({"match": judge, "why": "-"}))
     monkeypatch.setattr(llm, "_stream", fake)
     return fake
 
@@ -716,7 +737,8 @@ def test_leak_gate_fails_on_a_verbatim_leak(tmp_path, monkeypatch):
         {"quote": "The bug is that stats.median picks the upper middle element.", "reveals": "the root cause"}]})
     gate = gates.gate_leak(bundle, tmp_path / "trace")
     assert not gate.passed and "picks the upper middle element" in gate.feedback
-    assert gate.detail["cost_usd"] == 0.01 and gate.detail["leaks"]
+    # Three calls (the review, the blind prediction, its judgement), 0.01 each.
+    assert gate.detail["cost_usd"] == pytest.approx(0.03) and gate.detail["leaks"]
 
 
 def test_leak_gate_ignores_quotes_that_are_not_in_the_instruction(tmp_path, monkeypatch):
@@ -733,8 +755,9 @@ def test_leak_gate_adopts_its_review_on_retry(tmp_path, monkeypatch):
     fake = fake_review(monkeypatch, {"verdict": "clean", "leaks": []})
     first = gates.gate_leak(bundle, tmp_path / "trace")
     again = gates.gate_leak(bundle, tmp_path / "trace")
-    assert first.passed and again.passed and fake.calls == 1
-    assert first.detail["cost_usd"] == 0.01 and again.detail["cost_usd"] == 0.0 and again.detail["adopted"]
+    assert first.passed and again.passed and fake.calls == 3
+    assert first.detail["cost_usd"] == pytest.approx(0.03) and again.detail["cost_usd"] == 0.0
+    assert again.detail["adopted"]
 
 
 def test_leak_gate_skips_bundles_without_a_hidden_spec(tmp_path):
@@ -755,4 +778,4 @@ def test_validate_job_reports_leak_gate_and_cost(tmp_path, monkeypatch):
         {"quote": "Fix it by averaging the two middle values.", "reveals": "the patch"}]})
     res = gates.run_validate_job(bundle, tmp_path / "trace")
     assert res["outcome"] == "FAILED" and res["failed_gate"] == "leak"
-    assert res["result"]["gates"]["leak"]["passed"] is False and res["cost_usd"] == 0.01
+    assert res["result"]["gates"]["leak"]["passed"] is False and res["cost_usd"] == pytest.approx(0.03)

@@ -20,7 +20,8 @@ from api.submit import BatchConflict, TaskConflict, create_batch, create_task
 from shared.taxonomy.taxonomy import families_listing
 
 from . import service
-from .models import BatchCreated, BatchRequest, BatchSummary, TaskCreated, TaskRequest, TaskSummary
+from .models import (BatchCreated, BatchRequest, BatchSummary, CancelRequest, TaskCreated, TaskRequest,
+                     TaskSummary)
 
 
 def create_app(backend: Backend | None = None, api_key: str | None = None) -> FastAPI:
@@ -64,6 +65,19 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     @v1.get("/tasks/{task_id}")
     def get_task(task_id: str):
         return service.get_task(store, task_id)
+
+    @v1.post("/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str, body: CancelRequest | None = None):
+        """Stop a task: no further job of it is claimed and nothing it settles is handed
+        off. Idempotent; a decided task is left as it is."""
+        body = body or CancelRequest()
+        return service.cancel_task(store, task_id, by=body.by, note=body.note)
+
+    @v1.post("/batches/{batch_id}/cancel")
+    def cancel_batch(batch_id: str, body: CancelRequest | None = None):
+        """Stop every undecided task of a batch (one transaction). Idempotent."""
+        body = body or CancelRequest()
+        return service.cancel_batch(store, batch_id, by=body.by, note=body.note)
 
     @v1.post("/batches", status_code=202, response_model=BatchCreated)
     def post_batch(body: BatchRequest):

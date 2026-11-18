@@ -1,0 +1,45 @@
+{
+ "counterexample": {
+  "observed": "The crash lands between the durable inventory debit and the separate durable order-completion transaction. Lease recovery applies order-1 twice, producing two movements and 0 units, then rejects the otherwise satisfiable order-2. This violates exact inventory effects, request-id idempotency, and recovery availability.",
+  "reproduce": "repro/repro.sh",
+  "sequence": [
+   "Initialize durable inventory with 14 widgets.",
+   "Submit order-1 for 7 widgets and durably enqueue it.",
+   "A worker leases order-1, inventory durably debits 7 widgets, and the worker is stopped before the separate order-completion transaction commits.",
+   "Advance logical time past the 30000-millisecond lease.",
+   "A replacement worker leases the same order-1 and inventory accepts it as a second movement, leaving 0 widgets.",
+   "Submit order-2 for the remaining 7 widgets; the worker must reject it because the duplicate order-1 effect consumed its capacity."
+  ]
+ },
+ "invariants": [
+  "Inventory effects are exact: a request ID may apply at most its requested quantity to durable stock, and every accepted effect must fit the stock recorded at that moment.",
+  "A request ID is an external idempotency key: once it has produced an inventory movement, any later delivery of that same request ID must reuse that durable result rather than apply another inventory effect.",
+  "An expired worker lease is retried without losing the order; recovery must preserve both availability and the prior durable inventory effect."
+ ],
+ "lineage": {
+  "mutations": [],
+  "parent_world_sha256": null
+ },
+ "name": "durable-reservation-retry",
+ "plausible_wrong_fix": "Add a process-local set of request IDs in the worker to skip repeat deliveries; the set vanishes in the crash that causes redelivery, so the replacement worker still debits stock again.",
+ "spec": {
+  "dial": 2,
+  "difficulty": {
+   "dial": 2,
+   "form": "behavior_preserving"
+  },
+  "environment": "Python service",
+  "family": "distributed_concurrency",
+  "mechanism": "adversarial_schedule",
+  "shape": "fix",
+  "taxonomy": {
+   "core_capability": "adversarial schedule",
+   "domain": "Distributed systems and concurrency",
+   "environment": "Python service",
+   "failure_mode": "adversarial schedule",
+   "skill_interaction": "multiple interacting constraints",
+   "task_type": "Debugging"
+  },
+  "verification": "model_check_small"
+ }
+}

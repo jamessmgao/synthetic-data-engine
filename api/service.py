@@ -20,6 +20,7 @@ from typing import Any
 from evaluation.calibration import eval_config, in_band
 from evaluation.verdict import decision_text, pass_pattern, version_input
 from shared.storage import budget
+from shared.jobs import tasks as task_state
 from shared.storage.sql import SqlStore, row_dict
 from shared.contracts.models import (
     GENERATION_TYPES,
@@ -239,6 +240,8 @@ def _summary(store: SqlStore, tasks: list[dict]) -> dict:
         "accepted_total": len(accepted),
         "rejected": dict(Counter(t["reason"] for t in tasks if t["status"] == TaskStatus.REJECTED)),
         "in_progress": sum(t["status"] in (TaskStatus.CREATED, TaskStatus.CALIBRATING) for t in tasks),
+        # Stopped by a user: neither yield nor failure (not in `rejected`, not in learnable_rate).
+        "cancelled": sum(t["status"] == TaskStatus.CANCELLED for t in tasks),
         "pass_count_histogram": histogram,
         "valid_rollouts": sum(j["outcome"] in SCORED_OUTCOMES for j in rollouts),
         "invalid_rollouts": sum(j["outcome"] == Outcome.INVALID or j["status"] == JobStatus.DEAD for j in rollouts),
@@ -312,8 +315,9 @@ def _breakdown(tasks: list[dict], jobs_by_task: dict[str, list[dict]], key: str)
 
 def _yield(summary: dict) -> dict:
     """The headline number: the share of finished candidates accepted as learnable.
-    Tasks still in progress are left out of the denominator; null until one finishes."""
-    finished = summary["candidates"] - summary["in_progress"]
+    Tasks still in progress, and tasks a user cancelled, are left out of the denominator;
+    null until one finishes."""
+    finished = summary["candidates"] - summary["in_progress"] - summary["cancelled"]
     return {
         "candidates": summary["candidates"],
         "functional": summary["functional_pass"],
@@ -321,6 +325,27 @@ def _yield(summary: dict) -> dict:
         "accepted_v1": summary["accepted_v1"],
         "learnable_rate": round(summary["accepted_total"] / finished, 4) if finished else None,
     }
+
+
+def cancel_tasks(store: SqlStore, task_ids: list[str], by: str = "user", note: str = "") -> dict:
+    """Cancel tasks in one transaction (pipeline/tasks.cancel). Idempotent: an already
+    decided task is left as it is and counted under `already_decided`."""
+    with store.tx() as conn:
+        results = [task_state.cancel(conn, t, by, note) for t in task_ids]
+    return {"cancelled": sum(r["cancelled"] for r in results),
+            "already_decided": sum(not r["cancelled"] for r in results),
+            "closed_jobs": sum(r["closed_jobs"] for r in results),
+            "tasks": {r["task_id"]: r["status"] for r in results}}
+
+
+def cancel_task(store: SqlStore, task_id: str, by: str = "user", note: str = "") -> dict:
+    if store.task(task_id) is None:
+        raise NotFound(f"task {task_id!r} not found")
+    return {"task_id": task_id, **cancel_tasks(store, [task_id], by, note)}
+
+
+def cancel_batch(store: SqlStore, batch_id: str, by: str = "user", note: str = "") -> dict:
+    return {"batch_id": batch_id, **cancel_tasks(store, [t["id"] for t in _batch_tasks(store, batch_id)], by, note)}
 
 
 def list_batches(store: SqlStore) -> list[dict]:

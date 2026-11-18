@@ -22,6 +22,7 @@ lost lease) stops Harbor and its Docker containers together.
 
 import json
 import os
+import random
 import signal
 import socket
 import subprocess
@@ -52,7 +53,18 @@ class AgentConfig:
 
     def as_expected(self) -> dict:
         """The shape ``classify`` compares against Harbor's recorded trial config."""
+        if self.agent == MOCK_AGENT:  # oracle or nop per run: nothing to pin
+            return {}
         return {"agent": self.agent, "model": self.model, "kwargs": self.kwargs}
+
+
+# Load tests (SDE_MOCK_LLM=1, docs/LOAD_TEST.md): rollouts run Harbor's built-in oracle
+# agent (with probability SDE_MOCK_PASS_P) or nop agent instead of the model. Real
+# builds and verifier runs, no model calls.
+MOCK = os.environ.get("SDE_MOCK_LLM") == "1"
+MOCK_PASS_P = float(os.environ.get("SDE_MOCK_PASS_P", "0.4"))
+MOCK_ROLLOUT_S = float(os.environ.get("SDE_MOCK_ROLLOUT_S", "30"))  # slot hold, jittered ±30%
+MOCK_AGENT = "mock:oracle|nop"
 
 
 @dataclass(frozen=True)
@@ -63,6 +75,8 @@ class TrialRun:
 
 
 def pinned_agent() -> AgentConfig:
+    if MOCK:
+        return AgentConfig(agent=MOCK_AGENT, model="", kwargs={})
     return AgentConfig(
         agent=settings.EVAL_AGENT,
         model=settings.EVAL_MODEL,
@@ -75,7 +89,8 @@ def command(task_dir: Path, job_id: str, agent: AgentConfig, traces_dir: Path,
     cmd = [
         settings.HARBOR_BIN, "run",
         "-p", str(task_dir),
-        "-a", agent.agent,
+        "-a", (("oracle" if random.random() < MOCK_PASS_P else "nop") if agent.agent == MOCK_AGENT
+               else agent.agent),
         "--n-attempts", "1",
         "--n-concurrent", "1",
         "--max-retries", "0",  # retrying is the executor's job, as a new job row
@@ -212,6 +227,9 @@ def run_trial(task_dir: Path, job_id: str, agent: AgentConfig, cancel: threading
         raise Cancelled()
     if job_dir.exists():
         _set_aside(job_dir)
+    # Load tests: hold the slot as long as a model-driven rollout would, then run oracle / nop.
+    if agent.agent == MOCK_AGENT and cancel.wait(MOCK_ROLLOUT_S * random.uniform(0.7, 1.3)):
+        raise Cancelled()
 
     log_path = traces_dir / f"{job_id}.log"
     with open(log_path, "ab") as log:

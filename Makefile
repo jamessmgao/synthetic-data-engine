@@ -1,3 +1,4 @@
+-include deploy/local.env
 # Local development. The default backends need nothing (SQLite + files under work/);
 # the compose stack runs the production backends (Postgres, Redis, S3) locally.
 
@@ -30,13 +31,15 @@ test-infra: deps-up  ## the same tests on SQLite, Postgres and Postgres+Redis, p
 	$(TEST_ENV) $(PYTHON) -m pytest tests/shared -q
 
 up:              ## the whole stack, workers included (oneshot authoring)
+	rm -f deploy/make.env
 	$(COMPOSE) --profile app up -d --build
 
 authoring-image: ## build the agent-mode authoring image into the local Docker (context: the repo)
-	docker build -f authoring/Dockerfile -t $${SDE_AUTHORING_IMAGE:-sde-authoring:dev} .
+	docker build -f authoring/Dockerfile -t $(or $(SDE_AUTHORING_IMAGE),sde-authoring:dev) .
 
 up-agent: authoring-image  ## the whole stack with SDE_AUTHOR_MODE=agent (generation on worker-runner)
-	SDE_AUTHOR_MODE=agent SDE_GENERATION_CMD="python -m shared.jobs.reconciler" \
+	echo SDE_AUTHOR_MODE=agent > deploy/make.env
+	SDE_GENERATION_CMD="python -m shared.jobs.reconciler" \
 	SDE_RUNNER_GENERATION_CMD="python -m generator.service generation" \
 	$(COMPOSE) --profile app up -d --build
 

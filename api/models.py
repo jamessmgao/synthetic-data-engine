@@ -88,6 +88,13 @@ class BatchRequest(Filters):
         return self
 
 
+class CancelRequest(BaseModel):
+    """Optional body of POST …/cancel: who stopped it and why (shown in the verdict)."""
+
+    by: str = Field("user", min_length=1, max_length=100)
+    note: str = Field("", max_length=2000)
+
+
 class BatchCreated(BaseModel):
     batch_id: str
     task_ids: list[str]
@@ -99,6 +106,7 @@ class BatchSummary(BaseModel):
     tasks: int
     accepted: int
     rejected: int
+    cancelled: int = 0
     in_progress: int
     created_at: str
 

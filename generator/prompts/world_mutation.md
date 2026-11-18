@@ -55,7 +55,21 @@ $history
    `world_fix/fix.sh`; `repro/repro.sh` exits 1 on the new world and 0 after the fix,
    deterministically, every time.
 4. **The defect is not announced.** No comments, logs, file names or README text that
-   point at the new failure. Any symptom the system shows is realistic.
+   point at the new failure or describe its schedule (the step sequence, the trigger
+   input or time step, where a fault fires relative to the effects), and no
+   documented crash hooks or stage names. Any symptom the system shows is realistic.
+
+**If the strategy that passed was a local fix** (one file, one function, one guard),
+make a local fix insufficient, in this order of preference:
+`extend_cross_component_dependency` (the correct fix must touch 2+ modules, or a
+module elsewhere comes to depend on the current behavior, e.g. a derived value, a cache,
+a report or a downstream consumer, so the local patch breaks it),
+`introduce_global_invariant`, `generate_counterexample`. Whatever the operators above,
+realize them in that spirit; size-adding changes (`expand_state_space`,
+`add_realistic_distractor`) come last and never alone. The new plausible wrong fix
+must still make the simple visible symptom go away and fail only on a deeper
+schedule or on the dependent. Faults stay external: no documented crash hook or stage
+names in the new world (remove any the parent has).
 
 Techniques that deepen reasoning (use them to realize the operators above):
 
@@ -65,7 +79,10 @@ $techniques
 
 Write the new world to `$output_dir/`, in the same layout as the parent:
 
-- `environment/`, `repro/repro.sh`, `world_fix/fix.sh`;
+- `environment/`, `repro/repro.sh`, `repro/symptom_check.sh`, `world_fix/fix.sh`,
+  `world_fix/wrong_fix.sh` (the NEW plausible wrong fix, implemented), and
+  `repro/dependent_check.sh` if fix.sh changes only one file (the same contract as
+  a new world: `sde-world check` verifies all of them);
 - `world.json` with: the parent's spec; the invariants (updated if the mutation adds
   one); the NEW counterexample (sequence, `"reproduce": "repro/repro.sh"`, what was
   observed); and a NEW `plausible_wrong_fix` (the strategy that passed is a good

@@ -19,6 +19,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "violating schedule replays identically every time",
         "scaffold": "sde_sched.py for the interleaving (explore seeds, replay the schedule) and sde_fault.py for "
                     "crashes at named points and dropped or duplicated messages",
+        "dependent": "the fix spans the writer and the recovery path (or the follower's apply loop), or a "
+                     "compaction, snapshot or metrics module reads the log in the shape the bug produces",
     },
     "algorithmic_constraints": {
         "title": "Algorithmic and constraint-solving problems",
@@ -31,6 +33,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "suboptimal answer, checked against a brute-force or reference solver on that input",
         "scaffold": "sde_repro.py, with a small brute-force reference solver as the invariant check on the "
                     "counterexample input",
+        "dependent": "a caller relies on the heuristic's current output shape or order (a report, a cache "
+                     "keyed on it, an incremental re-plan), so replacing the algorithm in one place breaks it",
     },
     "performance_resources": {
         "title": "Performance and resource optimization",
@@ -44,6 +48,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "faster version exists; correctness is checked differentially against the slow one",
         "scaffold": "sde_repro.py, with the slow implementation as the differential reference and the bound "
                     "checked on the adversarial input",
+        "dependent": "another module depends on a side effect of the slow path (its ordering, a materialized "
+                     "intermediate, stable ties), so a faster rewrite of one function changes its results",
     },
     "database_consistency": {
         "title": "Database consistency and recovery",
@@ -57,6 +63,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "double charge",
         "scaffold": "sde_sched.py to interleave the clients' transactions step by step and sde_fault.py for a "
                     "crash between a commit and its side effect",
+        "dependent": "the fix spans the write path and the retry / recovery worker, or a derived table, "
+                     "ledger report or cache is computed from the rows in the shape the bug writes them",
     },
     "compilers_parsers": {
         "title": "Compilers, parsers, and semantic transformations",
@@ -69,6 +77,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "interpreter (or spec) and the transformed/parsed result",
         "scaffold": "sde_repro.py, comparing the transformed or parsed result with the reference on the recorded "
                     "input",
+        "dependent": "a later pass, a pretty-printer or a source map relies on the node shape or positions the "
+                     "current pass produces, so fixing the pass alone breaks the stage after it",
     },
     "cross_component_stateful": {
         "title": "Cross-component debugging and stateful workflows",
@@ -83,6 +93,8 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                           "plausibly on its own",
         "scaffold": "sde_sched.py for the order of requests and retries across components and sde_fault.py for "
                     "the failure between steps",
+        "dependent": "the fix spans the producer and the consumer (or the compensation step), or a cache, "
+                     "report or reconciliation job reads state that the buggy sequence leaves behind",
     },
 }
 
@@ -99,4 +111,7 @@ def brief_for(family: str | None) -> str:
             f"- Typical worlds: {b['world']}.\n"
             f"- The counterexample: {b['counterexample']}.\n"
             f"- Scaffolds (/opt/sde/scaffold): {b['scaffold']}.\n"
+            f"- Why a local patch fails here: {b['dependent']}.\n"
+            "- Faults come from outside (kill the process at seeded points, a test-side harness): "
+            "no documented crash hook or stage names.\n"
             "- Scope: about 300-800 lines in 2-4 modules; the difficulty is in how they interact, not in size.")

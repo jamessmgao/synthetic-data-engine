@@ -63,6 +63,14 @@ umask 077
   # db.t4g.micro (the Free plan's only class) has ~80 connections: ~27 processes
   # across 8 runners × 2 each stays well inside it.
   echo "SDE_DB_POOL_MAX=$(param_or /sde/db_pool_max 2)"
+  # Seconds between a process's Docker claims, so a burst spreads across runners.
+  echo "SDE_DOCKER_CLAIM_SPACING_S=$(param_or /sde/docker_claim_spacing_s 10)"
+  # Load tests (docs/LOAD_TEST.md): /sde/mock_llm=1 mocks every model call and runs
+  # rollouts with Harbor's oracle / nop agents. Off unless the parameter says so.
+  echo "SDE_MOCK_LLM=$(param_or /sde/mock_llm 0)"
+  echo "SDE_MOCK_LLM_S=$(param_or /sde/mock_llm_s 3)"
+  echo "SDE_MOCK_ROLLOUT_S=$(param_or /sde/mock_rollout_s 30)"
+  echo "SDE_MOCK_PASS_P=$(param_or /sde/mock_pass_p 0.4)"
   echo "SDE_AUTHORING_IMAGE=$authoring_image"
   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
   # worker-control runs the one reconciler. The Generation Service runs on EVERY

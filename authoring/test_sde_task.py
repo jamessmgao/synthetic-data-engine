@@ -37,6 +37,62 @@ def test_check_reports_pipeline_errors(tmp_path):
     assert not out["ok"] and any("requests" in e for e in out["errors"])
 
 
+def world_with_invariants(tmp_path, *invariants):
+    w = tmp_path / "world"
+    w.mkdir(exist_ok=True)
+    (w / "world.json").write_text(json.dumps({"plausible_wrong_fix": PLAUSIBLE, "invariants": list(invariants)}))
+    return w
+
+
+def test_every_world_invariant_needs_a_marked_test(tmp_path):
+    tests = VALID["test_outputs"] + "\n\n# invariant: 1\ndef test_invariant_exact():\n    assert True\n"
+    d, _ = write(tmp_path, draft_with(wrong_fix_script=WRONG, test_outputs=tests))
+    w = world_with_invariants(tmp_path, "the median is exact", "the input is not modified")
+    out = sde_task.check_draft(d, w, tmp_path / "out")
+    assert not out["ok"] and out["errors"] == [
+        'no test is marked `# invariant: 2` ("the input is not modified"): give each world invariant a dedicated '
+        "test, checking it after every step of seeded randomized schedules"]
+    # Marked in a support file counts too; a marker past the list is an error.
+    support = [{"path": "props.py", "content": "# invariant: 2\n# invariant: 7\n"}]
+    d.write_text(json.dumps(draft_with(wrong_fix_script=WRONG, test_outputs=tests, test_support_files=support)))
+    out = sde_task.check_draft(d, w, tmp_path / "out")
+    assert out["errors"] == ["`# invariant:` markers [7] name no invariant (the world has 2)"]
+
+
+@pytest.mark.parametrize("code, ok", [
+    ("rng = random.Random(seed)\nrng.choice(xs)\n", True),
+    ("random.seed(1234)\nrandom.choice(xs)\n", True),
+    ("random.choice(xs)\n", False),                      # the global, time-seeded generator
+    ("rng = random.Random()\n", False),                  # time-seeded
+    ("rng = random.Random(time.time_ns())\n", False),    # a clock seed
+    ("random.seed(int(time.time()))\nrandom.random()\n", False),
+])
+def test_randomized_tests_must_use_fixed_seeds(code, ok):
+    assert (sde_task.unseeded_randomness("import random, time\n" + code) == []) is ok
+
+
+def test_the_full_self_check_runs_the_oracle_twice_and_catches_a_flaky_test(bundle, monkeypatch):
+    class Flaky(FakeDocker):
+        """test_a passes on the first oracle run only."""
+
+        def __call__(self, args, timeout=0):
+            if args[0] == "exec" and args[-1] == "/logs/verifier/ctrf.json":
+                self.n = getattr(self, "n", 0) + 1
+                status = "passed" if self.n == 1 else "failed"
+                return 0, json.dumps({"results": {"tests": [{"name": "t.py::test_a", "status": status}]}})
+            return super().__call__(args, timeout)
+
+    monkeypatch.setattr(sde_task, "_docker", Flaky(reward="1"))
+    [oracle] = sde_task.run_roles(bundle, ["oracle"], repeat_oracle=True)
+    assert not oracle["ok"] and oracle["repeat"]["same"] is False
+    assert "flaky" in oracle["setup_errors"][0] and "test_a" in oracle["setup_errors"][0]
+    steady = FakeDocker(reward="1", tests=(("test_a", "passed", ""),))
+    monkeypatch.setattr(sde_task, "_docker", steady)
+    [oracle] = sde_task.run_roles(bundle, ["oracle"], repeat_oracle=True)
+    assert oracle["ok"] and oracle["repeat"] == {"reward": 1.0, "same": True}
+    assert len([c for c in steady.calls if c[0] == "build"]) == 1  # the repeat reuses the image
+
+
 @pytest.mark.parametrize("script, expect", [
     ("", "wrong_fix_script is empty"),
     ("cat > /app/x <<'EOF'\nx\nEOF\n", "# plausible_wrong_fix: take the middle"),

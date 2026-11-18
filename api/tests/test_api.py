@@ -367,6 +367,38 @@ def test_batch_status(client, worked_real_batch):
     assert body["tasks"][0]["pass_pattern"] == "✗✓✗✓✗"
 
 
+def test_cancelling_a_batch_stops_only_its_undecided_tasks(client, backend, worked_real_batch):
+    t1, t2, t3 = worked_real_batch  # accepted, rejected, mid-evaluation
+    add_job(backend, t3, 1, "rollout", "b-1-t03-waiting", status="READY", slot=3)
+    r = client.post("/v1/batches/b-1/cancel", json={"note": "wrong area"}, headers=AUTH)
+    assert r.status_code == 200
+    # t3's open jobs: its create from the submit (READY in this fixture) and the waiting rollout.
+    assert r.json() == {"batch_id": "b-1", "cancelled": 1, "already_decided": 2, "closed_jobs": 2,
+                        "tasks": {t1: "ACCEPTED", t2: "REJECTED", t3: "CANCELLED"}}
+    again = client.post("/v1/batches/b-1/cancel", headers=AUTH).json()  # idempotent, no body needed
+    assert again["cancelled"] == 0 and again["closed_jobs"] == 0 and again["already_decided"] == 3
+    assert backend.store.task("solo")["status"] == "CREATED"  # outside the batch: untouched
+
+    report = client.get("/v1/batches/b-1/report", headers=AUTH).json()
+    assert report["cancelled"] == 1 and report["in_progress"] == 0
+    assert report["rejected"] == {"invalid": 1}  # not counted as a failure
+    assert report["yield"]["learnable_rate"] == 0.5  # 1 accepted of 2 finished; the cancel isn't a candidate
+    [summary] = [b for b in client.get("/v1/batches", headers=AUTH).json() if b["batch_id"] == "b-1"]
+    assert (summary["cancelled"], summary["in_progress"]) == (1, 0)
+    task = client.get(f"/v1/tasks/{t3}", headers=AUTH).json()
+    assert task["decision"].startswith("CANCELLED by user at ") and task["decision"].endswith(": wrong area")
+
+
+def test_cancelling_one_task(client):
+    create(client, task_id="t1")
+    r = client.post("/v1/tasks/t1/cancel", json={"by": "operator"}, headers=AUTH)
+    assert r.status_code == 200 and r.json()["cancelled"] == 1 and r.json()["closed_jobs"] == 1  # its create
+    assert client.get("/v1/tasks/t1", headers=AUTH).json()["decision"].startswith("CANCELLED by operator at ")
+    assert client.post("/v1/tasks/nope/cancel", headers=AUTH).status_code == 404
+    assert client.post("/v1/batches/nope/cancel", headers=AUTH).status_code == 404
+    assert client.post("/v1/tasks/t1/cancel").status_code == 401
+
+
 def test_batch_report_matches_the_task_report(client, worked_real_batch):
     r = client.get("/v1/batches/b-1/report", headers=AUTH).json()
     assert r["batch_id"] == "b-1" and r["task_ids"] == worked_real_batch

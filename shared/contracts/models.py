@@ -9,6 +9,7 @@ class TaskStatus(StrEnum):
     CALIBRATING = "CALIBRATING"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"  # stopped by a user (POST …/cancel): decided, but neither yield nor failure
 
 
 class Stage(StrEnum):
@@ -25,6 +26,7 @@ class Stage(StrEnum):
     OUT_OF_BAND = "OUT_OF_BAND"
     INVALID = "INVALID"
     UNRESOLVED = "UNRESOLVED"
+    CANCELLED = "CANCELLED"
 
 
 class RejectReason(StrEnum):
@@ -68,7 +70,10 @@ class Outcome(StrEnum):
     INVALID = "INVALID"
 
 
-TERMINAL_TASK_STATUSES = (TaskStatus.ACCEPTED, TaskStatus.REJECTED)
+TERMINAL_TASK_STATUSES = (TaskStatus.ACCEPTED, TaskStatus.REJECTED, TaskStatus.CANCELLED)
+# SQL for "the task is decided": no job of such a task is ever claimed.
+TERMINAL_SQL = "(" + ", ".join(f"'{s}'" for s in TERMINAL_TASK_STATUSES) + ")"
+CANCELLED_REASON = "cancelled_by_user"
 SCORED_OUTCOMES = (Outcome.VALID_PASS, Outcome.VALID_FAIL)
 
 # Finish what's started: decisions, rollouts, validations, revisions, new drafts (PRD §6.11).

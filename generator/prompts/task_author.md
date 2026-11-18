@@ -45,22 +45,70 @@ The draft becomes the task:
   must reject it. Its first line is a comment naming it, with the text copied exactly
   from `world.json`:
   `# plausible_wrong_fix: <the plausible_wrong_fix text>` (`sde-task check` requires it).
-- **The hidden tests** (`test_outputs`, `test_support_files`):
-  1. the counterexample, replayed exactly as `repro.sh` does it, asserting the
-     invariant it violates. `repro.sh` runs inside the image from its `WORKDIR` and
-     reaches the system by absolute paths (`/app/...`); replay it the same way, so
-     the test fails on the world exactly as the world check saw;
-  2. the same invariants under other orders, inputs or failures, generated from a
-     fixed seed, so a fix that only handles the replayed sequence fails;
-  3. regression tests for the behavior that must keep working, so a fix that breaks
-     something else fails;
-  4. at least one test the wrong fix fails for a real reason (not a check on its text).
-  Tests check outcomes through the system's interface, never source text.
+- **The hidden tests** (`test_outputs`, `test_support_files`). They check the world's
+  INVARIANTS as properties over many executions, not one replayed scenario:
+  1. **One dedicated test per invariant in world.json**, named after it
+     (`test_invariant_no_double_debit`) and marked with a comment line
+     `# invariant: N` (N = its number in the list above; `sde-task check` requires
+     every invariant to be marked), so a failure says which guarantee broke. Its
+     checker reads only observable state (command output, the inspect/report JSON,
+     files the interface exposes) and asserts the invariant **after every step** of
+     **at least 20 fixed seeds** of randomized schedules: random operations, the
+     process killed (SIGKILL from the test, at a random step or write) and restarted,
+     retries, lease expiries, and concurrent workers wherever the world allows them.
+     Use fixed seeds (`rng = random.Random(seed)` for `seed in range(20)`, never the
+     global `random.*` functions unseeded or a time-based seed: `sde-task check` rejects
+     those, and `sde-task run --as all` runs the oracle twice and requires identical
+     results); keep the whole suite under 60 s on 1 CPU (small schedules, many seeds).
+  2. **The exact counterexample** as one case among them, replayed as `repro.sh` does
+     it (from the image's `WORKDIR`, by absolute paths `/app/...`), so the test fails
+     on the world exactly as the world check saw.
+  3. **The dependent**: if the world has a module that relies on the current
+     behavior, a test of that module's output, so a one-file patch fails.
+  4. **Regression and edge cases** for everything the instruction says must keep
+     working: the normal path, empty and boundary inputs, invalid input, the largest
+     input within the limits. **Exact expected values**, never "is not None" or "> 0".
+  5. Together they reject the wrong fix for a real reason (an invariant it violates),
+     and no test passes on an empty or stub implementation.
+  Tests drive the system only through its interface (its CLI, API or files), never by
+  importing internals the agent could restructure, and never by reading source text.
+  Crashes come from the test (kill the process), not from a hook in the system.
 - **The instruction** (`instruction`): the user's request. State the symptom users
   saw, the guarantees that must hold (the invariants, phrased as observable outcomes),
-  everything that must keep working, and every value, path, command and format the
-  tests rely on. Do NOT state the counterexample sequence, the cause, the files to
-  change, or what the fix must do. Discovering the failing sequence is the task.
+  everything that must keep working, and the interface: every value, path, command
+  and format the tests rely on. Do NOT state the counterexample (its steps, schedule
+  or the input or time step that triggers it), where a crash or fault hook fires
+  relative to the system's effects, the cause, the files to change, or the shape of
+  the fix. Do not document crash hooks or stage names: say only that workers (or the
+  service) can be killed at any moment and are restarted, and the tests kill them
+  from outside. A clock command or other control the tests need is documented by its
+  interface only, never which use of it breaks the system. Discovering the failing
+  sequence is the task. The leak review rejects all of these.
+
+  BAD (an earlier draft; each sentence hands the agent part of the counterexample or the fix):
+  > The documented fault-injection hook is `STOP_AFTER=inventory`: when a claimed
+  > request can be fulfilled, a worker exits with status `70` after the accepted
+  > inventory movement and stock update are durable and before the worker's
+  > remaining completion work. Use `tick --milliseconds 30001` to expire a lease.
+  >
+  > Once a request ID has produced an inventory movement, any later delivery of that
+  > same request ID must reuse that exact durable result without applying another
+  > inventory effect.
+
+  GOOD (the same guarantees and interface; no hook, no stages, no schedule, no fix):
+  > A worker process can be killed at any moment (including in the middle of a
+  > write) and a new one started. Time advances only through
+  > `tick --milliseconds N`; a lease lasts 30000 ms.
+  >
+  > Each request ID consumes its submitted quantity at most once, whatever the
+  > retries, crashes and lease expiries; stock never goes negative; and a request
+  > that fits the stock is eventually fulfilled.
+
+  BAD tests: one test that replays the single crash from the counterexample and checks
+  the final stock. GOOD tests: `test_invariant_at_most_one_debit_per_request` and
+  `test_invariant_stock_never_negative` each run 20 seeds of random submits, workers
+  killed at random steps, restarts and ticks, checking the invariant through
+  `inspect --json` after every step; the counterexample is one fixed case in them.
 - **The spec** (`spec`): `correctness_constraints` are the invariants and the
   must-keep-working behaviors; `coverage` maps each to the tests that check it.
 
@@ -71,6 +119,13 @@ $shape_section
 # Rules every task must follow
 
 $system_rules
+
+# Writing files
+
+Write each file with its own heredoc (`cat > /work/x.py <<'EOF'` … `EOF`), or with a
+short Python script saved to `/tmp` that writes the files (and builds draft.json with
+`json.dump`, so its strings are escaped for you). Never nest heredocs that share a
+delimiter: the inner `EOF` ends the outer one, and the quoting error costs minutes.
 
 # Check before you finish
 
@@ -97,8 +152,8 @@ which tests failed:
   a missing file or a crash.
 
 Then re-read your instruction as the agent would: could someone solve it from the
-instruction alone, without guessing? Does any sentence give away the cause, the fix
-or the failing sequence? Fix it if so. Finish only when every check passes; never
+instruction alone, without guessing? Does any sentence give away the cause, the fix,
+the failing sequence, or where a fault hook fires relative to the effects? Fix it if so. Finish only when every check passes; never
 weaken or delete a test to make one pass.
 
 $request

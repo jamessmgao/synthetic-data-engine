@@ -316,7 +316,9 @@ def author_world_job(job_id: str, job_input: dict, work_dir=None, **_: Any) -> d
                       f"FROM {sorted(schema.BASE_IMAGES)[0]}\nWORKDIR /app\nCOPY app.py /app/app.py\n")
         _write_atomic(w / "environment" / "app.py", f"# world for {job_id}\n")
         _write_atomic(w / "repro" / "repro.sh", "exit 1\n")
+        _write_atomic(w / "repro" / "symptom_check.sh", "exit 1\n")
         _write_atomic(w / "world_fix" / "fix.sh", "true\n")
+        _write_atomic(w / "world_fix" / "wrong_fix.sh", "true\n")
         _write_atomic(w / "world.json", json.dumps({
             "invariants": ["confirmed reservations never exceed stock"],
             "counterexample": {"sequence": ["A reads stock=1", "B reads stock=1", "both confirm"],
@@ -358,7 +360,15 @@ def author_create_job(job_id: str, job_input: dict, work_dir=None, **_: Any) -> 
 
 
 def docker(args: list[str], timeout: float) -> tuple[int, str]:
-    """world_check's docker: builds succeed; the repro fails unfixed and passes fixed."""
+    """world_check's docker: builds succeed; repro and the symptom fail unfixed and pass after
+    the fix; the wrong fix hides the symptom but not the repro; the fix touches two files."""
+    if args and args[0] == "run" and "-d" in args:
+        return 0, "cid\n"
+    if args and args[0] == "diff":
+        return 0, "C /app/app.py\nC /app/store.py\n"
     if args and args[0] == "run":
-        return (0 if "fix.sh" in args[-1] else 1), ""
+        script = args[-1]
+        if script.startswith("bash /world/world_fix/wrong_fix.sh"):
+            return (1 if script.endswith("repro.sh") else 0), ""
+        return (0 if "fix.sh" in script else 1), ""
     return 0, ""

@@ -179,7 +179,8 @@ class Executor:
             beat.join()
 
         followups = (*followups, analyze_job(job))
-        if lease_lost.is_set() or not self.queue.settle(job_id, token, fields, followups):
+        # Fenced: with the lease lost this changes nothing, except a cancelled job keeps its cost.
+        if not self.queue.settle(job_id, token, fields, followups) or lease_lost.is_set():
             log.warning("%s: lease lost before settling; result discarded (the new owner will adopt it)", job_id)
             return
         if fields["outcome"] == INVALID:

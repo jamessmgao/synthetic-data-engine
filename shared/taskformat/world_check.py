@@ -4,10 +4,14 @@ counterexample real, reproducible and fixable? Deterministic, no model call.
 
 A world (§3.3) is a directory:
 
-    environment/         Dockerfile + the world's code, harness, fault injection
-    world_fix/fix.sh     makes the invariants hold
-    repro/repro.sh       deterministic reproduction: exit 1 = invariant violated, 0 = holds
-    world.json           spec, invariants, counterexample, plausible wrong fix, lineage
+    environment/              Dockerfile + the world's code, harness, fault injection
+    world_fix/fix.sh          makes the invariants hold
+    world_fix/wrong_fix.sh    the plausible wrong fix, implemented
+    repro/repro.sh            deterministic reproduction: exit 1 = invariant violated, 0 = holds
+    repro/symptom_check.sh    the instruction-visible symptom (one simple replay of the
+                              failure an agent would try first): exit 1 = seen, 0 = gone
+    repro/dependent_check.sh  optional: a dependent elsewhere that a one-file fix breaks
+    world.json                spec, invariants, counterexample, plausible wrong fix, lineage
 
 Checks, in order, stopping at the first failure:
 
@@ -15,7 +19,16 @@ Checks, in order, stopping at the first failure:
                             counterexample; the Dockerfile uses an allowed base image
     build                   the world's image builds (base image pinned to its digest)
     repro_fails             repro.sh exits 1 on the world, twice (the bug is real and stable)
-    repro_passes_with_fix   after world_fix/fix.sh, repro.sh exits 0, twice (it is fixable)
+    symptom_visible         symptom_check.sh exits 1 on the world (an agent can see it)
+    repro_passes_with_fix   after world_fix/fix.sh, repro.sh exits 0, twice (it is fixable),
+                            and symptom_check.sh exits 0
+    fix_not_local           the fix can't be one local patch: fix.sh changes 2+ files, or
+                            dependent_check.sh exits 0 on the world and after fix.sh but 1
+                            after wrong_fix.sh (a one-file patch breaks a dependent: the f1
+                            pattern, docs/ANALYSIS.md)
+    wrong_fix_survives      after wrong_fix.sh, symptom_check.sh exits 0 (it passes the
+                            agent's own check) and repro.sh still exits 1 (deeper schedules
+                            break it)
 
 The result is stored at <trace_dir>/world_check.json and adopted when the job is
 retried. Failures carry feedback for the world repair job.
@@ -36,7 +49,11 @@ from shared.taskformat.schema import _check_dockerfile  # noqa: E402
 RUNS = 2  # each repro check runs twice: a flaky counterexample is not a counterexample
 REPRO_TIMEOUT_SEC = 600
 OUTPUT_CHARS = 2000
-REQUIRED = ("environment/Dockerfile", "repro/repro.sh", "world_fix/fix.sh", "world.json")
+REQUIRED = ("environment/Dockerfile", "repro/repro.sh", "repro/symptom_check.sh", "world_fix/fix.sh",
+            "world_fix/wrong_fix.sh", "world.json")
+MIN_FIX_FILES = 2
+# Paths a fix may touch without it counting as an edit of the system.
+_SCRATCH = ("/tmp/", "/var/", "/root/.cache/", "/run/", "/proc/", "/dev/", "/world/", "/logs/")
 
 
 # Every world container gets the evaluation container's limits, so the check sees
@@ -105,10 +122,42 @@ def _build_check_image(image: str, world: Path, trace_dir: Path) -> tuple[str, i
     return check, code, out
 
 
-def _repro(check_image: str, with_fix: bool) -> tuple[int, str]:
-    script = "bash /world/world_fix/fix.sh && bash /world/repro/repro.sh" if with_fix else "bash /world/repro/repro.sh"
+FIX, WRONG = "bash /world/world_fix/fix.sh", "bash /world/world_fix/wrong_fix.sh"
+REPRO, SYMPTOM, DEPENDENT = ("bash /world/repro/repro.sh", "bash /world/repro/symptom_check.sh",
+                             "bash /world/repro/dependent_check.sh")
+
+
+def _run(check_image: str, script: str) -> tuple[int, str]:
+    """One fresh container from the world's check image: run `script` from its WORKDIR."""
     return _docker(["run", "--rm", *RUN_LIMITS, *docker_label(), check_image, "bash", "-c", script],
                    REPRO_TIMEOUT_SEC)
+
+
+def _repro(check_image: str, with_fix: bool) -> tuple[int, str]:
+    return _run(check_image, f"{FIX} && {REPRO}" if with_fix else REPRO)
+
+
+def _changed_files(check_image: str, script: str) -> tuple[list[str] | None, str]:
+    """The system files `script` changes (docker diff of a container after it), scratch and
+    the check's own files left out; directories only listed for their contents are dropped.
+    None if the script fails."""
+    code, out = _docker(["run", "-d", *RUN_LIMITS, *docker_label(), "--entrypoint", "sleep", check_image,
+                         "infinity"], 120)
+    if code != 0:
+        return None, out
+    cid = out.strip().splitlines()[-1]
+    try:
+        code, out = _docker(["exec", cid, "bash", "-c", script], REPRO_TIMEOUT_SEC)
+        if code != 0:
+            return None, out
+        code, diff = _docker(["diff", cid], 120)
+        paths = sorted({line[2:].strip() for line in diff.splitlines() if line[:2] in ("A ", "C ", "D ")})
+        files = [p for p in paths
+                 if not any(other.startswith(p.rstrip("/") + "/") for other in paths)  # a directory of others
+                 and not (p + "/").startswith(_SCRATCH) and "__pycache__" not in p and not p.endswith(".pyc")]
+        return files, ""
+    finally:
+        _docker(["rm", "-f", cid], 120)
 
 
 def run_world_check_job(world_dir: str | Path, trace_dir: str | Path) -> dict:
@@ -148,20 +197,67 @@ def run_world_check_job(world_dir: str | Path, trace_dir: str | Path) -> dict:
         if code != 0:
             checks["build"] = {**checks["build"], "passed": False, "exit_code": code, "output": out}
             return finish("build", f"The world's check image does not build (exit {code}):\n{out}")
-        for name, with_fix, want in (("repro_fails", False, 1), ("repro_passes_with_fix", True, 0)):
-            runs = [_repro(check_image, with_fix) for _ in range(RUNS)]
-            passed = all(c == want for c, _ in runs)
-            checks[name] = {"passed": passed, "exit_codes": [c for c, _ in runs],
-                            "output": "" if passed else runs[-1][1]}
-            if not passed:
-                if with_fix:
-                    msg = ("After world_fix/fix.sh, repro/repro.sh must exit 0 (the invariants hold) every run; "
-                           f"it exited {[c for c, _ in runs]}.")
-                else:
-                    msg = ("On the unfixed world, repro/repro.sh must exit 1 (an invariant is violated) every run; "
-                           f"it exited {[c for c, _ in runs]}. The counterexample must be real and deterministic "
-                           "(exit 0 = it did not reproduce, other codes = the script itself failed).")
-                return finish(name, f"{msg}\nOutput of the last run:\n{runs[-1][1]}")
+        def expect(name: str, script: str, want: int, msg: str, runs: int = 1) -> dict | None:
+            """Run `script` `runs` times; it must exit `want` each time. The failure result, or None."""
+            got = [_run(check_image, script) for _ in range(runs)]
+            passed = all(c == want for c, _ in got)
+            checks[name] = {"passed": passed, "exit_codes": [c for c, _ in got], "output": "" if passed else got[-1][1]}
+            if passed:
+                return None
+            return finish(name, f"{msg} It exited {[c for c, _ in got]} (other codes than 0/1 mean the script "
+                                f"itself failed).\nOutput of the last run:\n{got[-1][1]}")
+
+        steps = [
+            ("repro_fails", REPRO, 1, "On the unfixed world, repro/repro.sh must exit 1 (an invariant is violated) "
+             "every run: the counterexample must be real and deterministic.", RUNS),
+            ("symptom_visible", SYMPTOM, 1, "On the unfixed world, repro/symptom_check.sh must exit 1: it is the "
+             "symptom users report, the first thing an agent reproduces.", 1),
+            ("repro_passes_with_fix", f"{FIX} && {REPRO}", 0, "After world_fix/fix.sh, repro/repro.sh must exit 0 "
+             "(the invariants hold) every run.", RUNS),
+            ("symptom_gone_with_fix", f"{FIX} && {SYMPTOM}", 0, "After world_fix/fix.sh, repro/symptom_check.sh "
+             "must exit 0.", 1),
+        ]
+        for name, script, want, msg, runs in steps:
+            if (failed := expect(name, script, want, msg, runs)) is not None:
+                return failed
+
+        # The fix must not be one local patch (lever 3).
+        files, out = _changed_files(check_image, FIX)
+        checks["fix_not_local"] = {"passed": False, "fix_files": files}
+        if files is None:
+            return finish("fix_not_local", f"world_fix/fix.sh failed in a fresh container:\n{out}")
+        if len(files) >= MIN_FIX_FILES:
+            checks["fix_not_local"]["passed"] = True
+        elif not (world / "repro" / "dependent_check.sh").is_file():
+            return finish("fix_not_local", (
+                f"world_fix/fix.sh changes only {files}: a one-file patch must not be enough. Either the correct fix "
+                f"spans {MIN_FIX_FILES}+ modules, or another module depends on the current behavior: then add "
+                "repro/dependent_check.sh, which exits 0 on the world and after fix.sh, and 1 after "
+                "world_fix/wrong_fix.sh (the local patch breaks the dependent)."))
+        else:
+            dependent = [
+                ("dependent_holds", DEPENDENT, 0, "repro/dependent_check.sh must exit 0 on the unfixed world (the "
+                 "dependent works today)."),
+                ("dependent_holds_with_fix", f"{FIX} && {DEPENDENT}", 0, "After world_fix/fix.sh, "
+                 "repro/dependent_check.sh must exit 0 (the real fix keeps the dependent working)."),
+                ("dependent_breaks_with_wrong_fix", f"{WRONG} && {DEPENDENT}", 1, "After world_fix/wrong_fix.sh "
+                 "(the local patch), repro/dependent_check.sh must exit 1: the dependent breaks."),
+            ]
+            for name, script, want, msg in dependent:
+                if (failed := expect(name, script, want, msg)) is not None:
+                    return failed
+            checks["fix_not_local"]["passed"] = True
+
+        # The plausible wrong fix passes the agent's own check and fails the invariants.
+        for name, script, want, msg in (
+            ("wrong_fix_passes_symptom", f"{WRONG} && {SYMPTOM}", 0, "After world_fix/wrong_fix.sh, "
+             "repro/symptom_check.sh must exit 0: the plausible wrong fix makes the visible symptom go away, as an "
+             "agent checking its own patch would see."),
+            ("wrong_fix_fails_repro", f"{WRONG} && {REPRO}", 1, "After world_fix/wrong_fix.sh, repro/repro.sh must "
+             "exit 1: the wrong fix still violates an invariant on a deeper schedule."),
+        ):
+            if (failed := expect(name, script, want, msg)) is not None:
+                return failed
         return finish(None)
     finally:
         _docker(["rmi", "-f", check_image, image], 120)

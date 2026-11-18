@@ -33,6 +33,10 @@ def decision_text(task: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
         return f"ACCEPTED: v{v} passed {passes}/{cfg['n_runs']} valid rollouts (band {low}–{high})"
     if task["status"] == TaskStatus.REJECTED:
         return f"REJECTED ({task['reason']}) at v{task['current_version']}"
+    if task["status"] == TaskStatus.CANCELLED:
+        by = task.get("cancelled_by") or "user"
+        note = f": {task['cancel_note']}" if task.get("cancel_note") else ""
+        return f"CANCELLED by {by} at {task.get('cancelled_at') or task['updated_at']} (v{task['current_version']}){note}"
     return f"PENDING: v{task['current_version']} is {task['stage']}"
 
 

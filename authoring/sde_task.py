@@ -89,6 +89,30 @@ def _format(e: ValidationError) -> list[str]:
     return out
 
 
+INVARIANT_TAG = re.compile(r"^\s*#\s*invariant:\s*(\d+)\b", re.M)
+# The module-level random functions draw from the global, time-seeded generator.
+GLOBAL_RANDOM = re.compile(r"\brandom\.(random|randint|randrange|choice|choices|shuffle|sample|uniform|gauss|"
+                           r"getrandbits)\s*\(")
+TIME_SEED = re.compile(r"\b(?:random\.seed|Random)\s*\(\s*(?:int\s*\()?\s*(?:time\.|datetime\.|os\.urandom|uuid)")
+
+
+def unseeded_randomness(tests: str) -> list[str]:
+    """Randomized tests must replay identically: a seeded random.Random(seed) per case.
+    Unseeded global random.* calls, random.Random() and time-based seeds are refused (a
+    random.seed(<constant>) before global calls is accepted)."""
+    errors = []
+    seeded_globally = re.search(r"\brandom\.seed\s*\(\s*[\w\"']", tests) and not TIME_SEED.search(tests)
+    if GLOBAL_RANDOM.search(tests) and not seeded_globally:
+        errors.append("the tests call the global random.* functions without a fixed seed: use "
+                      "`rng = random.Random(seed)` with fixed seeds (e.g. `for seed in range(20)`), so every run "
+                      "replays the same schedules")
+    if re.search(r"\bRandom\s*\(\s*\)", tests):
+        errors.append("random.Random() without a seed is time-seeded: pass a fixed seed")
+    if TIME_SEED.search(tests):
+        errors.append("a seed taken from the clock or os.urandom makes the tests differ per run: use fixed seeds")
+    return errors
+
+
 def check_draft(draft_path: Path, world_dir: Path | None, out_dir: Path) -> dict:
     """Validate a draft and materialize it. {ok, errors, bundle_dir}."""
     try:
@@ -101,7 +125,18 @@ def check_draft(draft_path: Path, world_dir: Path | None, out_dir: Path) -> dict
         return {"ok": False, "errors": _format(e), "bundle_dir": None}
 
     errors = []
+    tests = "\n".join([draft.test_outputs, *(f.content for f in draft.test_support_files
+                                             if f.path.endswith(".py"))])
+    errors += unseeded_randomness(tests)
     if world_dir is not None and (world_dir / "world.json").is_file():
+        invariants = json.loads((world_dir / "world.json").read_text()).get("invariants") or []
+        marked = {int(n) for n in INVARIANT_TAG.findall(tests)}
+        for n, text in enumerate(invariants, 1):
+            if n not in marked:
+                errors.append(f"no test is marked `# invariant: {n}` (\"{text}\"): give each world invariant a "
+                              "dedicated test, checking it after every step of seeded randomized schedules")
+        if extra := sorted(m for m in marked if not 1 <= m <= len(invariants)):
+            errors.append(f"`# invariant:` markers {extra} name no invariant (the world has {len(invariants)})")
         plausible = (json.loads((world_dir / "world.json").read_text()).get("plausible_wrong_fix") or "").strip()
         if not draft.wrong_fix_script.strip():
             errors.append("wrong_fix_script is empty: it must implement the world's plausible_wrong_fix")
@@ -149,15 +184,30 @@ def build_image(bundle: Path) -> tuple[str | None, str, bool]:
     return (image if code == 0 else None), out, False
 
 
-def run_roles(bundle: Path, roles: list[str]) -> list[dict]:
-    """Every role on one image: built once, a fresh container per role."""
+def run_roles(bundle: Path, roles: list[str], repeat_oracle: bool = False) -> list[dict]:
+    """Every role on one image: built once, a fresh container per role. With
+    `repeat_oracle`, the oracle runs twice and must give the same per-test results
+    (the flake check: seeded tests replay identically)."""
     image, out, reused = build_image(bundle)
     try:
         if image is None:
             failed = {"reward": None, "ok": False, "tests": [], "output_tail": out[-OUTPUT_CHARS:],
                       "setup_errors": ["environment/ does not build"], "image_reused": False}
             return [{"as": r, "expected": EXPECTED[r], **failed} for r in roles]
-        return [{**run_bundle(bundle, r, image=image), "image_reused": reused or i > 0} for i, r in enumerate(roles)]
+        runs = [{**run_bundle(bundle, r, image=image), "image_reused": reused or i > 0} for i, r in enumerate(roles)]
+        if repeat_oracle and "oracle" in roles:
+            first = next(r for r in runs if r["as"] == "oracle")
+            again = run_bundle(bundle, "oracle", image=image)
+            outcome = lambda r: {t["name"]: t["status"] for t in r["tests"]}  # noqa: E731
+            changed = sorted(n for n in outcome(first).keys() | outcome(again).keys()
+                             if outcome(first).get(n) != outcome(again).get(n))
+            first["repeat"] = {"reward": again["reward"], "same": not changed and again["reward"] == first["reward"]}
+            if not first["repeat"]["same"]:
+                first["ok"] = False
+                first["setup_errors"].append("flaky: a second oracle run on the same image gave different results"
+                                             + (f" for {changed}" if changed else "") + ": seed every randomized "
+                                             "test and remove timing dependence")
+        return runs
     finally:
         if image is not None and not _keep_images():
             _docker(["rmi", "-f", image], 120)
@@ -247,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
                         for r in args.role]
             bundle = Path(checked["bundle_dir"]) if checked["ok"] else None
         if bundle is not None:
-            runs = run_roles(bundle, args.role)
+            # The full self-check (all three roles) also runs the oracle twice: the flake check.
+            runs = run_roles(bundle, args.role, repeat_oracle=set(args.role) == set(EXPECTED))
         for r in runs:
             save(f"run-{r['as']}.json", json.dumps(r, indent=1))
         result = runs[0] if len(runs) == 1 else {"ok": all(r["ok"] for r in runs), "runs": runs}

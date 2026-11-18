@@ -1,0 +1,1 @@
+"""Durable inventory reservation service."""

@@ -35,8 +35,10 @@ from shared.contracts.models import AUTHOR_MODE, JobType
 log = logging.getLogger("budget")
 
 # Estimated USD per job, for jobs not settled yet (refine from the report's per-type costs).
+# Agent mode, from P1 (2026-11-17): a world cost $0.51 in 5.4 min, a task $2.39 in 21.6 min;
+# about 2x those (create's long tail matters), a revise a bit less than a fresh create.
 ESTIMATE_USD: dict[str, float] = (
-    {JobType.WORLD: 3.0, JobType.CREATE: 2.5, JobType.REVISE: 2.5, JobType.ROLLOUT: 0.03, JobType.ANALYZE: 0.02}
+    {JobType.WORLD: 1.0, JobType.CREATE: 4.0, JobType.REVISE: 3.0, JobType.ROLLOUT: 0.03, JobType.ANALYZE: 0.02}
     if AUTHOR_MODE == "agent" else
     # One-shot drafts are single model calls; validate runs the leak review there.
     {JobType.CREATE: 0.10, JobType.REVISE: 0.10, JobType.VALIDATE: 0.02, JobType.ROLLOUT: 0.03,

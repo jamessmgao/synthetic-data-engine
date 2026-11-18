@@ -186,7 +186,7 @@ def test_a_batch_runs_to_its_yield_report(make_pipeline):
     status = p.api("GET", "/v1/batches/e2e")
     assert status["counts_by_status"] == {"ACCEPTED": 4, "REJECTED": 4}
     assert p.api("GET", "/v1/batches") == [{"batch_id": "e2e", "tasks": 8, "accepted": 4, "rejected": 4,
-                                            "in_progress": 0, "created_at": status["tasks"][0]["created_at"]}]
+                                            "cancelled": 0, "in_progress": 0, "created_at": status["tasks"][0]["created_at"]}]
     report = p.api("GET", "/v1/batches/e2e/report")
     assert report["batch_id"] == "e2e" and {k: report[k] for k in EXPECTED_REPORT} == EXPECTED_REPORT
     assert report["yield"] == {"candidates": 8, "functional": 6, "accepted": 4, "accepted_v1": 3,

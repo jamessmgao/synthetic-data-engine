@@ -17,7 +17,8 @@ SPEC = {"family": "database_consistency", "mechanism": "isolation_anomaly", "sha
 def write_world(root: Path, **meta) -> Path:
     files = {"environment/Dockerfile": "FROM python:3.12-slim-bookworm\nWORKDIR /app\nCOPY app.py /app/\n",
              "environment/app.py": "print('reserve')\n", "repro/repro.sh": "exit 1\n",
-             "world_fix/fix.sh": "true\n", "world.json": json.dumps({**WORLD_JSON, **meta})}
+             "repro/symptom_check.sh": "exit 1\n", "world_fix/fix.sh": "true\n",
+             "world_fix/wrong_fix.sh": "true\n", "world.json": json.dumps({**WORLD_JSON, **meta})}
     for rel, text in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text)

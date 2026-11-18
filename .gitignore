@@ -30,3 +30,5 @@ records/
 # Terraform
 deploy/terraform/.terraform/
 *.tfstate*
+deploy/local.env
+deploy/make.env

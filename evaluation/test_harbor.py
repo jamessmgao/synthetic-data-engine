@@ -156,3 +156,18 @@ def test_liveness_check_needs_no_ps_binary(monkeypatch):
     assert harbor._is_running(os.getpid(), "no-such-job") is False  # never raises
     if Path("/proc/self/cmdline").exists():  # Linux: read from /proc, no ps needed
         assert harbor._is_running(os.getpid(), Path(sys.argv[0]).name)
+
+
+def test_mock_mode_runs_oracle_or_nop_and_pins_nothing(monkeypatch, tmp_path):
+    """Load tests (SDE_MOCK_LLM=1): no model, Harbor's own agents."""
+    from evaluation import harbor as h
+
+    monkeypatch.setattr(h, "MOCK", True)
+    agent = h.pinned_agent()
+    assert agent.as_expected() == {}
+    monkeypatch.setattr(h, "MOCK_PASS_P", 1.0)
+    cmd = h.command(tmp_path, "j", agent, tmp_path, None)
+    assert cmd[cmd.index("-a") + 1] == "oracle" and "-m" not in cmd
+    monkeypatch.setattr(h, "MOCK_PASS_P", 0.0)
+    cmd = h.command(tmp_path, "j", agent, tmp_path, None)
+    assert cmd[cmd.index("-a") + 1] == "nop"

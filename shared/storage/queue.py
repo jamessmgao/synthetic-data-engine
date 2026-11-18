@@ -15,7 +15,7 @@ import time
 from typing import Any, Protocol
 
 from shared.storage.sql import SqlStore, utcnow
-from shared.contracts.models import MAX_JOB_ATTEMPTS, PRIORITY, JobType
+from shared.contracts.models import MAX_JOB_ATTEMPTS, PRIORITY, TERMINAL_TASK_STATUSES, JobType
 
 
 class Queue(Protocol):
@@ -93,7 +93,7 @@ class RedisQueue:
             job["status"] == "READY"
             or (job["status"] == "LEASED" and (job["lease_until"] or 0) < time.time()))
         if (not claimable or job["attempts"] >= MAX_JOB_ATTEMPTS
-                or task["status"] in ("ACCEPTED", "REJECTED")):
+                or task["status"] in TERMINAL_TASK_STATUSES):  # incl. CANCELLED
             self._remove(job_id, job["type"] if job else None)
 
     def _remove(self, job_id: str, type: str | None = None) -> None:

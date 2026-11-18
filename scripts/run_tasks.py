@@ -29,7 +29,7 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-FINAL = ("ACCEPTED", "REJECTED")
+FINAL = ("ACCEPTED", "REJECTED", "CANCELLED")
 
 
 def call(url: str, key: str, method: str, path: str, body: dict | None = None):
