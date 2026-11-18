@@ -14,6 +14,11 @@ the verifier wrote a binary reward. Everything else is INVALID, which means
                 model or reasoning effort than the job asked for.
     VALID_PASS  no exception and reward == 1.
     VALID_FAIL  no exception and reward == 0.
+    TIMEOUT     the agent hit its time limit (AgentTimeoutError) and the verifier then
+                wrote reward 0. Not a verdict: a timeout doesn't count as the model
+                failing by itself. The Trace Parser rules on it (trace_parser.review_timeout):
+                a model failure (a wedged terminal, a loop) becomes VALID_FAIL, anything
+                else INVALID, retried as before. A timeout with any other reward stays INVALID.
 
 Field names follow Harbor 0.26.0's ``TrialResult`` (harbor/models/trial/result.py).
 """
@@ -24,6 +29,8 @@ from datetime import datetime
 VALID_PASS = "VALID_PASS"
 VALID_FAIL = "VALID_FAIL"
 INVALID = "INVALID"
+TIMEOUT = "TIMEOUT"
+AGENT_TIMEOUT = "AgentTimeoutError"
 
 
 @dataclass(frozen=True)
@@ -110,7 +117,10 @@ def classify(result: dict, expected: dict) -> Measurement:
         error = f"NonBinaryReward: {raw_reward!r}"
 
     if error is not None:
-        outcome, reward = INVALID, None
+        timed_out = (result.get("exception_info") or {}).get("exception_type") == AGENT_TIMEOUT
+        outcome = TIMEOUT if timed_out and raw_reward == 0 and _config_mismatch(result, expected) is None \
+            else INVALID
+        reward = None
     else:
         reward = float(raw_reward)
         outcome = VALID_PASS if reward == 1 else VALID_FAIL

@@ -734,3 +734,82 @@ def test_generate_rows_from_before_the_split_are_migrated(backend, tmp_path):
     assert types[f"{T}-v1-generate"] == "create"
     assert types[f"{T}-v1-repair1"] == types[f"{T}-v2-generate"] == "revise"
     assert reconcile(migrated)["dead_lettered"] == 0
+
+
+# --- early stopping: decide once the verdict is certain ------------------------------
+
+
+def score_some(backend, parser, version, marks):
+    """Settle only some slots ({slot: mark}), then let the Trace Parser work."""
+    for slot, mark in marks.items():
+        run(backend, rollout_job_id(T, version, slot, 0), mark)
+    analyze_all(backend, parser)
+
+
+def rollouts(backend, version=1):
+    return {(j["slot"], j["retry"]): (j["status"], j["outcome"]) for j in backend.store.task_jobs(T)
+            if j["type"] == "rollout" and j["version"] == version}
+
+
+def decided(backend):
+    return [(backend.store.job(a)["result"] or {}) for a in ids(backend, type="analyze")
+            if (backend.store.job(a)["result"] or {}).get("action") not in (None, "wait", "stale")]
+
+
+def test_early_stop_when_in_band_is_certain(backend, parser):
+    # 1 pass + 2 fails, 2 left: at most 3 passes, at least 1: in band whatever happens.
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score_some(backend, parser, 1, {1: "1", 2: "0", 3: "0"})
+    t = task(backend)
+    assert (t["status"], t["accepted_version"]) == ("ACCEPTED", 1)
+    r = rollouts(backend)
+    assert r[(4, 0)] == ("DONE", "SKIPPED") and r[(5, 0)] == ("DONE", "SKIPPED")
+    (d,) = decided(backend)
+    assert d["early_stopped"] == {"why": "certain in band", "passes": 1, "remaining": 2, "scored": 3, "of": 5}
+    assert d["summary"].startswith("3 scored of 5, early-stopped (certain in band); 1/3 passed")
+    # The skipped runs never come back: not the reconciler, not a retry.
+    reconcile(backend)
+    analyze_all(backend, parser)
+    assert rollouts(backend)[(4, 0)] == ("DONE", "SKIPPED") and len(rollouts(backend)) == 5
+
+
+def test_no_early_stop_while_the_band_is_open(backend, parser):
+    # 2 passes + 1 fail, 2 left: could still end at 4 (too easy): keep running.
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score_some(backend, parser, 1, {1: "1", 2: "1", 3: "0"})
+    assert task(backend)["stage"] == "EVALUATING" and not decided(backend)
+    assert rollouts(backend)[(4, 0)][0] == "READY" and rollouts(backend)[(5, 0)][0] == "READY"
+
+
+def test_early_stop_when_too_easy_is_certain(backend, parser):
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score_some(backend, parser, 1, {1: "1", 2: "1", 3: "1", 4: "1"})
+    t = task(backend)
+    assert (t["current_version"], t["stage"]) == (2, "QUEUED")  # revised harder
+    assert rollouts(backend)[(5, 0)] == ("DONE", "SKIPPED")
+    (d,) = decided(backend)
+    assert d["direction"] == "harder" and d["early_stopped"]["why"] == "certain too easy"
+
+
+def test_no_early_stop_on_zero_passes(backend, parser):
+    # 0 passes, 1 left: a pass would put it in band.
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score_some(backend, parser, 1, {1: "0", 2: "0", 3: "0", 4: "0"})
+    assert task(backend)["stage"] == "EVALUATING" and not decided(backend)
+
+
+def test_an_invalid_slot_counts_as_remaining_not_failed(backend, parser):
+    # 1 pass, 1 fail, an INVALID (its retry queued) and 2 unrun: 2 scored, 3 left: 1+3 > 3, wait.
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score_some(backend, parser, 1, {1: "1", 2: "0", 3: "i"})
+    assert task(backend)["stage"] == "EVALUATING" and not decided(backend)
+    # A second fail: 1 pass + 2 fails, 2 left (the retry and slot 5): certain; the retry is skipped too.
+    score_some(backend, parser, 1, {4: "0"})
+    assert task(backend)["status"] == "ACCEPTED"
+    r = rollouts(backend)
+    assert r[(3, 1)] == ("DONE", "SKIPPED") and r[(5, 0)] == ("DONE", "SKIPPED") and r[(3, 0)][1] == "INVALID"

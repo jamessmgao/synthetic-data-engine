@@ -19,6 +19,7 @@ const VARIANT: Record<string, BadgeVariant> = {
   VALID_PASS: "success",
   VALID_FAIL: "warning",
   INVALID: "destructive",
+  TIMEOUT: "warning",
   // version states
   BAND_OK: "success",
   OUT_OF_BAND: "warning",

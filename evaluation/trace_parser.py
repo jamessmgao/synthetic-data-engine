@@ -566,6 +566,161 @@ def parse(trial_dir: Path, result: dict, outcome: str, *, job_id: str, work_dir:
     return metrics, failure, cost
 
 
+# --- timeouts: a model failure, or not? -------------------------------------------------
+# A run that hits the agent time limit gets no automatic verdict (a timeout doesn't count as
+# the model failing by itself). One GLM-5.1 call over its last steps, with deterministic
+# signals, rules on it: the model's own failure (it wedged its terminal, looped on the same
+# commands, abandoned the task, or its own code hung) → VALID_FAIL; still making real progress,
+# or slow infrastructure → INVALID, retried. A failed or untrusted review → INVALID.
+
+TIMEOUT_TAIL_STEPS = 8  # the last agent steps quoted
+TIMEOUT_REPEAT_WINDOW = 20  # commands checked for repetition
+OVERSIZED_COMMAND_BYTES = 4096
+MODEL_TIMEOUT_CATEGORIES = ("wedged_terminal", "looping", "abandoned", "own_code_hanging")
+NOT_MODEL_TIMEOUT_CATEGORIES = ("progressing", "slow_infrastructure")
+
+
+def _screen(step: dict) -> str | None:
+    """What the terminal showed after a step: the text after its last 'New Terminal Output:'.
+    None for a step that showed no terminal (a reply the harness couldn't parse)."""
+    text = "\n".join(r.get("content", "") for r in ((step.get("observation") or {}).get("results") or []))
+    if "New Terminal Output:" not in text:
+        return None
+    return text.rsplit("New Terminal Output:", 1)[-1].strip()[-OUTPUT_CHARS:]
+
+
+def _minutes(a: str | None, b: str | None) -> float | None:
+    ta, tb = parse_time(a), parse_time(b)
+    return round((tb - ta).total_seconds() / 60, 1) if ta and tb else None
+
+
+def timeout_signals(trial_dir: Path, result: dict) -> dict:
+    """Deterministic facts about how a timed-out run spent its last stretch."""
+    trajectory = load_trajectory(trial_dir)
+    steps, calls = _agent_steps(trajectory), _tool_calls(trajectory)
+    shown = [(i, sc) for i, st in enumerate(steps) if (sc := _screen(st)) is not None]
+    start = len(steps) - 1 if steps else 0
+    if shown:
+        k = len(shown) - 1
+        while k > 0 and shown[k][1] == shown[k - 1][1]:
+            k -= 1  # the final stretch after which the screen never changed
+        start = shown[k][0]
+    recent = [c["input"] for c in calls[-TIMEOUT_REPEAT_WINDOW:] if c["input"].strip()]
+    sizes = [len(c["input"].encode()) for c in calls]
+    biggest = max(range(len(sizes)), key=sizes.__getitem__, default=None)
+    step_of_call = [st.get("step_id") for st in steps for _ in st.get("tool_calls") or []]
+    timing = result.get("agent_execution") or {}
+    return {
+        "agent_steps": len(steps),
+        "unchanged_screen_steps": len(steps) - start if steps else 0,
+        "unchanged_screen_minutes": _minutes(steps[start].get("timestamp"), steps[-1].get("timestamp"))
+        if steps else None,
+        "unchanged_screen_since_step": steps[start].get("step_id") if steps else None,
+        "distinct_recent_commands": f"{len(set(recent))} of {len(recent)}",
+        "largest_command_bytes": max(sizes, default=0),
+        "largest_command_step": step_of_call[biggest] if biggest is not None and biggest < len(step_of_call)
+        else None,
+        "oversized_commands": sum(n > OVERSIZED_COMMAND_BYTES for n in sizes),
+        "minutes_from_last_step_to_timeout": _minutes(steps[-1].get("timestamp"), timing.get("finished_at"))
+        if steps else None,
+        "declared_complete": any(c["tool"] == "mark_task_complete" for c in calls),
+    }
+
+
+def timeout_evidence(trial_dir: Path, signals: dict) -> list[dict]:
+    """Numbered evidence: the steps where the screen stopped changing, then the last steps."""
+    steps = _agent_steps(load_trajectory(trial_dir))
+    evidence: list[dict] = []
+
+    def add(source: str, text: str) -> None:
+        evidence.append({"id": f"E{len(evidence) + 1}", "source": source, "text": text})
+
+    add("signals", json.dumps(signals))
+
+    def step_line(s: dict) -> str:
+        keys = " | ".join(str((c.get("arguments") or {}).get("keystrokes", ""))[:CMD_CHARS]
+                          for c in s.get("tool_calls") or [])
+        return (f"step {s.get('step_id')} at {s.get('timestamp')}: {(s.get('message') or '').strip()[:400]}"
+                + (f"\n$ {keys}" if keys else "") + (f"\n→ {screen[-300:]}" if (screen := _screen(s)) else ""))
+
+    ids = [s.get("step_id") for s in steps]
+    since = signals.get("unchanged_screen_since_step")
+    first = ids.index(since) if since in ids else len(steps)
+    tail = range(max(0, len(steps) - TIMEOUT_TAIL_STEPS), len(steps))
+    for i in sorted({*range(max(0, first - 2), min(first + 1, len(steps))), *tail}):
+        add("agent", step_line(steps[i]))
+    if not steps:
+        add("agent", "no agent trajectory was recorded")
+    return evidence
+
+
+TIMEOUT_SCHEMA = {"type": "json_schema", "json_schema": {"name": "timeout_review", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False,
+    # the enum first (it can't be cut by a stray quote), then the sentence the record shows
+    "required": ["category", "reason", "explanation", "cited_evidence"],
+    "properties": {
+        "category": {"type": "string", "enum": [*MODEL_TIMEOUT_CATEGORIES, *NOT_MODEL_TIMEOUT_CATEGORIES],
+                     "description": "wedged_terminal: the agent left its shell unusable (an unclosed heredoc or "
+                                    "quote, an interactive program it can't leave) and never recovered. looping: "
+                                    "it repeated the same commands or edits without new information. abandoned: "
+                                    "it stopped working on the task. own_code_hanging: a command or program the "
+                                    "agent wrote hung and it kept waiting. progressing: it was still doing new, "
+                                    "useful work when time ran out. slow_infrastructure: model calls, builds or "
+                                    "the environment were slow for reasons outside the agent's control."},
+        "reason": {"type": "string", "description": "A full sentence, e.g. 'A 26 KB heredoc at step 5 left bash at its "
+                                                   "continuation prompt and the agent never got the shell back.'"
+                                                   + NO_DOUBLE_QUOTES},
+        "explanation": {"type": "string", "description": "2-4 sentences citing evidence ids." + NO_DOUBLE_QUOTES},
+        "cited_evidence": {"type": "array", "items": {"type": "string"}},
+    }}}}
+
+TIMEOUT_PROMPT = """An AI coding agent ran out of time on a terminal task (the agent time limit).
+A timeout does not by itself count as the model failing. Decide from the evidence
+only whether the AGENT caused it: it wedged its own terminal, looped, abandoned the
+task, or its own code hung. If it was still making real progress, or the slowness
+was outside its control, say so. Cite evidence ids for every claim.
+
+The signals line (E1) is computed from the trace: unchanged_screen_steps/minutes is the
+final stretch over which the terminal showed the same thing after every step.
+
+## Evidence
+{evidence}
+"""
+
+
+def review_timeout(trial_dir: Path, result: dict, *, cache_key: str, llm_dir: Path | None,
+                   complete: Complete | None = None) -> tuple[dict, float]:
+    """Rule on a timed-out run. Returns ({verdict: model | not_model, category, conclusion,
+    explanation, cited_evidence, evidence, signals[, review_error]}, cost). Never raises; a
+    failed or uncited review is not_model, so the run is retried, never counted as a fail."""
+    signals = timeout_signals(trial_dir, result)
+    evidence = timeout_evidence(trial_dir, signals)
+    prompt = TIMEOUT_PROMPT.format(evidence="\n".join(f"[{e['id']}] ({e['source']}) {e['text']}" for e in evidence))
+    out, cost, error = None, 0.0, None
+    for attempt in range(1, REVIEW_ATTEMPTS + 1):
+        try:
+            complete = complete or _llm().complete
+            c = complete([{"role": "user", "content": prompt}], TIMEOUT_SCHEMA, llm_dir=llm_dir, cache_key=cache_key)
+            cost += 0.0 if getattr(c, "cached", False) else float(getattr(c, "cost_usd", 0.0) or 0.0)
+            out = json.loads(c.content)
+            break
+        except Exception as e:  # gateway error, bad JSON: retry, then rule not_model
+            error = f"{type(e).__name__}: {str(e)[:300]}"
+            log.warning("%s: timeout review attempt %d/%d failed: %s", cache_key, attempt, REVIEW_ATTEMPTS, error)
+    known = {e["id"] for e in evidence}
+    cited = [i for i in (out or {}).get("cited_evidence", []) if i in known]
+    category = (out or {}).get("category")
+    verdict = "model" if category in MODEL_TIMEOUT_CATEGORIES and cited else "not_model"
+    review = {"verdict": verdict, "category": category, "conclusion": (out or {}).get("reason"),
+              "explanation": (out or {}).get("explanation"), "cited_evidence": cited,
+              "evidence": evidence, "signals": signals}
+    if out is None:
+        review["review_error"] = error
+    elif not cited:
+        review["review_error"] = "the review cited no evidence"
+    return review, cost
+
+
 # --- backfill / audit CLI -------------------------------------------------------------------
 
 

@@ -3,7 +3,8 @@
 
 export type TaskStatus = "CREATED" | "CALIBRATING" | "ACCEPTED" | "REJECTED" | "CANCELLED";
 export type JobStatus = "READY" | "LEASED" | "DONE" | "DEAD";
-export type Outcome = "OK" | "FAILED" | "VALID_PASS" | "VALID_FAIL" | "INVALID";
+// SKIPPED: early-stopped, not needed. TIMEOUT: at the agent time limit, until the Trace Parser rules on it.
+export type Outcome = "OK" | "FAILED" | "VALID_PASS" | "VALID_FAIL" | "INVALID" | "SKIPPED" | "TIMEOUT";
 
 export interface Health {
   status: string;
@@ -189,6 +190,9 @@ export interface AgentRun {
     explanation?: string | null;
     attribution?: string;
     pitfall_matched?: string | null;
+    conclusion?: string | null;
+    // A run that hit the agent time limit: the Trace Parser's ruling (model → VALID_FAIL, else INVALID).
+    timeout_review?: { verdict: "model" | "not_model"; category: string | null; review_error?: string } | null;
   } | null;
   cost_usd: number | null;
 }

@@ -193,6 +193,12 @@ function AgentRunRow({ r }: { r: AgentRun }) {
             blamed: {f.attribution}
           </Badge>
         )}
+        {f?.timeout_review && (
+          <Badge variant={f.timeout_review.verdict === "model" ? "outline" : "warning"}>
+            timeout: {f.timeout_review.verdict === "model" ? "model failure" : "not the model"}
+            {f.timeout_review.category && ` (${f.timeout_review.category})`}
+          </Badge>
+        )}
         <span className="min-w-0 flex-1 truncate text-muted-foreground">{f?.explanation ?? r.error ?? ""}</span>
         <span className="text-xs text-muted-foreground tabular-nums">
           {m?.llm_calls != null && `${m.llm_calls} calls · `}
@@ -206,7 +212,9 @@ function AgentRunRow({ r }: { r: AgentRun }) {
         )}
       </summary>
       <div className="mt-3 flex flex-col gap-3 pl-7">
+        {f?.timeout_review && f.conclusion && <p className="font-medium">{f.conclusion}</p>}
         {f?.explanation && <p>{f.explanation}</p>}
+        {f?.timeout_review?.review_error && <p className="text-xs text-muted-foreground">review: {f.timeout_review.review_error}</p>}
         {r.error && <p className="text-destructive">{r.error}</p>}
         {f?.failing_tests && f.failing_tests.length > 0 && (
           <div>

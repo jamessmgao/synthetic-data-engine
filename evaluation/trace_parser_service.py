@@ -46,7 +46,7 @@ from evaluation import calibration, trace_parser, verdict
 from evaluation.classify import VALID_FAIL
 from shared.jobs import tasks
 from shared.storage import Backend, describe, from_env
-from shared.storage.sql import Conn, job_id, rollout_job_id
+from shared.storage.sql import Conn, job_id, rollout_job_id, utcnow
 from shared.jobs.jobqueue import Handoff, JobQueue
 from shared.contracts.models import (
     MAX_ROLLOUT_RETRIES,
@@ -111,8 +111,24 @@ class TraceParserService:
                                     f"{task and task['stage']}, not v{n} EVALUATING"), None
 
         jobs = self.backend.store.task_jobs(tid)
+        # Timed-out runs first: the Trace Parser's ruling makes each VALID_FAIL or INVALID, and the
+        # decision below sees the ruled rows. The rulings are written in this analysis' settle.
+        rulings, ruling_cost = self._rule_timeouts(
+            [j for j in jobs if j["type"] == JobType.ROLLOUT and j["version"] == n])
+        jobs = [{**j, **rulings[j["id"]]} if j["id"] in rulings else j for j in jobs]
+        fields, handoff = self._decide(task, jobs)
+        if rulings:
+            fields["cost_usd"] = round(fields.get("cost_usd", 0.0) + ruling_cost, 6)
+            fields["result"]["timeouts_ruled"] = {rid: r["outcome"] for rid, r in rulings.items()}
+        return fields, _with_rulings(rulings, handoff)
+
+    def _decide(self, task: dict[str, Any], jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], Handoff | None]:
+        tid, n = task["id"], task["current_version"]
         runs = [j for j in jobs if j["type"] == JobType.ROLLOUT and j["version"] == n]
         scored, retries, waiting, exhausted = self._slots(tid, n, runs)
+        early = early_stop(scored, self.n_runs) if (waiting or exhausted) else None
+        if early:  # the remaining runs can't change the verdict: decide on the scored ones
+            waiting, exhausted = False, []
         if exhausted:
             return (_result("reject", f"slots {exhausted} used {MAX_ROLLOUT_RETRIES} retries without a valid run"),
                     _reject(tid, n, RejectReason.INFRA_UNRESOLVED, Stage.UNRESOLVED))
@@ -158,17 +174,31 @@ class TraceParserService:
                       else {"operators": [], "why": [], "rules": [], "target_fix": None})
             mutation = {"version": n + 1, "from_version": n, "pass_count": passes, "direction": direction,
                         **chosen}
-        summary = (f"{passes}/{self.n_runs} passed" + (f"; task blamed by {blamed_task}" if blamed_task else "")
+        summary = ((f"{len(scored)} scored of {self.n_runs}, early-stopped ({early['why']}); " if early else "")
+                   + f"{passes}/{len(scored) if early else self.n_runs} passed"
+                   + (f"; task blamed by {blamed_task}" if blamed_task else "")
                    + {"accept": "; accepted", "reject": f"; rejected ({reason})",
                       "revise": f"; revising ({direction}) with {operator}"
                                 + (f", mutating: {', '.join(mutation['operators'])}"
                                    if mutation and mutation["operators"] else "")}[action])
         fields = _result(action, summary, pass_count=passes, operator=operator, direction=direction,
-                         easy_analysis=analysis, mutation=mutation)
+                         easy_analysis=analysis, mutation=mutation,
+                         **({"early_stopped": {**early, "scored": len(scored), "of": self.n_runs}} if early else {}))
         fields["cost_usd"] = round(cost, 6)
 
         def handoff(conn: Conn, row: dict[str, Any]) -> list[dict[str, Any]]:
             followups: list[dict[str, Any]] = []
+            if early:  # the version's other runs aren't needed: close them first (accept / reject would
+                # mark them DEAD, i.e. invalid runs), DONE + SKIPPED, so neither the reconciler nor a retry
+                # brings them back; a running one is stopped by its refused heartbeat. In this transaction:
+                # if another analysis decided the version first, they weren't needed either.
+                now = utcnow()
+                conn.execute(
+                    """UPDATE jobs SET status = 'DONE', outcome = ?, finished_at = ?, lease_until = NULL,
+                                       handled_at = ?, error = ?
+                        WHERE task_id = ? AND version = ? AND type = ? AND status IN ('READY', 'LEASED')""",
+                    (str(Outcome.SKIPPED), now, now, f"early-stopped: {early['why']} after {len(scored)} scored",
+                     tid, n, str(JobType.ROLLOUT)))
             if action == "accept":
                 ok = tasks.accept(conn, tid, n)
             elif action == "reject":
@@ -181,7 +211,8 @@ class TraceParserService:
                 followups.append(next_job(
                     task, n, sha, _world_sha256(jobs, n), direction=direction, operator=operator,
                     mutation=mutation, history=history, analysis=analysis,
-                    result=f"{passes} of {self.n_runs} runs passed.", evidence=calibration.evidence(enriched),
+                    result=(f"{passes} of {len(scored)} scored runs passed (early-stopped)." if early
+                            else f"{passes} of {self.n_runs} runs passed."), evidence=calibration.evidence(enriched),
                     solver_runs=solver_runs, hardness=_world_hardness(jobs, n)))
             if not ok:  # another copy decided this version first: record that, not our decision
                 conn.execute("UPDATE jobs SET result = ? WHERE id = ?", (json.dumps(
@@ -204,8 +235,9 @@ class TraceParserService:
                 scored[slot] = hit
                 continue
             last = tries[-1] if tries else None
-            if last is not None and last["status"] in (JobStatus.READY, JobStatus.LEASED):
-                waiting = True
+            if last is not None and (last["status"] in (JobStatus.READY, JobStatus.LEASED)
+                                     or last["outcome"] == Outcome.TIMEOUT):
+                waiting = True  # running, or a timeout the Trace Parser hasn't ruled on
             elif last is not None and last["retry"] >= MAX_ROLLOUT_RETRIES:
                 exhausted.append(slot)
             else:  # never run, or DEAD / INVALID with retries left and no retry queued
@@ -254,6 +286,46 @@ class TraceParserService:
                     out[f"run{r['slot']}.md"] = text
         return out
 
+    def _rule_timeouts(self, runs: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], float]:
+        """{run id: the ruled fields} for the version's unruled TIMEOUT runs, and the review cost.
+
+        trace_parser.review_timeout decides: the model's own failure → VALID_FAIL (reward 0, the
+        review as its failure record, attribution model); anything else, or no trace → INVALID,
+        which _slots retries like any invalid run."""
+        rulings, cost = {}, 0.0
+        for run in runs:
+            if run["outcome"] != Outcome.TIMEOUT:
+                continue
+            trial_dir = self._trial_dir(run)
+            if trial_dir is None:
+                review = {"verdict": "not_model", "category": None, "conclusion": None, "explanation": None,
+                          "cited_evidence": [], "evidence": [], "signals": {}, "review_error": "trace not found"}
+            else:
+                review, c = trace_parser.review_timeout(
+                    trial_dir, json.loads((trial_dir / "result.json").read_text()),
+                    cache_key=f"timeout-review:{run['id']}", llm_dir=self.backend.work_dir / "llm",
+                    complete=self.complete)
+                cost += c
+            ruling = {k: review.get(k) for k in ("verdict", "category", "signals", "review_error") if k in review}
+            if review["verdict"] == "model":
+                failure = {"failing_tests": [t["name"] for t in trace_parser.failing_tests(trial_dir)],
+                           "evidence": review["evidence"], "conclusion": review["conclusion"],
+                           "explanation": review["explanation"],
+                           "explanation_cut": trace_parser.is_cut(review["explanation"]),
+                           "attribution": "model", "pitfall_matched": None,
+                           "cited_evidence": review["cited_evidence"], "timeout_review": ruling}
+                rulings[run["id"]] = {"outcome": Outcome.VALID_FAIL, "reward": 0.0, "error": run.get("error"),
+                                      "failure": failure}
+            else:
+                why = review.get("conclusion") or review.get("review_error") or "not the model's failure"
+                rulings[run["id"]] = {"outcome": Outcome.INVALID, "reward": None,
+                                      "error": f"{run.get('error')}; timeout review: {review.get('category')}: {why}",
+                                      "failure": {"conclusion": review.get("conclusion"),
+                                                  "explanation": review.get("explanation"),
+                                                  "cited_evidence": review.get("cited_evidence"),
+                                                  "evidence": review.get("evidence"), "timeout_review": ruling}}
+        return rulings, cost
+
     def _parse(self, run: dict[str, Any]) -> tuple[dict | None, dict | None, float]:
         """trace_parser.parse over one scored run's trace, fetched from the artifact store."""
         rid, art = run["id"], self.backend.artifacts
@@ -264,6 +336,9 @@ class TraceParserService:
                         "pitfall_matched": None, "cited_evidence": [], "review_error": "trace not found"}
                        if run["outcome"] == VALID_FAIL else None)
             return None, failure, 0.0
+        if (run.get("failure") or {}).get("timeout_review"):  # ruled from its timeout: already explained
+            return trace_parser.trace_metrics(trial_dir, json.loads((trial_dir / "result.json").read_text())), \
+                run["failure"], 0.0
         sha = run.get("bundle_sha256")
         return trace_parser.parse(
             trial_dir, json.loads((trial_dir / "result.json").read_text()), run["outcome"], job_id=rid,
@@ -319,6 +394,43 @@ class TraceParserService:
         for t in threads[:-1]:
             while t.is_alive():
                 t.join(timeout=0.5)
+
+
+def early_stop(scored: dict[int, dict[str, Any]], n_runs: int) -> dict[str, Any] | None:
+    """Is the version's verdict already certain, whatever its unscored slots do? Only scored runs
+    count (an INVALID, a timeout or a retry in flight is still "remaining"). With p passes and r
+    slots left: p >= the band's low and p + r <= its high → certainly in band; p above the high →
+    certainly too easy. Never on too few passes (a later pass could still put it in band)."""
+    p = sum(r["outcome"] == Outcome.VALID_PASS for r in scored.values())
+    r = n_runs - len(scored)
+    if r <= 0:
+        return None
+    if p >= calibration.config.BAND_LOW and p + r <= calibration.config.BAND_HIGH:
+        return {"why": "certain in band", "passes": p, "remaining": r}
+    if calibration.too_easy(p):
+        return {"why": "certain too easy", "passes": p, "remaining": r}
+    return None
+
+
+def _with_rulings(rulings: dict[str, dict[str, Any]], handoff: Handoff | None) -> Handoff | None:
+    """Write the timeout rulings (compare-and-set on outcome TIMEOUT), then the decision's own
+    hand-off. If another analysis ruled a run first, this one's decision rests on rulings that
+    weren't written: record that and do nothing (the other analysis decides)."""
+    if not rulings:
+        return handoff
+
+    def apply(conn: Conn, row: dict[str, Any]) -> list[dict[str, Any]]:
+        for rid, r in rulings.items():
+            if conn.execute("UPDATE jobs SET outcome = ?, reward = ?, error = ?, failure = ? WHERE id = ? AND outcome = ?",
+                            (str(r["outcome"]), r["reward"], r["error"], json.dumps(r["failure"]), rid,
+                             str(Outcome.TIMEOUT))).rowcount != 1:
+                conn.execute("UPDATE jobs SET result = ? WHERE id = ?", (json.dumps(
+                    {"action": "stale", "summary": f"another analysis ruled the timed-out run {rid} first"}),
+                    row["id"]))
+                return []
+        return handoff(conn, row) if handoff else []
+
+    return apply
 
 
 def _result(action: str, summary: str, **extra: Any) -> dict[str, Any]:

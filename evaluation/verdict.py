@@ -27,9 +27,12 @@ def decision_text(task: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
     low, high = cfg["band"]
     if task["status"] == TaskStatus.ACCEPTED:
         v = task["accepted_version"]
-        passes = sum(
-            j["type"] == JobType.ROLLOUT and j["version"] == v and j["outcome"] == Outcome.VALID_PASS for j in jobs
-        )
+        runs = [j for j in jobs if j["type"] == JobType.ROLLOUT and j["version"] == v]
+        passes = sum(j["outcome"] == Outcome.VALID_PASS for j in runs)
+        if any(j["outcome"] == Outcome.SKIPPED for j in runs):  # early stopping: decided on fewer runs
+            scored = sum(j["outcome"] in (Outcome.VALID_PASS, Outcome.VALID_FAIL) for j in runs)
+            return (f"ACCEPTED: v{v} passed {passes} of {scored} scored agent runs, early-stopped "
+                    f"(band {low}–{high} of {cfg['n_runs']} was certain)")
         return f"ACCEPTED: v{v} passed {passes}/{cfg['n_runs']} valid rollouts (band {low}–{high})"
     if task["status"] == TaskStatus.REJECTED:
         return f"REJECTED ({task['reason']}) at v{task['current_version']}"

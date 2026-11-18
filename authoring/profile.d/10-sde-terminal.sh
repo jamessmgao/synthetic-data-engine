@@ -20,5 +20,10 @@ case $- in
     # later failing command can't end the session. (A `set` wrapper function can't do this:
     # `set -- …` inside a function sets the function's arguments, not the shell's.)
     PROMPT_COMMAND="builtin set +e${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+    # The continuation prompt says what the shell is waiting for. A heredoc closed with the
+    # wrong delimiter (`</EOF>` for EOF, aws-w1-l3-t01's world) leaves the shell reading the
+    # heredoc, every later command becomes file content, and the plain "> " went unnoticed for
+    # 23 minutes. Short, as it prefixes every line of a legitimate multi-line command too.
+    PS2='[sde: heredoc or quote still open; end it with its delimiter alone on a line, or C-c]> '
     ;;
 esac

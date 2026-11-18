@@ -8,7 +8,7 @@ What the services write and these read (PRD §5.1):
     revision}, optional `input.operator`; on success `outcome=OK` and `bundle_sha256`.
   - validate: `result.gates` = {name: {"passed": bool, ...}}; `outcome=OK`
     only if every gate passed.
-  - rollout: `slot` 1..N, `outcome` VALID_PASS | VALID_FAIL | INVALID; the Trace
+  - rollout: `slot` 1..N, `outcome` VALID_PASS | VALID_FAIL | INVALID | TIMEOUT (until ruled) | SKIPPED; the Trace
     Parser adds `trace_metrics` and `failure`.
   - analyze (Trace Parser): `result.action` and its review cost.
 """
@@ -214,6 +214,9 @@ def _analysis_view(vjobs: list[dict], scored: dict[int, str]) -> dict | None:
         "job_id": decided[-1]["id"],
         "action": result.get("action"),
         "summary": result.get("summary"),
+        # Decided before all runs were scored (its result was already certain): {why, passes,
+        # remaining, scored, of}; None when every run was scored.
+        "early_stopped": result.get("early_stopped"),
         "direction": result.get("direction"),
         "operator": result.get("operator"),
         "mutation": result.get("mutation"),

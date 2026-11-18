@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from evaluation.classify import INVALID, VALID_FAIL, VALID_PASS, classify
+from evaluation.classify import INVALID, TIMEOUT, VALID_FAIL, VALID_PASS, classify
 
 EXPECTED = {"agent": "terminus-2", "model": "openrouter/z-ai/glm-5.3-flash",
             "kwargs": {"reasoning_effort": "high"}}
@@ -40,7 +40,7 @@ def test_reward_zero_is_a_valid_fail():
     assert (m.outcome, m.reward) == (VALID_FAIL, 0.0)
 
 
-@pytest.mark.parametrize("exc", ["AgentTimeoutError", "VerifierTimeoutError", "EnvironmentStartTimeoutError",
+@pytest.mark.parametrize("exc", ["VerifierTimeoutError", "EnvironmentStartTimeoutError",
                                  "RewardFileNotFoundError", "RateLimitError"])
 def test_any_exception_is_invalid_even_with_a_reward(exc):
     t = trial(verifier_result={"rewards": {"reward": 0.0}},
@@ -50,6 +50,21 @@ def test_any_exception_is_invalid_even_with_a_reward(exc):
     assert m.outcome == INVALID and m.reward is None
     assert m.error == f"{exc}: boom"
     assert m.raw_reward == 0.0  # kept for the audit, never scored
+
+
+def test_an_agent_timeout_at_reward_zero_waits_for_the_trace_parsers_ruling():
+    """A timeout doesn't count as the model failing by itself: TIMEOUT, not scored, until the Trace
+    Parser rules on it. Any other reward after a timeout (1, none) stays INVALID, retried as before."""
+    timeout = {"exception_type": "AgentTimeoutError", "exception_message": "Agent execution timed out after 3600.0 seconds"}
+    m = classify(trial(verifier_result={"rewards": {"reward": 0.0}}, exception_info=timeout), EXPECTED)
+    assert (m.outcome, m.reward, m.raw_reward) == (TIMEOUT, None, 0.0)
+    assert m.error == "AgentTimeoutError: Agent execution timed out after 3600.0 seconds"
+    for verifier in ({"rewards": {"reward": 1.0}}, None):
+        assert classify(trial(verifier_result=verifier, exception_info=timeout), EXPECTED).outcome == INVALID
+    # A timeout under the wrong agent config is still a config mismatch.
+    wrong = trial(verifier_result={"rewards": {"reward": 0.0}}, exception_info=timeout)
+    wrong["config"]["agent"]["model_name"] = "someone-else"
+    assert classify(wrong, EXPECTED).outcome == INVALID
 
 
 CLOSED = ("x__env: failed to send non-blocking keys: command=\"tmux send-keys -t terminus-2 -- 'ls\\n'\", "

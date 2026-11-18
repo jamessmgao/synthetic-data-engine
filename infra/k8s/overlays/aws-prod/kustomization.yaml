@@ -117,7 +117,13 @@ patches:
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "3"}}
   - target: {kind: Deployment, name: executor}
     patch: |-
-      - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "4"}}
+      - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "2"}}
+      # Agent runs start through the docker socket, outside the pod, so without a request the
+      # scheduler can't see their CPU: executors piled onto some nodes (100%, load 4-6) while
+      # others idled (13-30%) and 10 runs queued (2026-11-18 22:45). The request is what's left
+      # after generation's 1-CPU requests (1.0-1.5 of ~1.9 vCPU already requested per node, so
+      # 1800m fit nowhere): it keeps executors off the fullest nodes; the claim's CPU guard
+      # (SDE_MAX_CPU_LOAD_PCT) does the rest.
   # Drain on SIGTERM, like generation: a deploy or a KEDA scale-in lets running agent runs finish
   # (up to 3700 s: the 3600 s agent timeout plus the verifier) instead of re-running each from
   # scratch; a Spot interruption still hands them back at once (evaluation/executor.py on_signal).
@@ -128,9 +134,10 @@ patches:
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DRAIN_ON_TERM_S, value: "3700"}}
       - {op: replace, path: /spec/template/spec/terminationGracePeriodSeconds, value: 3800}
       - {op: add, path: /spec/strategy, value: {type: RollingUpdate, rollingUpdate: {maxSurge: 2, maxUnavailable: 0}}}
+      - {op: add, path: /spec/template/spec/containers/0/resources, value: {requests: {cpu: 500m, memory: 1Gi}}}
   - target: {kind: ScaledObject, name: executor}
     patch: |-
-      - {op: replace, path: /spec/maxReplicaCount, value: 10}  # 3 agent runs a pod x 1 vCPU each: 30 runs ≈ the CPU 17 runners have left after authoring
+      - {op: replace, path: /spec/maxReplicaCount, value: 16}  # 2 agent runs a pod: up to 32 runs on the 17 nodes
       - {op: replace, path: /spec/minReplicaCount, value: 2}
       # Scale down only after 15 min of a short queue (base: 2 min), longer than a rollout:
       # a scale-down deletes a pod without knowing it's mid-rollout, and batch aws-agent-b1

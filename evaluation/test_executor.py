@@ -158,7 +158,7 @@ def test_trace_is_fetched_before_running_and_uploaded_before_settling(backend, m
 
 def test_invalid_rollout_is_retried_in_the_same_slot_never_scored(backend):
     seed(backend, runs=1)
-    fake = FakeHarbor({"t1-v1-rollout1-r0": trial_result(0.0, exception="AgentTimeoutError")})
+    fake = FakeHarbor({"t1-v1-rollout1-r0": trial_result(0.0, exception="VerifierTimeoutError")})
     drain(make(backend, fake))
     by_id = {j["id"]: j for j in jobs(backend)}
     assert by_id["t1-v1-rollout1-r0"]["outcome"] == INVALID and by_id["t1-v1-rollout1-r0"]["reward"] is None
@@ -166,6 +166,17 @@ def test_invalid_rollout_is_retried_in_the_same_slot_never_scored(backend):
     assert by_id["t1-v1-rollout1-r1"]["bundle_sha256"] == SHA
     s = summarize(jobs(backend), 1)
     assert s["slots"][1]["outcome"] == VALID_PASS and s["invalid_attempts"] == 1
+
+
+def test_an_agent_timeout_is_settled_for_review_not_retried(backend):
+    """TIMEOUT: no automatic retry from the executor (the Trace Parser rules on it); its analyze
+    ping still goes out, so the ruling happens."""
+    seed(backend, runs=1)
+    drain(make(backend, FakeHarbor({"t1-v1-rollout1-r0": trial_result(0.0, exception="AgentTimeoutError")})))
+    rows = {j["id"]: j for j in jobs(backend)}
+    assert rows["t1-v1-rollout1-r0"]["outcome"] == "TIMEOUT" and rows["t1-v1-rollout1-r0"]["reward"] is None
+    assert "t1-v1-rollout1-r1" not in rows
+    assert backend.store.job("t1-v1-rollout1-r0-analyze") is not None
 
 
 def test_retries_stop_after_the_limit_and_the_slot_stays_unresolved(backend, monkeypatch):

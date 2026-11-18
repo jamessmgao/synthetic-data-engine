@@ -35,6 +35,14 @@ def test_set_e_at_the_prompt_cannot_end_the_session_on_a_later_failure():
         assert "survived" in out.stdout and "END-OF-SESSION" in out.stdout, form
 
 
+def test_an_unclosed_heredoc_says_so_at_every_continuation_line():
+    # aws-w1-l3-t01's world: `cat > f <<'EOF'` closed with `</EOF>`; every later line was content.
+    out = terminal(["cat > /tmp/sde-heredoc-test.c <<'EOF'", "int main(void) { return 0; }", "</EOF>",
+                    "gcc /tmp/sde-heredoc-test.c", "EOF", 'echo "back rc=$?"'])
+    assert out.stderr.count("heredoc or quote still open") >= 3  # one per line typed into it
+    assert "back rc=0" in out.stdout and "END-OF-SESSION" in out.stdout
+
+
 def test_set_still_works_for_everything_else():
     out = terminal(["set -- a b", 'echo "second=$2"', "set -o pipefail", 'echo "opts=$-"'])
     assert "second=b" in out.stdout and "END-OF-SESSION" in out.stdout

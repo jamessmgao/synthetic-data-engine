@@ -68,6 +68,11 @@ class Outcome(StrEnum):
     VALID_PASS = "VALID_PASS"
     VALID_FAIL = "VALID_FAIL"
     INVALID = "INVALID"
+    # An agent run the version no longer needed: its result was already certain (early stopping,
+    # evaluation/trace_parser_service.py), so the run was closed unrun or stopped. Neither valid
+    # nor invalid: it never counts toward a pass rate or the INVALID tally.
+    SKIPPED = "SKIPPED"
+    TIMEOUT = "TIMEOUT"  # an agent run at its time limit, until the Trace Parser rules on it
 
 
 TERMINAL_TASK_STATUSES = (TaskStatus.ACCEPTED, TaskStatus.REJECTED, TaskStatus.CANCELLED)
@@ -90,8 +95,8 @@ PRIORITY = {
 # How tasks are authored (docs/AGENTIC_AUTHORING_PLAN.md §1):
 #   oneshot  create / revise: one GLM-5.1 call per draft (generator/worker.py:run_generate_job)
 #   agent    world → world_check → create → validate. world, create and revise are each a
-#            Harbor authoring trial, terminus-2 + GLM-5.1, time-boxed at 30 min for a world
-#            and 20 for a task (SDE_WORLD_TIMEOUT_S, SDE_CREATE_TIMEOUT_S)
+#            Harbor authoring trial, terminus-2 + GLM-5.1, time-boxed by the trial's agent timeout, 2 h for a world
+#            and for a task by default (SDE_WORLD_TIMEOUT_S, SDE_CREATE_TIMEOUT_S, 7200 s)
 #            (generator/author.py: run_world_job, run_create_job), holding a Docker slot
 AUTHOR_MODES = ("oneshot", "agent")
 AUTHOR_MODE = os.environ.get("SDE_AUTHOR_MODE", "oneshot")
