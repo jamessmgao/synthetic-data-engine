@@ -97,6 +97,8 @@ LINT_BLOCKING_RULES = {
 HARBOR_BIN = os.environ.get("HARBOR_BIN", "harbor")
 GATE_TIMEOUT_SEC = 3600  # one oracle or nop run, including the image build
 MAX_REPAIRS = 2  # gate-failure repairs per version (PRD §6.1)
+# The leak-review gate (validator/gates.py): one glm-5.1 call per validate job.
+LEAK_REVIEW = os.environ.get("SDE_LEAK_REVIEW", "1") != "0"
 
 # Data-provenance canary. Harbor strips leading canary comment lines from
 # instruction.md before showing it to an agent (see harbor/.../task/task.py).

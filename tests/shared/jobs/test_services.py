@@ -16,7 +16,7 @@ from shared.jobs import handoffs
 from shared.storage import from_env
 from shared.storage.sql import claim as sql_claim, insert_job, job_id, rollout_job_id
 from shared.jobs.jobqueue import JobQueue
-from shared.contracts.models import JobType
+from shared.contracts.models import MAX_VERSIONS, JobType
 from shared.jobs.reconciler import reconcile
 from api.submit import TaskConflict, create_task
 from shared.taxonomy.taxonomy import TAXONOMY, UNIQUE_DIMENSIONS, sample_spec
@@ -278,10 +278,16 @@ def test_too_easy_is_revised_until_exhausted(backend, parser):
     score(backend, parser, 2, "11110")
     assert backend.store.job(job_id(T, 3, "revise"))["input"]["operator"] == "increase_constraint_interaction"
 
-    build(backend, 3, "sha3")
-    score(backend, parser, 3, "11111")
+    # Every later version is revised too, until the last one allowed.
+    for v in range(3, MAX_VERSIONS):
+        build(backend, v, f"sha{v}")
+        score(backend, parser, v, "11111")
+        assert task(backend)["current_version"] == v + 1
+    build(backend, MAX_VERSIONS, "sha-last")
+    score(backend, parser, MAX_VERSIONS, "11111")
     t = task(backend)
-    assert (t["status"], t["reason"], t["current_version"]) == ("REJECTED", "exhausted", 3)
+    assert (t["status"], t["reason"], t["current_version"]) == ("REJECTED", "exhausted", MAX_VERSIONS)
+    assert not backend.store.job(job_id(T, MAX_VERSIONS + 1, "revise"))  # no version past the cap
     assert not parser.accepted_dir.exists()
 
 

@@ -38,7 +38,7 @@ SCHEMA = [
         slot             TEXT NOT NULL DEFAULT '{}',
         status           TEXT NOT NULL,
         reason           TEXT,
-        current_version  INTEGER NOT NULL DEFAULT 1 CHECK (current_version BETWEEN 1 AND 3),
+        current_version  INTEGER NOT NULL DEFAULT 1 CHECK (current_version >= 1),
         stage            TEXT NOT NULL,
         bundle_sha256    TEXT,
         name             TEXT,
@@ -310,6 +310,31 @@ def _split_generate_jobs(conn: Conn) -> None:
                  (str(JobType.CREATE), PRIORITY[JobType.CREATE]))
 
 
+def _sqlite_drop_version_cap(path: Path) -> None:
+    """Databases created when tasks had at most 3 versions carry
+    CHECK (current_version BETWEEN 1 AND 3); the cap is now MAX_VERSIONS, enforced
+    in code. SQLite can't alter a constraint, so rebuild `tasks` the documented
+    way (new table, copy, drop, rename) with foreign keys off: `jobs` keeps
+    referencing `tasks`, so no reference is rewritten."""
+    if not path.exists():
+        return
+    c = sqlite3.connect(path, timeout=30, isolation_level=None)
+    try:
+        row = c.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone()
+        if row is None or "BETWEEN 1 AND 3" not in row[0]:
+            return
+        c.execute("PRAGMA foreign_keys=OFF")
+        c.execute("BEGIN IMMEDIATE")
+        cols = ", ".join(d[0] for d in c.execute("SELECT * FROM tasks LIMIT 0").description)
+        c.execute(SCHEMA[0].replace("CREATE TABLE IF NOT EXISTS tasks", "CREATE TABLE tasks_new"))
+        c.execute(f"INSERT INTO tasks_new ({cols}) SELECT {cols} FROM tasks")
+        c.execute("DROP TABLE tasks")
+        c.execute("ALTER TABLE tasks_new RENAME TO tasks")
+        c.execute("COMMIT")
+    finally:
+        c.close()
+
+
 # --- the store ----------------------------------------------------------------
 
 
@@ -319,6 +344,8 @@ class SqlStore:
     def __init__(self, url: str):
         self.url = url
         self._local = threading.local()
+        if url.startswith("sqlite:///"):
+            _sqlite_drop_version_cap(Path(url.removeprefix("sqlite:///")))
         with self.tx() as conn:
             for stmt in SCHEMA:
                 conn.execute(stmt)
@@ -333,6 +360,17 @@ class SqlStore:
             if "batch_id" in task_cols:
                 conn.execute("DROP INDEX IF EXISTS tasks_batch")
                 conn.execute("ALTER TABLE tasks DROP COLUMN batch_id")
+            if self.url.startswith(("postgresql://", "postgres://")):
+                # Lift the old 3-version cap once. Postgres names an inline column
+                # check <table>_<column>_check; only an old definition is replaced,
+                # so later starts (and runners booting together) change nothing.
+                row = conn.execute(
+                    "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint"
+                    " WHERE conname = 'tasks_current_version_check'").fetchone()
+                if row is not None and "3" in row["def"]:
+                    conn.execute("ALTER TABLE tasks DROP CONSTRAINT tasks_current_version_check")
+                    conn.execute("ALTER TABLE tasks ADD CONSTRAINT tasks_current_version_check"
+                                 " CHECK (current_version >= 1)")
 
     @property
     def conn(self) -> _SqliteConn | _PostgresConn:

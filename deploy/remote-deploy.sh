@@ -39,6 +39,7 @@ umask 077
   echo "SDE_WORK_DIR=/opt/sde/work"
   echo "SDE_DOCKER_SLOTS=$slots"
   echo "SDE_RELEASE=$sha"
+  echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
   # worker-control always runs the one reconciler, with the Generation Service if present.
   if [ -e "$release/generator/worker.py" ]; then
     echo "SDE_GENERATION_CMD=python -m generator.service generation --with-reconciler"
@@ -52,6 +53,10 @@ umask 077
   echo "SDE_API_KEY=$(param /sde/api_key)"
 } > /opt/sde/runtime.env.tmp
 mv /opt/sde/runtime.env.tmp /opt/sde/runtime.env
+
+# Every app container runs as uid 10001 (the image's `sde` user): it must own the
+# shared dirs. Only entries not yet owned are touched, so this stays cheap.
+find /opt/sde/work /opt/sde/output ! -user 10001 -exec chown 10001:10001 {} +
 
 services=""  # all of them
 [ "$role" = runner ] && services="worker-runner"

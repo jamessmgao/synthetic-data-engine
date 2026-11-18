@@ -171,6 +171,7 @@ def validate_fn(backend: Backend) -> JobFn:
             "error": out.get("feedback") or None,
             "bundle_sha256": sha,
             "trace_uri": backend.artifacts.save_trace(job["id"]),
+            "cost_usd": out.get("cost_usd"),  # the leak-review gate's model call
         }
 
     return run

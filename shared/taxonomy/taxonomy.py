@@ -33,18 +33,12 @@ TAXONOMY: dict[str, list[str]] = {
 UNIQUE_DIMENSIONS = ("domain", "task_type", "environment")
 
 # The v1 default (PRD §6.2), to be tuned once pilots show where glm-5.3-flash lands.
-DEFAULT_DIFFICULTY = {
-    "level": "medium-hard",
-    "relevant_files": "10-25",
-    "constraints": 3,
-    "subgoals": 2,
-    "failure_scenarios": 1,
-    "notes": [
-        "The instruction describes symptoms, not the root cause.",
-        "At least two constraints interact: the obvious fix for one breaks another.",
-        "Two components are involved in the fix.",
-    ],
-}
+# A task FORM and a difficulty DIAL within it (generator/prompting.py FORMS), not
+# generic counts: task-builder's pilots found easy/medium/hard labels and file or
+# constraint counts didn't move the pass rate, while the coupled behavior-preserving
+# change (a local fix that silently breaks a dependent module) gave the only genuine
+# model failure (docs/ANALYSIS.md §9). Dial 1-3 turns its difficulty.
+DEFAULT_DIFFICULTY = {"form": "behavior_preserving", "dial": 2}
 
 
 def sample_spec(existing: list[dict], rng: random.Random | None = None) -> dict:

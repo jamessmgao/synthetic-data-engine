@@ -254,3 +254,53 @@ def test_schema_init_drops_the_old_batch_id_column(tmp_path):
     store = SqlStore(f"sqlite:///{db}")
     cols = {d[0] for d in store.conn.execute("SELECT * FROM tasks LIMIT 0").description}
     assert "batch_id" not in cols and store.task("t-old")["status"] == "CREATED"
+
+
+def test_schema_init_lifts_the_old_three_version_cap(tmp_path):
+    """Databases from when tasks had at most 3 versions get the cap removed from the
+    table (MAX_VERSIONS is enforced in code); rows and job references survive."""
+    import sqlite3
+
+    from shared.storage.sql import SqlStore
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as c:
+        c.execute("""CREATE TABLE tasks (id TEXT PRIMARY KEY, slot TEXT NOT NULL DEFAULT '{}',
+                     status TEXT NOT NULL, reason TEXT,
+                     current_version INTEGER NOT NULL DEFAULT 1 CHECK (current_version BETWEEN 1 AND 3),
+                     stage TEXT NOT NULL, bundle_sha256 TEXT, name TEXT, accepted_version INTEGER,
+                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        c.execute("INSERT INTO tasks (id, status, stage, created_at, updated_at)"
+                  " VALUES ('t-old', 'CALIBRATING', 'EVALUATING', 'x', 'x')")
+    store = SqlStore(f"sqlite:///{db}")  # creates jobs (referencing tasks) and migrates
+    with store.tx() as c:
+        insert_job(c, id="t-old-v1-create", task_id="t-old", version=1, type=JobType.CREATE)
+        c.execute("UPDATE tasks SET current_version = 7 WHERE id = 't-old'")
+    assert store.task("t-old")["current_version"] == 7
+    assert store.job("t-old-v1-create")["task_id"] == "t-old"
+    SqlStore(f"sqlite:///{db}")  # running the migration again is a no-op
+
+
+def test_postgres_lifts_the_old_three_version_cap_once(backend):
+    """On Postgres the old check is replaced once; later starts leave it alone."""
+    import pytest
+
+    from shared.storage.sql import SqlStore
+
+    url = backend.store.url
+    if not url.startswith("postgresql"):
+        pytest.skip("Postgres only")
+    with backend.store.tx() as c:
+        c.execute("ALTER TABLE tasks DROP CONSTRAINT tasks_current_version_check")
+        c.execute("ALTER TABLE tasks ADD CONSTRAINT tasks_current_version_check"
+                  " CHECK (current_version BETWEEN 1 AND 3)")
+
+    def definition():
+        return backend.store.conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint"
+            " WHERE conname = 'tasks_current_version_check'").fetchone()["def"]
+
+    SqlStore(url)
+    assert definition() == "CHECK ((current_version >= 1))"
+    SqlStore(url)  # a second runner booting: nothing to change
+    assert definition() == "CHECK ((current_version >= 1))"

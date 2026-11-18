@@ -87,7 +87,7 @@ def test_a_text_prompt_seeds_the_spec(client, backend):
     body = create(client, prompt="A Go job queue that loses jobs when a worker crashes.")
     spec = backend.store.job(job_id(body["task_id"], 1, "create"))["input"]["spec"]
     assert spec["seed"] == "A Go job queue that loses jobs when a worker crashes."
-    assert spec["difficulty"]["level"] == "medium-hard" and "taxonomy" not in spec
+    assert spec["difficulty"] == {"form": "behavior_preserving", "dial": 2} and "taxonomy" not in spec
 
 
 def test_an_explicit_spec_is_passed_through_with_design(client, backend):
@@ -97,7 +97,7 @@ def test_an_explicit_spec_is_passed_through_with_design(client, backend):
     got = backend.store.job(job_id("t-explicit", 1, "create"))["input"]["spec"]
     assert body == {"task_id": "t-explicit", "created": True}
     assert got["taxonomy"] == spec["taxonomy"] and got["design"] == spec["design"] and got["extra_key"] == 1
-    assert got["difficulty"]["level"] == "medium-hard"  # missing difficulty gets the default
+    assert got["difficulty"]["form"] == "behavior_preserving"  # missing difficulty gets the default
 
 
 def test_a_raw_prompt_replaces_the_template_and_is_flagged(client, backend):

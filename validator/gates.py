@@ -181,8 +181,132 @@ def gate_nop(bundle_dir: Path, trace_dir: Path) -> Gate:
     return Gate("nop", False, detail, feedback)
 
 
+# --- leak review ---------------------------------------------------------------
+# One glm-5.1 call after the functional gates: does the instruction the agent
+# reads give away the hidden root cause or the fix? In the pilots, prompt rules
+# alone did not stop this (pipeline-hard, h6), and it made tasks too easy.
+
+LEAK_SYSTEM = """You review a benchmark task before an AI agent attempts it. You get the
+author's hidden notes (root cause, solution subgoals, correctness constraints)
+and the instruction the agent will read. Decide whether the instruction gives
+away the root cause or the fix.
+
+A LEAK is a sentence of the instruction that tells the agent where the defect
+is or what change to make. For example, it:
+- names the faulty file, function, class, variable, field or mechanism;
+- describes how the internal code currently misbehaves, rather than what the
+  user observes;
+- states a requirement in words that amount to the patch (for example "the
+  check must compare against totals computed independently from raw events"
+  when the bug is that it compares against the wrong totals);
+- singles out exactly the cases the planted defects break (for example
+  "including transactions with three or more entries" when the bug drops the
+  third entry).
+
+NOT a leak:
+- user-visible symptoms;
+- required observable behavior of commands, outputs and files, even when that
+  behavior is what is currently broken;
+- input and output formats, and names of files, commands or fields that are
+  part of the interface the tests check;
+- general rules that cover the broken case among many others.
+
+Flag only real leaks. Quote each leaking sentence exactly as it appears in the
+instruction, and say what it reveals. Return verdict "leak" if there is at
+least one leak; otherwise "clean" with an empty list."""
+
+LEAK_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "leak_review", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False, "required": ["leaks", "verdict"],
+        "properties": {
+            "leaks": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["quote", "reveals"],
+                "properties": {"quote": {"type": "string"}, "reveals": {"type": "string"}}}},
+            "verdict": {"type": "string", "enum": ["clean", "leak"]},
+        }}},
+}
+
+HIDDEN_SECTIONS = ("Root cause (hidden from the agent)", "Subgoals", "Correctness constraints")
+
+
+def _hidden_notes(readme: str) -> str:
+    """The author's hidden spec sections from the bundle README (materialize.py)."""
+    parts = []
+    for title in HIDDEN_SECTIONS:
+        start = readme.find(f"## {title}\n")
+        if start == -1:
+            continue
+        end = readme.find("\n## ", start + 4)
+        parts.append(readme[start:end if end != -1 else None].strip())
+    return "\n\n".join(parts)
+
+
+def _normalized(text: str) -> str:
+    return " ".join(text.replace("`", "").replace("*", "").split()).lower()
+
+
+def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
+    """Reject a bundle whose instruction reveals the hidden cause or fix.
+
+    The review is stored at trace_dir/leak/review.json and adopted on retry.
+    A leak only counts if its quote really appears in the instruction, so an
+    over-eager or hallucinating reviewer cannot fail a task on its own words.
+    """
+    if not config.LEAK_REVIEW:
+        return Gate("leak", True, {"skipped": "disabled (SDE_LEAK_REVIEW=0)", "cost_usd": 0.0})
+    readme = bundle_dir / "README.md"
+    notes = _hidden_notes(readme.read_text()) if readme.exists() else ""
+    if not notes:
+        return Gate("leak", True, {"skipped": "no hidden spec in the bundle", "cost_usd": 0.0})
+    instruction = (bundle_dir / "instruction.md").read_text()
+
+    record_path = trace_dir / "leak" / "review.json"
+    if record_path.exists():
+        record = json.loads(record_path.read_text())
+        record["adopted"], record["cost_usd"] = True, 0.0
+    else:
+        from shared.llm import llm  # shared/llm/llm.py
+        messages = [{"role": "system", "content": LEAK_SYSTEM},
+                    {"role": "user", "content": f"HIDDEN AUTHOR NOTES\n\n{notes}\n\n"
+                                                f"INSTRUCTION SHOWN TO THE AGENT\n\n{instruction}"}]
+        completion = llm.complete(messages, LEAK_FORMAT, llm_dir=trace_dir / "leak" / "llm",
+                                  cache_key="leak-review")
+        try:
+            review = json.loads(completion.content)
+        except json.JSONDecodeError:
+            review = {"leaks": [], "verdict": "unparseable"}
+        record = {"review": review, "request_sha256": completion.request_sha256,
+                  "cost_usd": 0.0 if completion.cached else completion.cost_usd, "adopted": False}
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(json.dumps(record, indent=1) + "\n")
+
+    review = record["review"]
+    if review.get("verdict") == "unparseable":
+        raise RuntimeError("leak review returned unparseable JSON")
+    haystack = _normalized(instruction)
+    confirmed = [x for x in review.get("leaks", []) if x.get("quote") and _normalized(x["quote"]) in haystack]
+    unverified = [x for x in review.get("leaks", []) if x not in confirmed]
+    detail = {"verdict": review.get("verdict"), "leaks": confirmed, "unverified_quotes": unverified,
+              "request_sha256": record.get("request_sha256"), "cost_usd": record["cost_usd"],
+              "adopted": record.get("adopted", False)}
+    if not confirmed:
+        return Gate("leak", True, detail)
+    listed = "\n".join(f"- \"{x['quote']}\"\n  reveals: {x['reveals']}" for x in confirmed)
+    feedback = ("A reviewer compared the instruction with your hidden spec and found sentences that give "
+                f"away the root cause or the fix:\n{listed}\n\nRewrite them so the instruction states what "
+                "must be true in terms of the system's interface (commands, inputs, outputs, files), without "
+                "naming the faulty code or describing the change. Keep every requirement the tests check, and "
+                "do not single out the exact cases the defect breaks.")
+    return Gate("leak", False, detail, feedback)
+
+
 def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:
-    """Run the gates on one bundle. Returns {outcome, result: {gates}, feedback}."""
+    """Run the gates on one bundle.
+
+    Returns {outcome, failed_gate, result: {gates}, feedback, cost_usd}. Only the
+    leak review costs money; its spend is cost_usd (0 when adopted on a retry).
+    """
     bundle_dir, trace_dir = Path(bundle_dir), Path(trace_dir)
     steps = [
         lambda: gate_structural(bundle_dir),
@@ -190,15 +314,17 @@ def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:
         lambda: gate_oracle(bundle_dir, trace_dir, "oracle1"),
         lambda: gate_oracle(bundle_dir, trace_dir, "oracle2"),
         lambda: gate_nop(bundle_dir, trace_dir),
+        lambda: gate_leak(bundle_dir, trace_dir),
     ]
     gates: dict[str, dict] = {}
     for step in steps:
         gate = step()
         gates[gate.name] = {"passed": gate.passed, **gate.detail}
+        cost = round(sum(g.get("cost_usd") or 0.0 for g in gates.values()), 6)
         if not gate.passed:
             return {"outcome": "FAILED", "failed_gate": gate.name, "result": {"gates": gates},
-                    "feedback": gate.feedback}
-    return {"outcome": "OK", "failed_gate": None, "result": {"gates": gates}, "feedback": ""}
+                    "feedback": gate.feedback, "cost_usd": cost}
+    return {"outcome": "OK", "failed_gate": None, "result": {"gates": gates}, "feedback": "", "cost_usd": cost}
 
 
 if __name__ == "__main__":

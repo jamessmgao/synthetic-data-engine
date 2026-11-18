@@ -63,6 +63,9 @@ BASE_ENV = {
     "SDE_RETRY_BACKOFF_SEC": "0.05",
     "SDE_BREAKER_INVALID": "1000",
     "SDE_DOCKER_SLOTS": "4",
+    # The scenarios script versions explicitly (t04 is too hard three times, then
+    # exhausted), so pin the cap rather than follow the production default.
+    "SDE_MAX_VERSIONS": "3",
 }
 
 

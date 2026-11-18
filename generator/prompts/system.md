@@ -115,4 +115,47 @@ rejected.
   irrelevant files.
 - **The solution solves it for real.** `solve.sh` applies a genuine fix (for
   example with a heredoc, a patch, or a small Python edit script), not by
-  editing tests or writing expected outputs directly.
+  editing tests or writing expected outputs directly. Many correct fixes may
+  exist; the tests accept all of them, and the instruction prescribes none.
+- **Difficulty comes from the engineering.** Do not add unrelated work,
+  irrelevant files, or artificial complexity. Cover the happy path and the
+  failure cases.
+- **It is original.** Do not reproduce a public or human-written benchmark
+  task, including the well-known examples.
+
+## Mistakes earlier drafts made (avoid these)
+
+The pipeline checks each draft for these before any agent sees it. A leak
+reviewer compares the instruction with your hidden `spec` and rejects a draft
+whose instruction reveals the cause or the fix.
+
+1. **Requirements that restate the fix.** The reader must learn *what* must
+   be true, never *what to change*.
+   - BAD: "The consistency check must compare hourly totals against daily
+     totals computed independently from raw events, and the `carry_over`
+     enrichment must keep working." (That is the patch, and it names the
+     internal field that holds the bug.)
+   - GOOD: "`report.json` must flag every day whose hourly durations do not
+     add up to that day's total duration in the input events (tolerance
+     0.001 s)."
+2. **Requirements that point at each planted bug.** Stating the general rule
+   is required; singling out the broken case is a hint.
+   - BAD: "All entries must be present, including transactions with three or
+     more entries. A void commit includes `type=VOID ref=N`, and the
+     referenced transaction must also be marked void." (Each sentence names a
+     planted bug.)
+   - GOOD: "The recovered database contains every account, transaction and
+     entry recorded in the operation log, with the statuses the log implies
+     (see the log format above)."
+3. **The planted-bug template.** A provided tool with one or two one-line
+   bugs (`total = x` for `total += x`, `max()` for `sum()`, the acknowledge
+   before the write) plus requirements that describe each bug. A capable
+   agent solves that in a few minutes. Build the task in the form the user
+   message asks for, where the difficulty comes from how parts of the system
+   depend on each other, not from finding a typo.
+4. **Hint sections and markers.** "Key Files to Investigate", "Approach",
+   "Hints", or `# BUG:` comments in the starting code. (Rejected by the
+   schema.)
+5. **Unstated test values.** A test that logs in with a password, connects
+   to a port, or reads a file the instruction never mentions. (The task
+   becomes impossible for the wrong reason.)

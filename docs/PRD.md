@@ -10,7 +10,7 @@ contract). Items marked **(open)** still need a decision; see §7.
 **One-line summary:** GLM-5.1 writes original Terminal-Bench 2 / Harbor tasks. The pipeline
 proves each one works (the reference solution passes, an untouched container fails), then runs
 `terminus-2` + `glm-5.3-flash` five times. It ships only tasks where 1–3 runs pass, and explains
-every failure. Tasks outside the band are revised up to v3, then rejected. Everything is recorded so a reviewer
+every failure. Tasks outside the band are revised, up to `MAX_VERSIONS` versions (10), then rejected. Everything is recorded so a reviewer
 can check each verdict without reading code, and the pipeline survives being killed or run twice.
 
 ---
@@ -41,7 +41,8 @@ can check each verdict without reading code, and the pipeline survives being kil
    (failing tests, last commands). If a failure shows a task defect, the version goes back for a
    repair; it is not counted as hard.
 10. The Trace Parser accepts 1–3/5; otherwise it sends the task back to the generation
-    workers as a revision (harder or easier) up to v3, then rejects it with reason `exhausted`.
+    workers as a revision (harder or easier) up to `MAX_VERSIONS` (10, `SDE_MAX_VERSIONS`), then rejects
+    it with reason `exhausted`.
 11. Only accepted tasks are written to `output/accepted/<name>/`, each with its `verdict.md`.
 
 **Reviewer (the reviewer)**
@@ -78,7 +79,7 @@ reusing or adapting public tasks.
 | N6 | **Large artifacts stay out of the database** | Bundles (≤ 2 MB, enforced by `schema.py`), Harbor job dirs (trajectories, possibly tens of MB) and transcripts are files referenced by path + sha256. DB rows stay in the KB range. | Keeps SQLite fast and the DB small enough to inspect by hand. |
 | N7 | **Trustworthy verdicts** | A verdict counts only 5 *valid* rollouts of one bundle sha under one config hash; timeouts and infra errors never count as 0. Every `VALID_FAIL` cites evidence excerpts from the logs and an attribution; an explanation that cites nothing is kept and shown as `unexplained`, never hidden. Invalid rollouts are shown with their exception type. | README criterion 1: "a failing run should mean the model failed, not the task", and "know why it fails". |
 | N8 | **Isolation and secrets** | No API key, tests or solution in the agent-visible image. Generated code runs only inside Harbor's containers. The key is never logged. | Reward hacking; untrusted generated Dockerfiles. |
-| N9 | **Yield and diversity** | At least 40% of initial candidates accepted within v3 and at least 80% functionally valid (working goals, reported as measured). A new task takes an unused (domain, task type, environment) combination while any is left; lexical similarity < 0.3 to any batch task or example. | Primary metric; diverse sets are worth more for training. |
+| N9 | **Yield and diversity** | At least 40% of initial candidates accepted within the version cap and at least 80% functionally valid (working goals, reported as measured). A new task takes an unused (domain, task type, environment) combination while any is left; lexical similarity < 0.3 to any batch task or example. | Primary metric; diverse sets are worth more for training. |
 | N10 | **Simplicity and cost** | Nothing beyond Docker, Python 3.12+, Harbor and `.env`: one SQLite file with two tables. Under $10 per accepted task including spend on rejected ones; hard stop at a configurable spend cap (default $100). | Anyone can run it on a laptop, and the cost per task stays far below $200. |
 
 Consistency: every state transition, together with the next stage's job it hands off, is one
@@ -87,7 +88,8 @@ transaction (compare-and-set). Reports and `status` can be a few seconds stale.
 ### Back-of-the-envelope (illustrative; replaced by measurements after M2)
 
 - Harbor runs per candidate version: oracle × 2 + nop × 1 + rollouts × 5 = **8**. Expected versions per
-  candidate ≈ 1.7 (assuming about 50% need v2 and 20% need v3), so ≈ **14 Harbor runs per candidate**.
+  candidate ≈ 1.7 (assuming about 50% need a v2 and 20% a v3; the cap of 10 versions
+  raises the worst case to ≈ 80 runs per candidate), so ≈ **14 Harbor runs per candidate**.
 - Docker capacity: 8 CPU / ~10 GB VM, task containers 1 CPU / 2 GB → **4 trial slots**.
 - Trial time: the smoke test took 78 s on an easy example; in-band tasks will be longer. Assume
   ~8 min average → 10 candidates × 14 runs × 8 min / 4 slots ≈ **4.7 h**.
@@ -146,7 +148,7 @@ output/reports/<name>/       summary.json + report.md (written by scripts/run_ta
 | `id` | text PK | `t-<date>-<hex>`, or the client's `task_id`. Reusing an id with the same request inserts nothing. |
 | `slot` | json | The taxonomy slot and difficulty profile it was sampled with (§6.2). |
 | `status` | text | `CREATED → CALIBRATING → ACCEPTED \| REJECTED`. |
-| `reason` | text, nullable | Why it was rejected: `exhausted` (out of band at v3), `invalid` (repairs spent), `infra_unresolved`. |
+| `reason` | text, nullable | Why it was rejected: `exhausted` (out of band at `MAX_VERSIONS`), `invalid` (repairs spent), `infra_unresolved`. |
 | `current_version` | int | 1–3 (check constraint). Advanced only by compare-and-set, which is what stops two processes creating the same revision. |
 | `stage` | text | Stage of the current version: `QUEUED → GENERATING → BUILDING → VALIDATING → EVALUATING → BAND_OK \| OUT_OF_BAND`, or `INVALID` / `UNRESOLVED`. |
 | `bundle_sha256`, `name` | text, nullable | The current version's bundle and slug (copied from its latest successful `create` / `revise` job, for cheap reads). |
@@ -191,13 +193,13 @@ difficulty score.
 
 ```
 task:     CREATED ─► CALIBRATING ──► ACCEPTED       (some version BAND_OK)
-                          └────────► REJECTED       reason: exhausted (v3 OUT_OF_BAND) |
+                          └────────► REJECTED       reason: exhausted (OUT_OF_BAND at MAX_VERSIONS) |
                                                             invalid (repairs spent) |
                                                             infra_unresolved
 
 stage:    QUEUED ─► GENERATING ─► BUILDING ─► VALIDATING ─► EVALUATING ─► BAND_OK | OUT_OF_BAND
                         ▲                          │                           │
-                        └──────── repair (≤2) ─────┘                           └─► v(n+1) QUEUED (n<3)
+                        └──────── repair (≤2) ─────┘                           └─► v(n+1) QUEUED (n < MAX_VERSIONS)
                                                    └─► INVALID       EVALUATING ─► UNRESOLVED
 
 job:      READY ─► LEASED ─► DONE (outcome)          rollout INVALID ─► new job row, retry+1 (≤3)
@@ -399,7 +401,7 @@ Generation Service
    version does the work: parse the traces, a GLM-5.1 review of each failed run, then the decision.
    1–3 passes and every failure the model's fault → `ACCEPTED`, bundle published. Too easy or
    too hard → a `revise` job for v(n+1) on the revise queue, and the loop runs again from step 2.
-   A failure blamed on the task → a repair revision. Still out of band at v3 →
+   A failure blamed on the task → a repair revision. Still out of band at `MAX_VERSIONS` (10) →
    `REJECTED (exhausted)`.
 
 ### 5.3 Reliability and scalability
@@ -487,6 +489,16 @@ backed locally and all roles can run in one process, so nothing beyond Docker is
 
 Every call is written to `work/llm/<request_sha256>.json` *before* its job settles; on restart, a matching file is reused instead of calling again (§6.7).
 
+**What GLM-5.1 receives for each `POST /v1/tasks` input.** Every request sends the same
+**system message** (`generator/prompts/system.md`: the Harbor contract and every rule the gates
+check) and enforces the same **response schema** (`TaskDraft`). Only the user message differs:
+
+| Input | User message |
+|---|---|
+| `{}` (sampled) or `{"spec": ...}` | the template (`prompting.render_initial_prompt`), with the taxonomy |
+| `{"prompt": "..."}` | the same template, with the text as its TASK IDEA section |
+| `{"raw_prompt": "..."}` | the text verbatim; no template |
+
 ### 6.2 Difficulty profile (from `TASK_GENERATION_RULES.md`)
 
 Each spec carries **both** kinds of levers; difficulty is never reduced to counts alone.
@@ -522,9 +534,16 @@ Rules carried over:
   rate down, never hide necessary information, and never add requirements that can't be met.
 - Input size must be relevant code/data, not filler.
 
-The v1 profile starts from a single default ("medium-hard": 2 interacting components, 3
-constraints with at least one interaction, root cause not stated, 2 dependent subgoals), tuned
-after the M2 pilot shows where `glm-5.3-flash` actually lands.
+**Default (2026-11-18): a task form and a dial, not generic counts.** The pilots measured
+that easy/medium/hard labels and file, constraint or subgoal counts don't move the pass rate
+(every level scored 4–5/5), so `spec.difficulty` is now `{"form": ..., "dial": 1–3, "notes"?}`
+(generator/prompting.py `FORMS`). The default is `{"form": "behavior_preserving", "dial": 2}`:
+a stated local change to a shared component that silently breaks dependents relying on its old
+behavior. It is the only form that produced a genuine model failure in the pilots (4/5), so it is
+the best starting point, not a proven band-hitter: the dial turns it. `many_rules` (many precise
+interacting rules) is the second form. Free-text prompts get a form and dial too; without one,
+GLM-5.1 falls back to "a tool with planted 1–2 line bugs", which flash solves 4–5/5. The
+system prompt carries every rule plus BAD/GOOD examples of the mistakes earlier drafts made.
 
 ### 6.3 Validation gates (in order, cheapest first)
 
@@ -535,9 +554,13 @@ after the M2 pilot shows where `glm-5.3-flash` actually lands.
 | 3 | `harbor lint --json` | no `agent-image-test-leak`, `unpinned-image`, `unpinned-python-dependency`, `root-agent` | repair; other findings are warnings |
 | 4 | oracle trial ×2 | reward 1 both times | repair (flaky = fail) |
 | 5 | nop trial | reward exactly 0, no verifier exception | repair |
+| 6 | leak review (one GLM-5.1 call, ~$0.02–0.05) | the instruction doesn't give away the hidden root cause, subgoals or constraints; a leak counts only if its quote appears verbatim in the instruction | repair: reword at the interface level |
 
 A verifier crash or missing reward is **not** nop = 0. Docker build failures show up in gates 4–5
-as Harbor environment exceptions and are repaired with the build log. Gates 2–5 run inside one
+as Harbor environment exceptions and are repaired with the build log. The leak review runs last,
+so it is paid only for tasks that already work, and before any rollout is spent on a task whose
+instruction hands over the fix; its verdict is `result.gates.leak` and its cost the job's
+`cost_usd` (`SDE_LEAK_REVIEW=0` disables it; bundles with no hidden spec skip it). Gates 2–5 run inside one
 `validate` job, which holds one Docker slot; its Harbor dirs go under `traces/<job_id>/oracle1`,
 `…/oracle2` and `…/nop`, so a reclaimed validate job adopts finished steps instead of rerunning
 them. Each step's result is recorded in the validate job's `result.gates`.
@@ -607,14 +630,21 @@ Parser decides (an `analyze` job that finds fewer finishes with `action: wait`):
 ```
 pass_count in 1..3, all failures model → BAND_OK, task ACCEPTED, publish
 any failure attribution task      → repair revision (repair_ambiguity), not a difficulty measurement
-pass_count 0 or 4..5, n < 3       → OUT_OF_BAND, advance to v(n+1) and enqueue its revision job
-pass_count 0 or 4..5, n = 3       → OUT_OF_BAND, task REJECTED (exhausted)
+pass_count 0 or 4..5, n < MAX      → OUT_OF_BAND, advance to v(n+1) and enqueue its revision job
+pass_count 0 or 4..5, n = MAX      → OUT_OF_BAND, task REJECTED (exhausted)   (MAX = MAX_VERSIONS, 10)
 ```
 
 Moving to v(n+1) is one compare-and-set, `UPDATE tasks SET current_version=n+1, stage='QUEUED'
 WHERE id=? AND current_version=n AND stage='EVALUATING'`, in the same transaction as inserting the
 `revise` job with its deterministic id, so two analyze jobs that both see five valid rollouts
 can't both create it: one wins, the other finds the stage already moved and finishes.
+
+**Version cap: `MAX_VERSIONS` = 10** (`SDE_MAX_VERSIONS`), raised from 3 on 2026-11-18. Each extra
+version costs about $0.10–0.30 of drafting, $0.03–0.07 of runs and 20–40 minutes, so a task that
+never reaches the band costs up to ~10× a single evaluation. The cap lives in code, not in the
+table (`tasks.current_version` is only checked `>= 1`; schema init lifts the old 3-version check).
+Once every operator in a direction has been used, the first one is applied again on top of the
+previous version.
 
 Operators (fixed rules, chosen from the evidence):
 
@@ -775,6 +805,6 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
    and the Executor each hand off their next stage in their settle transaction; executors ping
    `sde:analyze`; the Trace Parser service extracts evidence and has GLM-5.1 review each failed run, writes `failure` / `trace_metrics`, and decides accept /
    revision / repair / reject. Owner per stage transition as in §5.1.
-6. **M4 revision loop:** operators, v2/v3 through the Generation Service's revision path, before/after in the report.
+6. **M4 revision loop:** operators, v2…v10 through the Generation Service's revision path, before/after in the report.
 7. **M5 run:** 10+ candidates via `scripts/run_tasks.py`, `GET /v1/report`, update `CHANGELOG.md` with measured results.
 8. **M6 human-likeness:** blind rubric comparison with `examples/`; optional compose backend.

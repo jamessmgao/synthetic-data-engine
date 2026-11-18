@@ -24,6 +24,7 @@ from generator.worker import RESPONSE_FORMAT, run_generate_job
 
 sys.path.insert(0, os.path.join(config.ROOT_DIR, "validator"))
 from validator.validate import validate_task  # noqa: E402
+from validator import gates  # noqa: E402,F401  (validator/gates.py)
 
 VALID = {
     "name": "fix-median-calculation",
@@ -377,3 +378,109 @@ def test_upstream_mid_stream_errors_are_retried_but_4xx_are_not():
 def test_generate_job_reports_bad_input(tmp_path):
     res = run_generate_job("x", {"origin": "repair", "bundle_sha256": "nope", "feedback": ""}, tmp_path)
     assert res["outcome"] == "FAILED" and "bad job input" in res["error"]
+
+
+# --- the authoring prompt: form and dial, no restated rules --------------------
+
+def test_prompt_uses_default_form_and_dial_and_drops_fixed_sections():
+    from generator import prompting
+    text = prompting.render_initial_prompt({"taxonomy": {"domain": "Databases"},
+                                            "difficulty": {"level": "hard", "relevant_files": "15-30"}})
+    assert "TASK FORM: Coupled behavior-preserving change" in text
+    assert "DIFFICULTY DIAL: hidden dependents of the changed behavior, level 2 of 3" in text
+    assert "Domain: Databases" in text
+    assert "relevant repository files" not in text, "generic counts are no longer rendered"
+    assert "INSTRUCTION QUALITY" not in text and "TEST REQUIREMENTS" not in text
+    assert text.rstrip().endswith(prompting.CLOSING)
+
+
+def test_prompt_seed_still_gets_a_form_and_dial():
+    from generator import prompting
+    text = prompting.render_initial_prompt({"seed": "a cache that serves stale prices",
+                                            "difficulty": {"form": "many_rules", "dial": 3}})
+    assert "TASK IDEA (from the requester)" in text and "a cache that serves stale prices" in text
+    assert "TASK FORM: Implementation against many precise rules" in text
+    assert "level 3 of 3" in text and prompting.FORMS["many_rules"]["dial"][3] in text
+
+
+def test_prompt_fixed_sections_only_for_the_ab():
+    from generator import prompting
+    with_fixed = prompting.render_initial_prompt({"difficulty": {"fixed_sections": True}})
+    assert "INSTRUCTION QUALITY" in with_fixed and with_fixed.rstrip().endswith(prompting.CLOSING)
+
+
+def test_prompt_rejects_unknown_form_and_clamps_dial():
+    from generator import prompting
+    with pytest.raises(ValueError):
+        prompting.render_initial_prompt({"difficulty": {"form": "nonsense"}})
+    assert "level 3 of 3" in prompting.render_initial_prompt({"difficulty": {"dial": 9}})
+
+
+def test_system_prompt_carries_the_rules_and_examples():
+    text = (Path(config.PROMPTS_DIR) / "system.md").read_text()
+    for must in ("Mistakes earlier drafts made", "BAD:", "GOOD:", "Requirements that restate the fix",
+                 "planted-bug template", "1 CPU and 2 GB"):
+        assert must in text, must
+
+
+# --- the leak-review gate, with the model call replaced (no spend) -------------
+
+def leak_bundle(tmp_path: Path, instruction: str) -> Path:
+    b = materialize(TaskDraft.model_validate(draft_with(instruction=instruction)), tmp_path / "bundle")
+    return b
+
+
+def fake_review(monkeypatch, review: dict) -> FakeModel:
+    fake = FakeModel(json.dumps(review))
+    monkeypatch.setattr(llm, "_stream", fake)
+    return fake
+
+
+def test_leak_gate_fails_on_a_verbatim_leak(tmp_path, monkeypatch):
+    from validator import gates
+    leaky = VALID["instruction"] + " The bug is that stats.median picks the upper middle element."
+    bundle = leak_bundle(tmp_path, leaky)
+    fake_review(monkeypatch, {"verdict": "leak", "leaks": [
+        {"quote": "The bug is that stats.median picks the upper middle element.", "reveals": "the root cause"}]})
+    gate = gates.gate_leak(bundle, tmp_path / "trace")
+    assert not gate.passed and "picks the upper middle element" in gate.feedback
+    assert gate.detail["cost_usd"] == 0.01 and gate.detail["leaks"]
+
+
+def test_leak_gate_ignores_quotes_that_are_not_in_the_instruction(tmp_path, monkeypatch):
+    from validator import gates
+    bundle = leak_bundle(tmp_path, VALID["instruction"])
+    fake_review(monkeypatch, {"verdict": "leak", "leaks": [{"quote": "made-up sentence", "reveals": "x"}]})
+    gate = gates.gate_leak(bundle, tmp_path / "trace")
+    assert gate.passed and gate.detail["unverified_quotes"]
+
+
+def test_leak_gate_adopts_its_review_on_retry(tmp_path, monkeypatch):
+    from validator import gates
+    bundle = leak_bundle(tmp_path, VALID["instruction"])
+    fake = fake_review(monkeypatch, {"verdict": "clean", "leaks": []})
+    first = gates.gate_leak(bundle, tmp_path / "trace")
+    again = gates.gate_leak(bundle, tmp_path / "trace")
+    assert first.passed and again.passed and fake.calls == 1
+    assert first.detail["cost_usd"] == 0.01 and again.detail["cost_usd"] == 0.0 and again.detail["adopted"]
+
+
+def test_leak_gate_skips_bundles_without_a_hidden_spec(tmp_path):
+    from validator import gates
+    gate = gates.gate_leak(Path(config.ROOT_DIR) / "examples" / "fix-git", tmp_path / "trace")
+    assert gate.passed and "no hidden spec" in gate.detail["skipped"]
+
+
+def test_validate_job_reports_leak_gate_and_cost(tmp_path, monkeypatch):
+    from validator import gates
+    ok = lambda name: gates.Gate(name, True, {})  # noqa: E731
+    monkeypatch.setattr(gates, "gate_structural", lambda b: ok("structural"))
+    monkeypatch.setattr(gates, "gate_lint", lambda b: ok("lint"))
+    monkeypatch.setattr(gates, "gate_oracle", lambda b, t, step: ok(step))
+    monkeypatch.setattr(gates, "gate_nop", lambda b, t: ok("nop"))
+    bundle = leak_bundle(tmp_path, VALID["instruction"] + " Fix it by averaging the two middle values.")
+    fake_review(monkeypatch, {"verdict": "leak", "leaks": [
+        {"quote": "Fix it by averaging the two middle values.", "reveals": "the patch"}]})
+    res = gates.run_validate_job(bundle, tmp_path / "trace")
+    assert res["outcome"] == "FAILED" and res["failed_gate"] == "leak"
+    assert res["result"]["gates"]["leak"]["passed"] is False and res["cost_usd"] == 0.01
