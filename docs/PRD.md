@@ -124,7 +124,7 @@ fenced but keeps its cost, and the queue drops the task's jobs (`TERMINAL_TASK_S
 **Limits.** `MAX_VERSIONS` = 8 (`SDE_MAX_VERSIONS`), 2 repairs per version, 3 retries per
 rollout slot, 3 claims per job before DEAD.
 
-**Settings** are listed with their defaults in README "Run it locally" and
+**Settings** are listed with their defaults in README "Quick start" and
 `deploy/local.env.example`. Deployment: docs/AGENT_MODE_DEPLOY.md.
 
 ---

@@ -49,8 +49,7 @@ don't change behavior; time-box it to about 5 min per bundle.
 **What exists today:** two hand-picked broken versions, the nop gate (the untouched repo must
 fail) and the wrong-fix gate (the world's plausible wrong fix must fail).
 
-**Why it waits:** useful (weak tests let partial or hacky fixes pass, the README's reward-hacking
-concern, and it makes "too easy" verdicts more trustworthy), but not urgent. The semantic leak
+**Why it waits:** useful (weak tests let partial or hacky fixes pass, the reward-hacking concern, and it makes "too easy" verdicts more trustworthy), but not urgent. The semantic leak
 check and the invariant property tests come first.
 
 **When it matters:** if batch results show passes that a review judges partial or hacky, or

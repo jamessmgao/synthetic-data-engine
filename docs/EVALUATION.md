@@ -1,7 +1,7 @@
 # Evaluation: the Executor, the Trace Parser, mutations and verdicts
 
 How a built task version is measured and decided: the code in `evaluation/`, as built
-on main. The band is fixed by the README: a version is **learnable** when 1–3 of 5
+on main. The band is fixed: a version is **learnable** when 1–3 of 5
 `terminus-2` + `glm-5.3-flash` (`reasoning_effort=high`) runs pass all tests, and the
 failures are the model's, not the task's.
 
