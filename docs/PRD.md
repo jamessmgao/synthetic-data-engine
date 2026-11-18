@@ -15,6 +15,120 @@ can check each verdict without reading code, and the pipeline survives being kil
 
 ---
 
+## As built (2026-11-17): agent mode
+
+The requirements and design below are unchanged. This section records what was built on
+top of them, with the code that implements each part; where a later section describes only
+one-shot generation, this is the current behavior. Contracts and details:
+[`AGENTIC_AUTHORING_PLAN.md`](AGENTIC_AUTHORING_PLAN.md) (job types, inputs, status),
+[`WORKER_INTERFACE.md`](WORKER_INTERFACE.md) (every job function's inputs and results),
+[`VALIDATION_GATES.md`](VALIDATION_GATES.md) (validate and world_check gates). Method:
+[`WORLD_CONSTRUCTION.md`](WORLD_CONSTRUCTION.md); review findings:
+[`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md).
+
+**Two authoring modes, chosen per job.** `SDE_AUTHOR_MODE=oneshot` (default) drafts a bundle
+with one strict-JSON GLM-5.1 call (`generator/worker.py:run_generate_job`, §6.1).
+`SDE_AUTHOR_MODE=agent` runs terminus-2 + GLM-5.1 sessions in the `sde-authoring` image:
+`generator/author.py:run_world_job` builds a **world** (an executable system, its
+invariants, a reproducible counterexample, a fix and a plausible wrong fix), and
+`generator/author_task.py:run_create_job` writes a task **from that world**. In agent mode
+`shared/jobs/worker.py:draft_fn` picks per job: a create or revise whose input has
+`world_sha256` runs the agent author, and anything else (raw prompts, v1 specs, tasks in
+flight when the mode switched) runs one-shot.
+
+**Job types.** `world` and `world_check` join `create`, `revise`, `validate`, `rollout` and
+`analyze` (`shared/contracts/models.py:JobType`; priorities analyze 40 > rollout 30 > validate 20 >
+world_check 18 > revise 15 > create 12 > world 10). The agent-mode flow, with hand-offs in
+`shared/jobs/handoffs.py`:
+
+```
+world ─► world_check ─fail─► world-repair<k> (≤ MAX_REPAIRS_PER_VERSION = 2) ─► REJECTED invalid
+              │ ok                                    (after_world, after_world_check)
+              ▼
+create (from the world) ─► validate ─fail─► repair<k> (≤2; also when create's own leak review fails)
+              │ ok                         (after_generation, after_validate; the world travels along)
+              ▼
+rollout ×5 ─► analyze ─► accept | world mutation (v+1) | revise "easier" | revise "repair_ambiguity" | reject
+```
+
+Task stages gain `WORLD_BUILDING` and `WORLD_CHECKING` (`shared/contracts/models.py:Stage`).
+
+**Gates.**
+- `validate` (`validator/gates.py:run_validate_job`): structural · lint · oracle ×2 · nop ·
+  **wrong_fix** (`gate_wrong_fix`: the bundle's plausible wrong fix, run as the oracle,
+  must score 0) · **leak** (`gate_leak`: a semantic review against the hidden spec and the
+  world, plus a blind fix prediction, `SDE_LEAK_BLIND`).
+- `create` runs the leak review first (no Docker slot). A leaking draft fails with
+  `failure_kind: author` and goes to a repair, not a rejection.
+- `world_check` (`shared/taskformat/world_check.py:run_world_check_job`): the world builds; the
+  repro fails twice; it passes twice with the fix.
+- Its **hardness** checks (the symptom is visible; the fix isn't one local patch, i.e. 2+
+  files or a dependent the wrong fix breaks; the wrong fix clears the symptom and fails
+  the repro) follow `SDE_WORLD_HARDNESS` = `off` | `warn` (default: recorded in
+  `result.hardness`, not failing) | `enforce` | `strict`. Details: docs/VALIDATION_GATES.md.
+
+**Trace Parser outcomes** (`evaluation/trace_parser_service.py:TraceParserService.analyze`,
+`next_job`; docs/EVALUATION.md):
+- **too easy** → a `world` mutation job `<t>-v<n+1>-world` (origin `mutation`) with the parent
+  world, 1–2 operators from `evaluation/calibration.py:choose_mutations`, the pass review and
+  the history;
+- **too hard** → `revise` origin `easier` on the same world;
+- **task blamed** → `revise` origin `repair_ambiguity`.
+
+One-shot tasks still get `revise` origin `revision`. The mutation rules are deterministic,
+and each choice records `{operator, rule, evidence}`. Using the world_check hardness result
+in the mutation rules is parked (branch `park/hardness-tiebreak`, docs/TODO.md).
+
+**Spec v2 / taxonomy v2** (`shared/taxonomy/taxonomy.py`, `api/submit.py`): family ×
+mechanism × environment × verification, plus `shape` and `dial` 1–3. `GET /v1/families`;
+`area` / `mechanism` / `environment` / `dial` on `POST /v1/tasks` and `/v1/batches`.
+
+**Spend cap** (`shared/storage/budget.py:claim_filter`): a paid job (agent mode: world, create,
+revise, rollout, analyze) is claimed only while recorded spend + the estimates of leased
+jobs + its own estimate stay under `SDE_BUDGET_USD` and its batch's `budget_usd`. Agent-mode
+estimates: world $1, create $4, revise $3. The batch caps live in a small `batches` table
+(`id, budget_usd, created_at`). `/healthz` reports the cap, the spend and what's left.
+
+**Cancel** (`shared/jobs/tasks.py:cancel`; `POST /v1/tasks/{id}/cancel`,
+`POST /v1/batches/{id}/cancel`): status `CANCELLED`, stage `CANCELLED`, reason
+`cancelled_by_user`, `cancelled_at` / `cancelled_by` / `cancel_note`. A cancel is decided
+but counts as neither yield nor failure. Open jobs are closed, a running job's settle is
+fenced but keeps its cost, and the queue drops the task's jobs (`TERMINAL_TASK_STATUSES`).
+
+**Capacity and robustness** (`shared/jobs/jobqueue.py:JobQueue.claim`, `shared/storage/sql.py:claim`):
+- Per-machine Docker slots (`SDE_DOCKER_SLOTS`; the job row's `needs_docker`), and agent
+  slots (`SDE_AGENT_SLOTS`) for the long sessions.
+- A memory guard (`SDE_MIN_FREE_MEMORY_PCT`, 20) and a CPU guard (`SDE_MAX_CPU_LOAD_PCT`, 90)
+  stop new Docker claims; optional claim pacing (`SDE_DOCKER_CLAIM_SPACING_S`).
+- Crash isolation: a job whose worker died (its lease expired) runs alone in a process
+  (`isolated`). After `SDE_SUSPECT_MAX_WAIT_S` (600) any idle slot may take it, so it no
+  longer starves on a busy machine.
+- Agent jobs hold `SDE_AGENT_LEASE_TTL_S` (1800 s) leases.
+- Heartbeat errors are retried, not fatal (`shared/jobs/worker.py:run_one`,
+  `evaluation/executor.py:Executor._heartbeat`).
+- Each process has a bounded Postgres pool (`SDE_DB_POOL_MAX`, 4), with heartbeats on
+  their own connection.
+
+**Entities and API as built** (additions to §3–§4):
+- `tasks.status` can also be `CANCELLED` (reason `cancelled_by_user`, with
+  `cancelled_at` / `cancelled_by` / `cancel_note`).
+- `tasks.stage` gains `WORLD_BUILDING`, `WORLD_CHECKING` and `CANCELLED`.
+- `tasks.current_version` is checked ≥ 1, with the cap of 8 enforced in code.
+- `jobs` gains `isolated` (crash isolation) and `needs_docker` (holds a Docker slot).
+- A small `batches` table (`id, budget_usd, created_at`) holds each batch's spend cap.
+- New routes: `GET /v1/families`, `POST /v1/tasks/{id}/cancel`, `POST /v1/batches/{id}/cancel`;
+  `area` / `mechanism` / `environment` / `dial` on task and batch creation; `budget_usd` on
+  batches; the budget on `/healthz`.
+- Shapes: [`API.md`](API.md).
+
+**Limits.** `MAX_VERSIONS` = 8 (`SDE_MAX_VERSIONS`), 2 repairs per version, 3 retries per
+rollout slot, 3 claims per job before DEAD.
+
+**Settings** are listed with their defaults in README "Run it locally" and
+`deploy/local.env.example`. Deployment: docs/AGENT_MODE_DEPLOY.md.
+
+---
+
 ## 1. Functional requirements
 
 ### Core
@@ -495,6 +609,10 @@ backed locally and all roles can run in one process, so nothing beyond Docker is
 
 ### 6.1 Authoring a task (GLM-5.1)
 
+> As built: this is **one-shot mode** (`generator/worker.py:run_generate_job`). Agent mode
+> authors a world first and then a task from it (see "As built" above,
+> `generator/author.py:run_world_job`, `generator/author_task.py:run_create_job`).
+
 1. **Spec.** The sampler (§6.9) gives a taxonomy slot and difficulty profile. GLM-5.1 is first
    asked for a short *scenario pitch* (system, hidden root cause, why a capable agent slips).
    The lexical-novelty check runs on the pitch before any expensive drafting.
@@ -523,6 +641,9 @@ check) and enforces the same **response schema** (`TaskDraft`). Only the user me
 | `{"raw_prompt": "..."}` | the text verbatim; no template |
 
 ### 6.2 Difficulty profile (from `TASK_GENERATION_RULES.md`)
+
+> As built: spec v2 (family, mechanism, environment, verification, shape, dial 1–3;
+> `shared/taxonomy/taxonomy.py`) drives agent mode; this v1 profile still drives one-shot drafts.
 
 Each spec carries **both** kinds of levers; difficulty is never reduced to counts alone.
 
@@ -569,6 +690,10 @@ GLM-5.1 falls back to "a tool with planted 1–2 line bugs", which flash solves 
 system prompt carries every rule plus BAD/GOOD examples of the mistakes earlier drafts made.
 
 ### 6.3 Validation gates (in order, cheapest first)
+
+> As built: `wrong_fix` runs after nop, `leak` is a semantic review plus a blind fix
+> prediction that also runs inside `create`, and agent mode adds `world_check`
+> ([`VALIDATION_GATES.md`](VALIDATION_GATES.md)).
 
 | # | Gate | Pass condition | On failure |
 |---|---|---|---|
@@ -646,6 +771,10 @@ pays twice.
   incidental.
 
 ### 6.6 Aggregation and revision (Trace Parser)
+
+> As built: too easy in agent mode mutates the **world** (a `world` job with
+> evidence-chosen operators), too hard is `revise` origin `easier`, and a task-blamed
+> failure is `repair_ambiguity` ([`EVALUATION.md`](EVALUATION.md)).
 
 When a version has 5 valid rollout jobs under one bundle sha and one config hash, the Trace
 Parser decides (an `analyze` job that finds fewer finishes with `action: wait`):

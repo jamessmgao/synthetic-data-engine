@@ -1,6 +1,6 @@
 """Chaos test against the local K3s cluster (docs/K8S_PLAN.md, docs/DEPLOY.md §8). Run: `make k8s-test`.
 
-    python scripts/k8s_test.py [--tasks 2] [--timeout S] [--dry-run]
+    python scripts/k8s_test.py [--tasks 2] [--timeout S] [--context C] [--kubeconfig F] [--dry-run]
 
 The stack must be deployed in mock mode (SDE_MOCK_LLM=1). Kubernetes is used to inject
 work and to break things; the checks read Postgres through the services' own env.
@@ -18,10 +18,14 @@ work and to break things; the checks read Postgres through the services' own env
      - KEDA scaled executor above 1 replica during the run (sampled every 10 s); a
        scale-down is reported if it happens before the run ends.
 
-Always uses kube context k3d-sde and namespace sde, never the current context. Test tasks
+Always passes an explicit context (default k3d-sde; on the AWS K3s server node:
+--kubeconfig /etc/rancher/k3s/k3s.yaml --context default) and namespace sde, never the
+current context. Test tasks
 are named k8s-<run>-NNN. A killed pod's rollout is re-claimed once its lease expires; the
 local overlay's short leases (SDE_LEASE_TTL_S=45, SDE_SUSPECT_MAX_WAIT_S=10) make that ~1 min.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -32,7 +36,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CTX, NS = "k3d-sde", "sde"
+CTX, NS, KUBECONFIG = "k3d-sde", "sde", None
 FIXTURE = ROOT / "output" / "p1" / "p1-local-1" / "task"
 POD_FIXTURE = "/tmp/k8s-test-fixture"
 DECIDED = ("ACCEPTED", "REJECTED", "CANCELLED")
@@ -50,7 +54,7 @@ def check(ok: bool, msg: str) -> None:
 
 
 def kubectl(*args: str, stdin: str | None = None, check_rc: bool = True) -> str:
-    cmd = ["kubectl", "--context", CTX, "-n", NS, *args]
+    cmd = ["kubectl", *(["--kubeconfig", KUBECONFIG] if KUBECONFIG else []), "--context", CTX, "-n", NS, *args]
     if DRY:
         print("    $", " ".join(cmd))
         return ""
@@ -88,14 +92,18 @@ def wait_for(fn, timeout: float, what: str, every: float = 5):
 
 
 def main() -> None:
-    global DRY
+    global DRY, CTX, KUBECONFIG
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--tasks", type=int, default=2)
     p.add_argument("--timeout", type=float, default=10 * 60, help="seconds to wait for every task to be decided")
     p.add_argument("--dind-container", default="dind", help="the Docker sidecar's container name")
+    p.add_argument("--context", default=CTX)
+    p.add_argument("--kubeconfig", help="default: kubectl's own (KUBECONFIG or ~/.kube/config)")
+    p.add_argument("--task-dir", type=Path, default=FIXTURE, help="the task to inject (default: the P1 fixture)")
     p.add_argument("--dry-run", action="store_true", help="print the kubectl commands of each step; touch nothing")
     args = p.parse_args()
-    DRY = args.dry_run
+    DRY, CTX, KUBECONFIG = args.dry_run, args.context, args.kubeconfig
+    check(DRY or args.task_dir.is_dir(), f"fixture {args.task_dir}")
     prefix = f"k8s-{time.strftime('%H%M%S')}-"
     like = prefix + "%"
 
@@ -123,7 +131,7 @@ def main() -> None:
     step(f"inject {args.tasks} mock tasks ({prefix}NNN)")
     pod = control_pod()
     kubectl("exec", pod, "--", "rm", "-rf", POD_FIXTURE)
-    kubectl("cp", str(FIXTURE), f"{pod}:{POD_FIXTURE}")
+    kubectl("cp", str(args.task_dir), f"{pod}:{POD_FIXTURE}")
     for i in range(args.tasks):
         kubectl("exec", pod, "--", "python", "scripts/inject_task.py", POD_FIXTURE, f"{prefix}{i:03d}")
     print(f"    injected into {pod}")

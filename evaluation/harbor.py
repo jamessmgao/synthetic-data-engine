@@ -23,6 +23,7 @@ lost lease) stops Harbor and its Docker containers together.
 import json
 import os
 import random
+import shutil
 import signal
 import socket
 import subprocess
@@ -72,6 +73,45 @@ class TrialRun:
     result: dict  # the trial's result.json
     trial_dir: Path
     adopted: bool  # True if this run was found on disk rather than started now
+
+
+def trial_networks(job_dir: Path) -> list[str]:
+    """The Docker networks Harbor's compose creates for the trials under `job_dir`: compose
+    project `<trial dir name, lowercased>__env`, network `<project>_default`."""
+    if not job_dir.is_dir():
+        return []
+    return [f"{d.name.lower()}__env_default" for d in sorted(job_dir.iterdir()) if d.is_dir()]
+
+
+def remove_trial_networks(job_dir: Path) -> None:
+    """Remove the trials' networks once they're over. Harbor leaves them behind when a trial
+    is killed or stopped, and the leaked ones exhausted Docker's address pools ("all
+    predefined address pools have been fully subnetted", round 2). Only called when no Harbor
+    process for the job is alive; Docker refuses to remove a network still in use, so this
+    never breaks a running trial. Failures (already gone, no docker) are ignored."""
+    for name in trial_networks(job_dir):
+        _docker_quiet(["network", "rm", name])
+
+
+def _docker_quiet(args: list[str]) -> None:
+    if shutil.which("docker") is None:
+        return
+    try:
+        subprocess.run(["docker", *args], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def trial_env() -> dict[str, str]:
+    """The Harbor process's environment. SDE_SOLVER_LLM_TIMEOUT_S caps how long one solver
+    model call may wait, as litellm's REQUEST_TIMEOUT (its default is 6000 s, and Harbor
+    retries a failed call 3 times, so one hung call could stall a rollout for hours: P1's
+    run 2). It is set outside the pinned agent kwargs on purpose: the solver's sampling and
+    the config hash stay the same; only the wait is capped. Unset = litellm's default."""
+    env = dict(os.environ)
+    if timeout := os.environ.get("SDE_SOLVER_LLM_TIMEOUT_S", "").strip():
+        env["REQUEST_TIMEOUT"] = str(float(timeout))
+    return env
 
 
 def pinned_agent() -> AgentConfig:
@@ -222,10 +262,12 @@ def run_trial(task_dir: Path, job_id: str, agent: AgentConfig, cancel: threading
         _wait_for_orphan(orphan, job_id, cancel, poll_sec)
     if (found := finished_trial(job_dir)) is not None:
         pid_file.unlink(missing_ok=True)
+        remove_trial_networks(job_dir)  # a dead worker's finished trial may have left its network
         return found
     if cancel.is_set():
         raise Cancelled()
     if job_dir.exists():
+        remove_trial_networks(job_dir)
         _set_aside(job_dir)
     # Load tests: hold the slot as long as a model-driven rollout would, then run oracle / nop.
     if agent.agent == MOCK_AGENT and cancel.wait(MOCK_ROLLOUT_S * random.uniform(0.7, 1.3)):
@@ -234,7 +276,7 @@ def run_trial(task_dir: Path, job_id: str, agent: AgentConfig, cancel: threading
     log_path = traces_dir / f"{job_id}.log"
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
-            command(task_dir, job_id, agent, traces_dir, env_file),
+            command(task_dir, job_id, agent, traces_dir, env_file), env=trial_env(),
             stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             start_new_session=True,  # own process group: stop Harbor and its children together
         )
@@ -247,6 +289,7 @@ def run_trial(task_dir: Path, job_id: str, agent: AgentConfig, cancel: threading
     finally:
         if proc.poll() is not None:
             pid_file.unlink(missing_ok=True)
+            remove_trial_networks(job_dir)  # done, failed or cancelled: the trial is over
 
     found = finished_trial(job_dir)
     if found is None:

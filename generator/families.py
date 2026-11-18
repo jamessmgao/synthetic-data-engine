@@ -105,13 +105,10 @@ def brief_for(family: str | None) -> str:
     if b is None:
         return ("Family: any of the six priority families. Pick the one the spec's mechanism fits best, "
                 "and build the world around an executable counterexample.")
+    # Kept short: world.md states the scope, the fault rule and the scaffolds once.
     return (f"Family: {b['title']}.\n"
             f"- Where the difficulty comes from: {b['mechanisms']}.\n"
             f"- Strongest lever: {b['lever']}.\n"
             f"- Typical worlds: {b['world']}.\n"
             f"- The counterexample: {b['counterexample']}.\n"
-            f"- Scaffolds (/opt/sde/scaffold): {b['scaffold']}.\n"
-            f"- Why a local patch fails here: {b['dependent']}.\n"
-            "- Faults come from outside (kill the process at seeded points, a test-side harness): "
-            "no documented crash hook or stage names.\n"
-            "- Scope: about 300-800 lines in 2-4 modules; the difficulty is in how they interact, not in size.")
+            f"- Why a local patch may fail here: {b['dependent']}.")

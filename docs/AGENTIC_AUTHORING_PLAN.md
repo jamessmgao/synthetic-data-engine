@@ -45,6 +45,15 @@ POST /v1/tasks ─► world (agent) ─────────────► w
   parent world, the Trace Parser's evidence and one or two mutation operators.
 - One-shot generation (`run_generate_job`) remains the baseline and fallback,
   `SDE_AUTHOR_MODE=oneshot|agent` (default `oneshot` until P1 shows `agent` is better).
+  The mode is chosen **per job**, not per process: a `create`/`revise` whose input has
+  `world_sha256` runs `run_create_job`, anything else runs one-shot, so switching modes is
+  safe for tasks already in flight.
+- **As built (§5):** world_check also runs hardness checks (a plausible wrong fix that
+  passes the visible symptom and fails the repro; a fix spanning 2+ files or a dependent),
+  recorded as `result.hardness` and shown to the world author as WARNINGs
+  (`SDE_WORLD_HARDNESS=warn`, the default). The create job runs the self-check and the leak
+  review (semantic + blind prediction) before returning, and a leaking or failing draft
+  goes straight to `repair<k+1>`.
 
 ### Job types
 
@@ -244,17 +253,31 @@ skipped when absent, required in agent mode), then `leak`. Result keys
 - task-difficulty's experiments stay committed on their own branch; only what TB4 lists
   moves.
 
-## 5. Status
+## 5. Status (2026-11-17, end of day)
 
-| ID | Status |
-|---|---|
-| C0 | v2 done |
-| TB1-TB3 | in progress (task-builder) |
-| TB4 | done: cherry-picked 2c4c091 (`experiments/inspect_task.py`: audit, leaks, explain; 7 pass, 1 skips without the tla1 bundle) |
-| API1 | go given by the user (relayed by the lead) |
-| INF1 | go given |
-| EX1 | go given; rebase onto v2 |
-| P1, INT, P6 | waiting (approval / dependencies) |
+Ownership changed during the work: the task-builder session became manager only, and its
+packages moved. TB1-TB2 went to the infrastructure session (-18), TB3 to the api-service
+session (-75), and executor-worker (-c0) integrated everything into `main`.
+
+| ID | Status | Where |
+|---|---|---|
+| C0 | done (v2, amended in §3.1 and §3.6) | this file |
+| TB1 | done: `gate_wrong_fix`, `shared/taskformat/world_check.py` (derived check image, no bind mounts) | 3601f5c, on main |
+| TB2 | done: `authoring/` image, `sde-world` / `sde-task`, `generator/authoring_harness.py`, `run_world_job`, `prompts/world.md`, `families.py` | 272af87, 7cd990f, a796fbd |
+| TB3 | done: `generator/author_task.py` `run_create_job` (all origins), `prompts/task_author.md`, `prompts/world_mutation.md` | f257ca3, 0376e02 |
+| TB4 | done: `experiments/inspect_task.py` | 4f86fd0 |
+| API1 | done: taxonomy v2, family-first weighted sampler, spec v2, batches by `area`, reports by family with authoring vs evaluation cost | e572f4a |
+| INF1 | done: `world` / `world_check` jobs, handoffs, world artifacts, Docker slots | 626b4ef |
+| EX1 | done: too easy → world mutation, deterministic operator rules recorded as {operator, rule, evidence}, verdicts showing worlds | e489e6b, 3a8d040 |
+| INT | done with fake model calls: agent-mode e2e scenarios + a two-machine test with the real adapters. The real smoke is pending. | e2fbfc0 and later |
+| P1 | **run** (one task, local, 2026-11-17): world $0.51 / 5.4 min (18 steps), world_check OK, task $2.39 / 21.6 min, validate OK; rollout 1 **VALID_FAIL** (7/8 tests; the agent changed the documented crash hook, so the seeded-schedule test failed), rollout 2 stuck on a model call and was stopped. Found a harness bug (Harbor 0.26 artifacts path, fixed in 6d231bb). The task is in `output/p1/p1-local-1/` on task-builder. | 2f9d456 |
+| Fixes from reviews | done: see [ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md) | |
+| Spend cap | done: `shared/storage/budget.py`, `SDE_BUDGET_USD` + per-batch `budget_usd` | fcfe4c8, 5256d6d |
+| Cancel | done: CANCELLED status, cancel APIs, relabel script | d8ca8dc |
+| Tuning (from P1) | done: no counterexample or hook in instructions, semantic + blind leak review, per-invariant seeded tests, flake check, world_check hardness checks (`SDE_WORLD_HARDNESS`, default `warn`), harder-first mutation operators | 4baa6ac, f8c9081, f5b0175, 152b0b6, a124f4a, c369b95, 9e730fd |
+| Load test | in progress on AWS (mock mode); see [LOAD_TEST.md](LOAD_TEST.md) | infra-authoring |
+| P6 (batch) | ready: `sde-local` is up (agent mode, 5 authoring slots, $50 cap); waiting for the user's go | |
+| Deferred | prebuilt base images, the mutation-testing gate, the batch report generator, the hardness tiebreak in `choose_mutations`: see [TODO.md](TODO.md) | |
 
 ## 6. Later
 

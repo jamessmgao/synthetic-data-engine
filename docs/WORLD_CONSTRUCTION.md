@@ -1,5 +1,109 @@
 # Generating Difficult Software Engineering Tasks Using World Construction and Iterative Evolution
 
+## 0. As built (agent mode)
+
+Sections 1-13 below are the method and its rationale. This section is what the pipeline
+actually does today (`SDE_AUTHOR_MODE=agent`); where they differ, this section is current.
+
+### The world job
+
+A `world` job (`generator/author.py:run_world_job`, contract in docs/WORKER_INTERFACE.md) is
+one authoring trial, terminus-2 + GLM-5.1 in the authoring image (`authoring/Dockerfile`),
+with the instruction from `generator/prompts/world.md` (initial, repair) or
+`generator/prompts/world_mutation.md` (mutation), plus the family brief
+(`generator/families.py:brief_for`). It writes the world to `/logs/artifacts/world/`; the
+pipeline stores it content-addressed at `<work>/worlds/<sha>/` and sets world.json's `spec`
+and `lineage`.
+
+**Budget: 30 minutes** (`SDE_WORLD_TIMEOUT_S`, default 1800): the system running by about 10,
+the counterexample replaying by about 20, then the self-check. (P1's first real world took
+5.4 min and $0.51.) **Scope: about 300-800 lines of code in 2-4 modules.** Difficulty comes
+from components that interact and from hidden dependents, never from size.
+
+### The files
+
+| file | what it is |
+|---|---|
+| `environment/` | the system, with its `Dockerfile` (`FROM` one of `config/base_images.json`; the system at `/app` by default) |
+| `repro/repro.sh` | the deterministic reproduction of the deep schedule: exit 1 = an invariant is violated, 0 = it holds, the same every run |
+| `repro/symptom_check.sh` | the visible symptom only, the first reproduction an agent would write (one crash, one retry, the reported input): 1 on the world, 0 once the symptom is gone |
+| `world_fix/fix.sh` | the real fix, editing the world in place |
+| `world_fix/wrong_fix.sh` | the plausible wrong fix, implemented |
+| `repro/dependent_check.sh` | needed when `fix.sh` changes one file: the dependent module's behavior, 0 on the world and after the fix, 1 after the wrong fix |
+| `world.json` | `{spec, name, invariants, counterexample: {sequence, reproduce, observed}, plausible_wrong_fix, lineage}`; the pipeline fills `spec` and `lineage` |
+
+Every script runs inside the world's image, copied to `/world/repro/` and `/world/world_fix/`,
+from the image's `WORKDIR`, so it reaches the system by absolute paths (`/app/...`).
+
+### What makes a world hard (the rules in world.md)
+
+- **Invariants are outcomes**, never mechanisms ("each request ID debits its quantity at most
+  once", not "later deliveries must reuse the stored result"): the task instruction is built
+  from them, and a mechanism there is the fix.
+- **A local patch must not be enough**: the correct fix spans 2+ modules, or a module
+  elsewhere depends on the current behavior (a derived value, a cache, a report, a downstream
+  consumer), so the obvious one-file patch breaks it. Each family brief names its typical
+  dependent.
+- **The plausible wrong fix** makes the simple visible symptom go away and fails only on a
+  deeper schedule (another crash point, a restart, a concurrent worker) or on the dependent.
+- **No documented fault hooks or stage names**: no env var, flag or command that crashes the
+  system at a named stage (P1's `STOP_AFTER=inventory` told the agent where the bug was).
+  Faults are injected from outside, as the tests will: kill the process at seeded points from
+  a test-side harness, or drive `sde_fault` from the repro and tests, never documented, with
+  neutral point names. The system only has to survive being killed at any moment.
+- **Not announced, not padded, no unstated values** (comments, logs, names or README text
+  that point at the defect; filler; values a task needs but the world doesn't expose).
+
+### The scaffolds (`authoring/scaffold/`, `/opt/sde/scaffold` in the image)
+
+Small, tested, stdlib-only helpers the world vendors into `environment/` instead of writing
+its own (`authoring/scaffold/README.md`):
+
+- `sde_sched.py`: deterministic interleavings. Actors are generators that `yield` at each point
+  another may run; `Scheduler(seed=…)` or `Scheduler(replay=schedule)` picks the order;
+  `explore(build, check, seeds)` returns the first schedule that breaks an invariant;
+  `save_schedule` / `load_schedule` for `repro/`.
+- `sde_fault.py`: a fault plan (dict, file or `SDE_FAULTS`): `point(name)` crashes on the
+  planned hit, `deliver(kind, msg)` drops or duplicates the Nth message, `write(f, data, at=)`
+  tears a write; `fired` logs what happened.
+- `sde_repro.py`: `repro_main(run, INVARIANTS)` replays `repro/sequence.json` and exits
+  1 violated / 0 holds / 2 harness broken.
+- For C and Go, the README gives the same patterns inline (a crash point read from the
+  environment, goroutines released one step at a time); its C snippet is compiled in the tests.
+
+### The self-check: `sde-world check` (`authoring/sde_world.py`)
+
+Runs the `world_check` gate (`shared/taskformat/world_check.py:run_world_check_job`) on the world and
+saves the result to `/logs/artifacts/world_check.json`, which the pipeline reads
+(`generator/self_check.py:ensure_world_checked`). The base checks (repro fails twice, passes
+twice after the fix) must pass. The hardness checks (symptom visible and removed by the fix;
+the fix spans 2+ files or breaks a dependent; the wrong fix passes the symptom check and fails
+the repro) are enforced, recorded or skipped per `SDE_WORLD_HARDNESS` (warn by default), and
+each failed one prints a `WARNING:` with what to change, for example:
+
+```
+WARNING: the plausible wrong fix does not pass symptom_check.sh, so it is not tempting: make it fix the visible symptom
+WARNING: fix.sh changes 1 file(s) ['/app/store.py'] and there is no working dependent_check.sh: make the fix span 2+ modules, or add a module that depends on the current behavior and a repro/dependent_check.sh the local patch breaks
+```
+
+The author is told to fix every WARNING before finishing if time allows. Details of every
+check: docs/VALIDATION_GATES.md.
+
+### Mutations (stage 7 as built)
+
+A too-easy version (4-5 of 5 runs passed) gets a `world` job with origin `mutation`
+(`evaluation/trace_parser_service.py:next_job`). The operators come from fixed rules over the
+evidence (`evaluation/calibration.py:choose_mutations`, each with the rule and evidence that
+chose it): `remove_cues` first if the pass review found cues, then rules from the passing
+traces and the review's suggestions. `choose_mutations` does **not** use the world check's
+hardness result (that was tried and parked: docs/TODO.md, branch `park/hardness-tiebreak`).
+`world_mutation.md` has a hardness section (`generator/author_task.py:hardness_section`) that
+would list what the parent world missed, but nothing fills the mutation input's `hardness`
+today, so it renders "(not recorded for the parent world)". When the passing strategy was a
+local fix, the prompt prefers extend_cross_component_dependency, introduce_global_invariant and
+generate_counterexample, and puts size-adding changes last, never alone. The mutated world
+ships the same files and passes the same checks.
+
 ## 1. Core Approach
 
 Adapt Prime Intellect's General Agent methodology to generate difficult, verifiable software engineering tasks.

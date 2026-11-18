@@ -1,5 +1,110 @@
 # Changelog
 
+## 2026-11-18: agent-mode, world-first authoring (plan v2), end to end
+
+The plan is docs/AGENTIC_AUTHORING_PLAN.md; the method is docs/WORLD_CONSTRUCTION.md.
+The review findings (R*, N*, L*) and their resolutions are in docs/ARCHITECTURE_REVIEW.md.
+Each item lists its main commits.
+
+**What changed**
+
+- **Job types and hand-offs (INF1, 626b4ef).**
+  - New `world` and `world_check` jobs, and `create` from a world;
+    `after_world` → `after_world_check` → `after_generation` → `after_validate`.
+  - World artifacts are content-addressed (`worlds/<sha>/`) in the artifact store, next
+    to bundles, drafts and traces.
+  - `SDE_AUTHOR_MODE=oneshot|agent`. Agent jobs hold a Docker slot and an hour-long lease.
+- **Trace Parser world mutation (EX1, e489e6b, de5d3c3, bebf27d).**
+  - Too easy → a `world` mutation job from the parent world; too hard → `revise`
+    `easier`; task blamed → `revise` `repair_ambiguity`.
+  - Operators come from deterministic rules (`calibration.choose_mutations`; rule names in
+    docs/EVALUATION.md); `remove_cues` is always first when the pass review finds cues.
+  - Every choice records `{operator, rule, evidence}`. The history travels in job inputs.
+- **Gates (TB1, 3601f5c; f5b0175; c369b95).**
+  - `validate` gains `wrong_fix` (the bundle's plausible wrong fix must score 0) before
+    `leak`.
+  - `world_check` builds the world: repro fails twice, repro passes with the fix twice,
+    the symptom is visible, the fix isn't one local patch (2+ files, or a dependent the
+    wrong fix breaks), and the wrong fix clears the symptom but fails the repro.
+  - `SDE_WORLD_HARDNESS = off | warn (default) | enforce | strict`; `result.hardness`
+    records the hardness half.
+- **Authoring kit (TB2, 272af87, 977d7b1, 7cd990f, 780af13, 87d39e8, c9882a9, 6d231bb).**
+  - The `sde-authoring` image, the `sde-world` / `sde-task` self-check CLIs, world scaffolds,
+    30/20-min time boxes, `run_world_job`.
+  - Fixed: Harbor 0.26 puts `/logs/artifacts` under the trial's `artifacts/` (6d231bb).
+- **Task author (TB3, f257ca3, 5c9364a, 0376e02, d6ab4b3, 7eefd40, 4baa6ac).**
+  - `run_create_job` from a world.
+  - The leak review moved into `create`; a leaking draft is repaired, not rejected (N6).
+  - The instruction no longer describes the counterexample schedule, the fault-hook
+    position or the fix's shape.
+- **Tuning (f8c9081, 152b0b6, a124f4a).**
+  - Harder worlds and tasks: non-local fixes, external faults, invariant property tests.
+  - A semantic and blind leak review (`SDE_LEAK_BLIND`).
+  - Every world invariant has a marked test; randomized tests use fixed seeds; the oracle
+    runs twice (flake check).
+- **Taxonomy v2 and API (API1, e572f4a).**
+  - Six families × mechanisms × environments; spec v2 (family, mechanism, shape, dial).
+  - `GET /v1/families`; `area` / `mechanism` / `environment` / `dial` on tasks and
+    batches; reports by family and mechanism.
+- **Per-job dispatch (135b82b).** A create or revise with `world_sha256` runs the agent
+  author; anything else runs one-shot, even in agent mode. Repairs keep their world
+  through validate.
+- **Spend cap (fcfe4c8, 5256d6d).** `SDE_BUDGET_USD` and a per-batch `budget_usd` stop new
+  paid claims, using per-job estimates: world $1, create $4, revise $3.
+- **Cancel (d8ca8dc).** `POST /v1/tasks/{id}/cancel` and `/v1/batches/{id}/cancel`, a
+  `CANCELLED` status that doesn't count as a failure, and the cancelled job's cost kept;
+  `scripts/relabel_cancelled.py` relabels earlier stops.
+- **Capacity and robustness on AWS and locally.**
+  - Per-job Docker slots and `SDE_AGENT_SLOTS` (f8f6e90), and generation on every runner
+    (4c7be83).
+  - Slot ceilings (d40c9e6, 25d4970), a memory guard, a CPU guard (f743fd1, b31ff23) and
+    claim pacing (8a966c8).
+  - A bounded Postgres pool, with heartbeats on their own pool (1d5d869, 5f86caa), and
+    db.t4g.small (5547aeb).
+  - Parallel S3 uploads (a796fbd).
+- **Load-test mode (2e0612c, 25d4970, 53b8a48).** `SDE_MOCK_LLM` runs the real code with
+  faked model calls, plus a step driver. It's off by default and never set for a real
+  batch.
+- **Tests (INT, e2fbfc0, 6272997, 884016c).**
+  - Agent-mode e2e scenarios.
+  - A real-adapter test across two machines on S3.
+  - The cancel and authoring suites (docs/TESTING.md).
+- **Docs.** README "The pipeline as built"; docs/EVALUATION.md; docs/ANALYSIS.md §11–12;
+  docs/TESTING.md agent mode; docs/AGENT_MODE_DEPLOY.md.
+
+**Fixes found by review or by the live runs**
+
+- Heartbeat errors killed the heartbeat thread, so jobs were run twice (de5d3c3 worker,
+  60e561b executor).
+- RDS ran out of connections (1d5d869, 5547aeb).
+- Suspect starvation: an abandoned job waited for hours on a busy machine (f743fd1).
+- The runner image has no `ps`, so the liveness check failed and a rollout went INVALID
+  (2161445).
+- A dead `world` / `world_check` job didn't reject its task (N1, 02add1e).
+- Mutated versions were reported as "initial" (N2, 02add1e).
+- A raising authoring function lost its trial (R8, df3929e).
+- A failed world job wasn't retried, and "OK" without a world now rejects (R5, R6,
+  5525698).
+- Follow-ups inherited pins across versions (N4, d436107).
+- `review_passes` could raise.
+- `compose.dev` shadowed `deploy/local.env` (12d890d).
+- `test_cancel` never published its jobs, so it failed only on Redis (94038e1).
+
+**Reverted:** "World mutations use the parent world's hardness checks" (9156191), reverted
+in d0130b4, pending the tiebreak version: the user chose tiebreak-only. It's kept on the
+`park/hardness-tiebreak` branch (docs/TODO.md).
+
+**Why**
+- One-shot drafts were too easy: 58 of 62 scored live runs passed, with none failing
+  (docs/ANALYSIS.md §11). The first world-first task (P1) produced a genuine model
+  failure (§12.2).
+
+**Tradeoffs**
+- An agent-authored task costs about $2.9 against about $0.3 one-shot, and agent sessions
+  hold Docker slots for up to 30 min.
+- With the hardness gate at `warn`, a world can still be local; that's recorded, not
+  enforced.
+
 ## 2026-11-18: version cap 8
 
 **What changed**

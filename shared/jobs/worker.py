@@ -56,15 +56,18 @@ JobFn = Callable[[dict[str, Any]], dict[str, Any]]
 OnStart = Callable[[dict[str, Any]], None]
 FAILURE_BACKOFF_S = 60.0
 HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the normal interval
-# Agent jobs are hour-long authoring trials: a lease long enough to ride out a database
+# Agent jobs are long authoring trials (time-boxed at 30 min for a world, 20 for a task,
+# plus the build): a lease long enough to ride out a database
 # outage, so a transient error never makes another worker re-run (and re-pay) one.
 AGENT_LEASE_TTL_S = float(os.environ.get("SDE_AGENT_LEASE_TTL_S", "1800"))
 
 
 def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | None = None,
             on_start: OnStart | None = None, lease_sec: float = LEASE_TTL_S,
-            heartbeat_sec: float = HEARTBEAT_S) -> bool:
-    """Run one claimed job to a settle (or release). Returns True if it was settled."""
+            heartbeat_sec: float = HEARTBEAT_S, on_lost: OnStart | None = None) -> bool:
+    """Run one claimed job to a settle (or release). Returns True if it was settled.
+    `on_lost(job)` runs when a heartbeat is refused (the task was cancelled, or another
+    worker took the job): e.g. stop the job's authoring trial instead of letting it run on."""
     job_id, token = job["id"], job["lease_token"]
     done = threading.Event()
     lost = threading.Event()
@@ -87,6 +90,11 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | Non
             wait, failing_since = heartbeat_sec, None
             if not held:
                 lost.set()
+                if on_lost is not None:
+                    try:
+                        on_lost(job)
+                    except Exception:
+                        log.exception("%s: stopping the lost job failed", job_id)
                 return
 
     threading.Thread(target=beat, name=f"heartbeat-{job_id}", daemon=True).start()
@@ -123,6 +131,7 @@ def serve(
     agent_slots: int | None = None,
     stop: threading.Event | None = None,
     lease_sec: float = LEASE_TTL_S,
+    on_lost: OnStart | None = None,
 ) -> None:
     """Run `concurrency` claim loops until `stop` is set."""
     stop = stop or threading.Event()
@@ -136,7 +145,7 @@ def serve(
             if job is None:
                 stop.wait(POLL_S)
                 continue
-            run_one(jq, job, fn, handoff, on_start, lease_sec=lease_sec)
+            run_one(jq, job, fn, handoff, on_start, lease_sec=lease_sec, on_lost=on_lost)
 
     threads = [threading.Thread(target=loop, args=(f"{base}:{i}",), name=f"{name}-{i}")
                for i in range(concurrency)]
@@ -181,6 +190,7 @@ def serve_generation(backend: Backend, fn: JobFns, **kw: Any) -> None:
         kw.setdefault("docker_slots", DOCKER_SLOTS)
         kw.setdefault("agent_slots", AGENT_SLOTS)
         kw.setdefault("lease_sec", AGENT_LEASE_TTL_S)
+        kw.setdefault("on_lost", stop_authoring_trial)  # a cancel stops the running trial
     drafts = {"handoff": handoffs.after_generation(backend), "start": handoffs.generation_started(backend)}
     world = {"handoff": handoffs.after_world(backend), "start": handoffs.world_started(backend)}
     per_type = {t: (world if t == JobType.WORLD else drafts) for t in types}
@@ -211,6 +221,16 @@ def _import_task_builder():
         path = os.path.join(root, sub)
         if path not in sys.path:
             sys.path.insert(0, path)
+
+
+def stop_authoring_trial(job: dict[str, Any]) -> None:
+    """A lost agent job (cancelled, or taken over): stop its Harbor trial now
+    (generator/authoring_harness.py:stop_trial), as the Executor does for rollouts."""
+    _import_task_builder()
+    from generator import authoring_harness
+
+    if authoring_harness.stop_trial(job["id"]):
+        log.warning("%s: lease lost; its authoring trial is being stopped", job["id"])
 
 
 def _settled(out: dict[str, Any]) -> dict[str, Any]:

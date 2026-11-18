@@ -103,6 +103,56 @@ def test_a_worker_whose_job_is_cancelled_mid_run_records_the_cost_and_hands_off_
     assert rows[f"{t}-v1-create"]["cost_usd"] == 0.8
 
 
+def test_a_cancel_stops_the_running_authoring_trial(backend, jq, monkeypatch):
+    """When the heartbeat is refused, on_lost stops the trial: the job function returns at
+    once instead of running to its time box (an authoring trial runs up to 15 min)."""
+    import threading
+    import time
+
+    from shared.jobs import worker
+
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET status = 'CALIBRATING', stage = 'WORLD_BUILDING' WHERE id = ?", (t,))
+        insert_job(c, id=f"{t}-v1-world", task_id=t, version=1, type=JobType.WORLD)
+    jq.publish([f"{t}-v1-world"])
+    job = jq.claim([JobType.WORLD], "w")
+    stopped = threading.Event()
+
+    def trial(j):  # stands in for run_world_job: runs until its trial is stopped
+        with backend.store.tx() as c:
+            tasks.cancel(c, t, "user")
+        assert stopped.wait(10), "the trial was never stopped"
+        return {"outcome": "FAILED", "error": "the authoring trial was stopped", "cost_usd": 0.2,
+                "result": {"failure_kind": "infra"}}
+
+    started = time.monotonic()
+    assert not worker.run_one(jq, job, trial, handoffs.after_world(backend), heartbeat_sec=0.05,
+                              on_lost=lambda j: stopped.set())
+    assert time.monotonic() - started < 5
+    assert jobs(backend, t)[f"{t}-v1-world"]["cost_usd"] == 0.2  # what it spent is kept
+
+
+def test_the_generation_service_stops_lost_authoring_trials(monkeypatch):
+    """serve_generation wires on_lost to the harness's stop_trial in agent mode."""
+    from shared.contracts import models
+    from shared.jobs import worker
+
+    seen = {}
+    monkeypatch.setattr(models, "AUTHOR_MODE", "agent")
+    monkeypatch.setattr(worker, "AUTHOR_MODE", "agent")
+    monkeypatch.setattr(worker, "serve", lambda *a, **kw: seen.update(kw))
+    worker.serve_generation(type("B", (), {"store": None, "queue": None, "artifacts": None})(), lambda j: {})
+    assert seen["on_lost"] is worker.stop_authoring_trial
+    worker._import_task_builder()
+    from generator import authoring_harness
+
+    called = []
+    monkeypatch.setattr(authoring_harness, "stop_trial", lambda jid: called.append(jid) or True)
+    worker.stop_authoring_trial({"id": "t-v1-world"})
+    assert called == ["t-v1-world"]
+
+
 def test_a_reject_or_accept_after_a_cancel_is_a_no_op(backend):
     t = add_task(backend)
     with backend.store.tx() as c:

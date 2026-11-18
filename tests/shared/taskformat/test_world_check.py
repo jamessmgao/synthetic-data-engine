@@ -54,6 +54,12 @@ def world(tmp_path):
     return w
 
 
+@pytest.fixture(autouse=True)
+def enforce(monkeypatch):
+    """Most tests here check the gate itself, so they enforce it (the default is warn)."""
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "enforce")
+
+
 def check(world, tmp_path, monkeypatch, fake):
     monkeypatch.setattr(wc, "_docker", fake)
     return wc.run_world_check_job(world, tmp_path / "trace")
@@ -63,9 +69,73 @@ def test_a_good_world_passes_every_check(world, tmp_path, monkeypatch):
     fake = FakeDocker()
     out = check(world, tmp_path, monkeypatch, fake)
     assert out["outcome"] == "OK", out["feedback"]
-    assert out["result"]["checks"]["fix_not_local"] == {"passed": True, "fix_files": ["/app/store.py", "/app/worker.py"]}
-    assert fake.scripts() == [REPRO, REPRO, SYMPTOM, f"{FIX} && {REPRO}", f"{FIX} && {REPRO}",
+    assert out["result"]["hardness"] == {"symptom_ok": True, "spans_or_dependent": True, "wrong_fix_ok": True,
+                                         "failed": [], "mode": "enforce",
+                                         "details": {"fix_files": ["/app/store.py", "/app/worker.py"], "via": "files"}}
+    assert fake.scripts() == [REPRO, REPRO, f"{FIX} && {REPRO}", f"{FIX} && {REPRO}", SYMPTOM,
                               f"{FIX} && {SYMPTOM}", f"{WRONG} && {SYMPTOM}", f"{WRONG} && {REPRO}"]
+
+
+def test_the_default_is_warn(monkeypatch):
+    monkeypatch.delenv("SDE_WORLD_HARDNESS")
+    assert wc.hardness_mode() == "warn"
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "strict")
+    with pytest.raises(ValueError):
+        wc.hardness_mode()
+
+
+def test_warn_records_every_hardness_failure_and_passes_the_world(world, tmp_path, monkeypatch):
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "warn")
+    # The symptom is invisible, the fix is one file with no dependent, the wrong fix is right.
+    out = check(world, tmp_path, monkeypatch, FakeDocker({SYMPTOM: 0, f"{WRONG} && {REPRO}": 0},
+                                                         diff="C /app/store.py\n"))
+    assert out["outcome"] == "OK" and out["failed_check"] is None
+    h = out["result"]["hardness"]
+    assert (h["symptom_ok"], h["spans_or_dependent"], h["wrong_fix_ok"], h["mode"]) == (False, False, False, "warn")
+    assert h["failed"] == ["symptom_visible", "fix_not_local", "wrong_fix_fails_repro"]
+    saved = json.loads((tmp_path / "trace" / "world_check.json").read_text())
+    assert saved["result"]["hardness"] == h
+
+
+def test_warn_does_not_require_the_new_scripts(world, tmp_path, monkeypatch):
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "warn")
+    (world / "world_fix" / "wrong_fix.sh").unlink()
+    (world / "repro" / "symptom_check.sh").unlink()
+    fake = FakeDocker()
+    out = check(world, tmp_path, monkeypatch, fake)
+    assert out["outcome"] == "OK"
+    h = out["result"]["hardness"]
+    assert h["details"]["missing"] == ["repro/symptom_check.sh", "world_fix/wrong_fix.sh"]
+    assert h["failed"][0] == "hardness_files" and not h["symptom_ok"] and not h["wrong_fix_ok"]
+    assert not any(SYMPTOM in s or WRONG in s for s in fake.scripts())  # nothing run against missing scripts
+
+
+def test_sde_world_shows_the_author_each_warning_with_a_fix_and_still_passes_in_warn(world, tmp_path, monkeypatch,
+                                                                                     capsys):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "authoring"))
+    from authoring import sde_world
+
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "warn")
+    monkeypatch.setenv("SDE_ARTIFACTS_DIR", str(tmp_path / "arts"))
+    (tmp_path / "arts").mkdir()
+    monkeypatch.setattr(wc, "_docker", FakeDocker({f"{WRONG} && {SYMPTOM}": 1}, diff="C /app/store.py\n"))
+    assert sde_world.main(["check", str(world)]) == 0  # warnings don't fail it in warn mode
+    err = capsys.readouterr().err
+    assert "2 hardness warning(s) (mode warn: the world still passes). Fix every WARNING before finishing" in err
+    assert ("WARNING: fix.sh changes 1 file(s) ['/app/store.py'] and there is no working dependent_check.sh: make "
+            "the fix span 2+ modules") in err
+    assert "WARNING: the plausible wrong fix does not pass symptom_check.sh, so it is not tempting" in err
+    saved = json.loads((tmp_path / "arts" / "world_check.json").read_text())
+    assert saved["result"]["hardness"]["failed"] == ["fix_not_local", "wrong_fix_passes_symptom"]
+    assert sde_world.hardness_warnings({"failed": []}) == [] and sde_world.hardness_warnings(None) == []
+
+
+def test_off_skips_the_hardness_checks(world, tmp_path, monkeypatch):
+    monkeypatch.setenv("SDE_WORLD_HARDNESS", "off")
+    fake = FakeDocker({SYMPTOM: 0})
+    out = check(world, tmp_path, monkeypatch, fake)
+    assert out["outcome"] == "OK" and "hardness" not in out["result"]
+    assert fake.scripts() == [REPRO, REPRO, f"{FIX} && {REPRO}", f"{FIX} && {REPRO}"]
 
 
 @pytest.mark.parametrize("codes,failed,says", [

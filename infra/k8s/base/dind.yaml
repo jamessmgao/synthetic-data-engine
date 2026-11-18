@@ -19,6 +19,9 @@ spec:
             - dockerd
             # Unix socket only: the image's entrypoint would also open an unauthenticated tcp :2375.
             - --host=unix:///var/run/dind/docker.sock
+            # Also at the default path, inside dind: agent-mode authoring containers bind-mount
+            # /var/run/docker.sock, which the daemon resolves in its own container.
+            - --host=unix:///var/run/docker.sock
             # The pod network's MTU (flannel): at 1500, task containers' large packets are dropped.
             - --mtu=1450
             # The same for compose-created networks (Harbor's), which ignore --mtu.

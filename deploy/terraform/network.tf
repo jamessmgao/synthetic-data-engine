@@ -69,6 +69,16 @@ resource "aws_security_group" "runner" {
   }
 }
 
+# Runners reach each other (K3s across the runners, docs/K8S_PLAN.md §10: the API on 6443,
+# flannel VXLAN on 8472/udp, the kubelet on 10250). Only from this same group: still nothing
+# inbound from outside.
+resource "aws_vpc_security_group_ingress_rule" "runner_self" {
+  security_group_id            = aws_security_group.runner.id
+  referenced_security_group_id = aws_security_group.runner.id
+  ip_protocol                  = "-1"
+  description                  = "runner to runner (K3s)"
+}
+
 resource "aws_security_group" "db" {
   name        = "${var.name}-db"
   description = "Postgres from the runner only"

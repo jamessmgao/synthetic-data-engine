@@ -90,7 +90,8 @@ PRIORITY = {
 # How tasks are authored (docs/AGENTIC_AUTHORING_PLAN.md §1):
 #   oneshot  create / revise: one GLM-5.1 call per draft (generator/worker.py:run_generate_job)
 #   agent    world → world_check → create → validate. world, create and revise are each a
-#            Harbor authoring trial, terminus-2 + GLM-5.1 for up to ~60 min
+#            Harbor authoring trial, terminus-2 + GLM-5.1, time-boxed at 30 min for a world
+#            and 20 for a task (SDE_WORLD_TIMEOUT_S, SDE_CREATE_TIMEOUT_S)
 #            (generator/author.py: run_world_job, run_create_job), holding a Docker slot
 AUTHOR_MODES = ("oneshot", "agent")
 AUTHOR_MODE = os.environ.get("SDE_AUTHOR_MODE", "oneshot")

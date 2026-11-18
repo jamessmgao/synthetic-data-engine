@@ -116,7 +116,7 @@ def test_initial_create_writes_a_bundle_from_the_world(work):
     files = harness.calls[0]["files"]
     assert set(files) == {"world/world.json", "world/environment/Dockerfile", "world/repro/repro.sh",
                           "world/world_fix/fix.sh"}
-    assert harness.calls[0]["timeout_sec"] == at.AUTHOR_TIMEOUT_SEC == 1200
+    assert harness.calls[0]["timeout_sec"] == at.AUTHOR_TIMEOUT_SEC == 900
 
 
 def test_instruction_carries_the_world_the_shape_and_the_rules(work):
@@ -124,23 +124,26 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
     text = harness.calls[0]["instruction"]
     for needle in ("confirmed reservations never exceed stock", "A reads stock=1", "2 confirmed, stock 1",
                    "check-then-insert inside one transaction", "/input/world/", "/logs/artifacts/draft.json",
-                   "sde-task check /logs/artifacts/draft.json", "--as oracle", "--as nop", "--as wrong",
+                   "sde-task check /logs/artifacts/draft.json", "sde-task run /logs/artifacts/draft.json --as all",
                    "Shape: implement", "level 3 of 3", at.FORMS["many_rules"]["dial"][3],
-                   "Mistakes earlier drafts made", "python:3.12-slim-bookworm",  # system.md, images filled in
-                   "# plausible_wrong_fix: <the plausible_wrong_fix text>", "setup_errors",
-                   "the test that replays the world's counterexample MUST be among the failures",
-                   "sde-task schema", "--as all", "20 minutes", "by absolute paths `/app/...`",
-                   # Tuning: invariants as properties over seeded schedules; no hooks; exact values.
-                   "One dedicated test per invariant in world.json", "at least 20 fixed seeds",
-                   "after every step", "Exact expected values", "Do not document crash hooks or stage names",
-                   "no hook, no stages", "never by\n  importing internals",
+                   "python:3.12-slim-bookworm",  # system.md, images filled in
+                   "# plausible_wrong_fix: <world.json's text, exactly>", "setup errors",
+                   "the counterexample test must be among nop's failures",
+                   "sde-task schema", "**Be done in 10 minutes.**", "by absolute `/app/...` paths",
+                   # Invariants as properties over seeded schedules; no hooks; exact values.
+                   "A dedicated test per invariant", "at least 10 seeds", "after every step",
+                   "exact expected values", "crash hooks or stage names", "never import internals",
                    # Invariants are numbered for the `# invariant: N` markers sde-task check enforces.
                    "1. confirmed reservations never exceed stock", "`# invariant: N`", "rng = random.Random(seed)",
-                   "## How Harbor runs your task",
+                   "## How Harbor runs your task", "## Rules the pipeline checks",
                    # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
-                   "where a crash or fault hook fires", "BAD (an earlier draft", "GOOD (the same guarantees",
-                   "Never nest heredocs"):
+                   "where a crash fires relative to the effects", "BAD (a real draft)", "GOOD:",
+                   "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish"):
         assert needle in text, needle
+    # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
+    assert text.index("# Checklist") < text.index("# The draft")
+    assert "## What makes the task good" not in text and "Mistakes earlier drafts made" not in text
+    assert len(text) / 4 < 3500  # ≈ tokens
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]  # every template slot filled
     assert "{base_images}" not in text and "This is a revision" not in text
     # system.md's one-shot output contract does not apply: there is no response schema here.
@@ -161,29 +164,38 @@ def test_the_world_instruction_has_the_scaffolds_and_the_time_box():
     from generator import author
 
     text = author.render_world_instruction(WORLD["spec"])
-    for needle in ("/opt/sde/scaffold/", "sde_sched.py", "sde_fault.py", "sde_repro.py", "30 minutes",
-                   "300-800 lines of code in 2-4 modules", "never from size",
-                   # Tuning: a local patch is not enough; faults from outside; the wrong fix's shape.
-                   "A local patch must not be\n   enough", "No documented fault hooks or stage names",
-                   "must make the simple, visible symptom\n   go away", "never document `SDE_FAULTS`"):
+    for needle in ("/opt/sde/scaffold/", "sde_sched.py", "sde_fault.py", "sde_repro.py",
+                   # Round 2: a lighter v1 (difficulty comes from the mutation round).
+                   "Aim to be done in ~12 minutes; run the self-check by ~10", "200-500 lines in 2-3 modules", "one module per step (≤ ~150 lines per response)", "never rewrite a working world to hit it", "delete the old file", "must exit 0 before you finish", "fix the single failing check", "5x margin (1 CPU)", "textbook slip agents spot on sight", "only on a deeper schedule", "`strtok_r` needs `_POSIX_C_SOURCE`", "every `COPY`",
+                   "use them only if they save you time", "don't read sources you won't use",
+                   "Go or C\nworlds: the README's last section",
+                   # Kept: an executed counterexample, outcomes, no hooks, a tempting wrong fix.
+                   "find the counterexample by EXECUTING it", "**Invariants are outcomes**",
+                   "**No documented fault hooks or stage names**", "the fix is not a one-liner",
+                   "Prefer a fix that touches 2 modules", "makes the visible\n  symptom go away but still fails"):
         assert needle in text, needle
-    assert "STOP_AFTER=inventory" in text  # named only as the thing not to do
+    assert text.index("# Checklist") < text.index("# The spec") < text.index("# Rules")
+    assert len(text) / 4 < 2200  # ≈ tokens (P1's was 2.1k, round 1's 3.1k)
     from shared.taskformat import world_check
 
-    # Every file the world_check gate requires (or may use) is asked for by name.
-    for rel in (*(p for p in world_check.REQUIRED if p != "environment/Dockerfile"), "repro/dependent_check.sh"):
+    # Every file the world_check gate requires is asked for; the hardness ones are optional.
+    for rel in (*(p for p in world_check.REQUIRED if p != "environment/Dockerfile"),
+                *world_check.HARDNESS_FILES, "repro/dependent_check.sh"):
         assert f"`{rel}`" in text, rel
+    assert "Optional (recorded as hardness when present)" in text
     for name in ("sde_sched.py", "sde_fault.py", "sde_repro.py"):  # the files it names exist
         assert (Path(__file__).resolve().parent.parent / "authoring" / "scaffold" / name).is_file()
 
 
-def test_every_family_brief_names_its_scaffolds_and_the_scope():
+def test_every_family_brief_names_its_lever_counterexample_and_dependent():
+    """Short: world.md states the scope, the fault rule and the scaffolds once."""
     from generator.families import FAMILY_BRIEFS, brief_for
 
     for family in FAMILY_BRIEFS:
         brief = brief_for(family)
-        assert "Scaffolds (/opt/sde/scaffold): sde_" in brief and "300-800 lines in 2-4 modules" in brief
-        assert "Why a local patch fails here: " in brief and "no documented crash hook" in brief
+        for line in ("Strongest lever: ", "The counterexample: ", "Why a local patch may fail here: "):
+            assert line in brief, (family, line)
+        assert "Scaffolds" not in brief and "300-800" not in brief
 
 
 def test_every_shape_and_dial_renders(work):
@@ -399,7 +411,8 @@ def test_world_mutation_instruction():
                    "generate_counterexample", "/input/parent/", "/logs/artifacts/world/",
                    "the parent w1", '"lineage": {"mutations": [{"defeats":', "sde-world check /logs/artifacts/world",
                    "confirmed reservations never exceed stock", "counterfactual_failure",
-                   "30 minutes", "300-800 lines", "/opt/sde/scaffold/",
+                   "Aim to be done in ~12 minutes", "200-500 lines in 2-3 modules", "change one module per response", "/opt/sde/scaffold/",
+                   "A mutation is where difficulty is added",
                    "nor describe the failing schedule", "describe its schedule",
                    "If the strategy that passed was a local fix", "size-adding changes",
                    "no documented crash hook or stage names"):
@@ -407,6 +420,25 @@ def test_world_mutation_instruction():
     assert "the fix was process-local" in text
     assert text.count('"operators": ["add_persistent_state"]') == 0  # this mutation isn't listed as history
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]
+
+
+def test_the_mutation_is_told_what_the_parents_hardness_checks_found():
+    job = {"origin": "mutation", "parent_world_sha256": "w1", "spec": WORLD["spec"],
+           "mutation": {"operators": ["extend_cross_component_dependency"], "why": "local fix"},
+           "mutations": [], "analysis": {}, "target_fix": "x",
+           "hardness": {"fix_not_local": False, "fix_files": ["/app/worker.py"], "dependent": None,
+                        "wrong_fix_passes_symptom": False, "wrong_fix_fails_repro": True,
+                        "failed": ["fix_not_local", "wrong_fix_passes_symptom", "symptom_visible"]}}
+    text = at.render_world_mutation_instruction(job, WORLD)
+    assert "The parent world's checks found the following; the mutation must fix these:" in text
+    assert "its fix is local (world_fix/fix.sh changes 1 file(s): /app/worker.py" in text
+    assert "its plausible wrong fix does not fix the visible symptom, so it is not tempting" in text
+    assert "survives repro.sh" not in text and "also failed: symptom_visible" in text
+    assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]
+    clean = {**job, "hardness": {"fix_not_local": True, "wrong_fix_passes_symptom": True, "failed": []}}
+    assert "passed every hardness check" in at.render_world_mutation_instruction(clean, WORLD)
+    assert "(not recorded for the parent world)" in at.render_world_mutation_instruction(
+        {k: v for k, v in job.items() if k != "hardness"}, WORLD)
 
 
 @pytest.mark.parametrize("operators", [[], ["make_it_harder"]])
@@ -477,13 +509,13 @@ def test_the_instruction_size_reaches_the_result(work):
     assert size["chars"] == len(harness.calls[0]["instruction"]) and 2000 < size["tokens_est"] < 8000
 
 
-def test_the_task_author_is_time_boxed_at_20_minutes(work):
+def test_the_task_author_stops_at_15_minutes(work):
     _, harness = create(work)
-    assert harness.calls[0]["timeout_sec"] == 1200
+    assert harness.calls[0]["timeout_sec"] == 900
 
 
-@pytest.mark.parametrize("module,var,default", [("author_task", "SDE_CREATE_TIMEOUT_S", 1200.0),
-                                                ("author", "SDE_WORLD_TIMEOUT_S", 1800.0)])
+@pytest.mark.parametrize("module,var,default", [("author_task", "SDE_CREATE_TIMEOUT_S", 900.0),
+                                                ("author", "SDE_WORLD_TIMEOUT_S", 1500.0)])
 def test_authoring_time_boxes_are_env_overridable(module, var, default):
     root = Path(__file__).resolve().parent.parent
     code = (f"import sys; sys.path[:0] = [{str(root / 'generator')!r}, {str(root / 'validator')!r}]; "

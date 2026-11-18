@@ -1,116 +1,59 @@
-You are authoring one Terminal-Bench task from a world that has already been built and
-checked. You work as root in a Linux container with a shell, in `/work` (empty scratch
-space). Docker is available through the host's socket: label everything you start by
-hand with `--label "$SDE_DOCKER_LABEL"` so it is cleaned up.
+You are authoring one Terminal-Bench task from a world that is already built and checked.
+**Be done in 10 minutes.** Keep each step's reasoning short: decide, act, check.
 
-You have **20 minutes**. Have the draft written by about 12, then run the self-check
-below and fix what it finds; finish within 20. The world is already built and checked,
-so reuse it: the task's repository is the world's `environment/` as it is. Do not
-grow it, rewrite it or add modules; the difficulty is already in it.
+# Checklist
 
-# The world
+1. `sde-task schema`: the TaskDraft JSON schema. Match it exactly.
+2. Write `/logs/artifacts/draft.json`, reusing the world's `environment/` as it is (do not grow or rewrite it).
+3. Tests: one per world invariant, marked `# invariant: N`, over at least 10 fixed seeds (below). Write them one file or test group per response, never the whole suite in one.
+4. `wrong_fix_script` starts `# plausible_wrong_fix: <world.json's text, exactly>`.
+5. `sde-task check /logs/artifacts/draft.json`, then `sde-task run /logs/artifacts/draft.json --as all`; both must exit 0 before you finish (a draft that fails them is sent back). If one fails and you're short of time, fix the single failing check or role rather than finishing.
 
-The world is in `/input/world/` (read-only reference; copy what you need into `/work`):
-
-- `/input/world/world.json`: the world's invariants (what must always be true), a
-  counterexample (a concrete sequence of events that violates one invariant, with the
-  command that reproduces it), and `plausible_wrong_fix`, a fix a capable engineer
-  would try that does NOT make the invariants hold.
-- `/input/world/environment/`: the system itself, with its Dockerfile. It contains the defect.
-- `/input/world/repro/repro.sh`: reproduces the counterexample deterministically. It
-  exits 1 on the world as it is (an invariant is violated) and 0 once the world is fixed.
-- `/input/world/world_fix/fix.sh`: a fix that makes every invariant hold.
-
-The world has been checked: `repro.sh` fails on it and passes after `fix.sh`.
+You work as root in `/work`; Docker is available through the host's socket (label what you
+start by hand with `--label "$SDE_DOCKER_LABEL"`). The world is in `/input/world/` (read-only):
+`world.json` (invariants, counterexample, `plausible_wrong_fix`), `environment/` (the system,
+with the defect), `repro/repro.sh` (exit 1 on the world, 0 once fixed), `world_fix/fix.sh`.
 
 $world_summary
 
-# What you produce
+# The draft
 
-Write exactly one JSON object to `/logs/artifacts/draft.json` that matches the
-TaskDraft schema. Run `sde-task schema` first: it prints that JSON schema, every field
-with its type and constraints. Match it exactly (`sde-task check` validates against it).
-The draft becomes the task:
+- **Repository** (`dockerfile`, `environment_files`): the world's `environment/`, defect
+  included, without `repro/`, `world_fix/`, `world.json` or anything that walks through the
+  failure (a happy-path example is fine).
+- **Solution** (`solution_script`, `solution_files`): a genuine fix, from `world_fix/fix.sh`.
+- **Wrong fix** (`wrong_fix_script`): the world's plausible wrong fix, written as an engineer would.
+- **Spec**: `correctness_constraints` (the invariants and must-keep-working behaviors) and
+  `coverage` (each mapped to its tests).
 
-- **The agent's repository** (`dockerfile`, `environment_files`): the world's
-  `environment/`, with the defect still in it. Keep the system realistic. Do not
-  include `repro/`, `world_fix/`, `world.json`, or anything else that reproduces the
-  counterexample or describes the fix: no example scenario, script, log, comment or
-  README that walks through the failing sequence. A happy-path example is fine.
-- **The reference solution** (`solution_script`, plus `solution_files` if needed): a
-  genuine fix that makes every invariant hold, based on `world_fix/fix.sh` and adapted
-  to the task's layout.
-- **The wrong fix** (`wrong_fix_script`): a concrete implementation of the world's
-  `plausible_wrong_fix`, written the way a capable engineer would write it. The tests
-  must reject it. Its first line is a comment naming it, with the text copied exactly
-  from `world.json`:
-  `# plausible_wrong_fix: <the plausible_wrong_fix text>` (`sde-task check` requires it).
-- **The hidden tests** (`test_outputs`, `test_support_files`). They check the world's
-  INVARIANTS as properties over many executions, not one replayed scenario:
-  1. **One dedicated test per invariant in world.json**, named after it
-     (`test_invariant_no_double_debit`) and marked with a comment line
-     `# invariant: N` (N = its number in the list above; `sde-task check` requires
-     every invariant to be marked), so a failure says which guarantee broke. Its
-     checker reads only observable state (command output, the inspect/report JSON,
-     files the interface exposes) and asserts the invariant **after every step** of
-     **at least 20 fixed seeds** of randomized schedules: random operations, the
-     process killed (SIGKILL from the test, at a random step or write) and restarted,
-     retries, lease expiries, and concurrent workers wherever the world allows them.
-     Use fixed seeds (`rng = random.Random(seed)` for `seed in range(20)`, never the
-     global `random.*` functions unseeded or a time-based seed: `sde-task check` rejects
-     those, and `sde-task run --as all` runs the oracle twice and requires identical
-     results); keep the whole suite under 60 s on 1 CPU (small schedules, many seeds).
-  2. **The exact counterexample** as one case among them, replayed as `repro.sh` does
-     it (from the image's `WORKDIR`, by absolute paths `/app/...`), so the test fails
-     on the world exactly as the world check saw.
-  3. **The dependent**: if the world has a module that relies on the current
-     behavior, a test of that module's output, so a one-file patch fails.
-  4. **Regression and edge cases** for everything the instruction says must keep
-     working: the normal path, empty and boundary inputs, invalid input, the largest
-     input within the limits. **Exact expected values**, never "is not None" or "> 0".
-  5. Together they reject the wrong fix for a real reason (an invariant it violates),
-     and no test passes on an empty or stub implementation.
-  Tests drive the system only through its interface (its CLI, API or files), never by
-  importing internals the agent could restructure, and never by reading source text.
-  Crashes come from the test (kill the process), not from a hook in the system.
-- **The instruction** (`instruction`): the user's request. State the symptom users
-  saw, the guarantees that must hold (the invariants, phrased as observable outcomes),
-  everything that must keep working, and the interface: every value, path, command
-  and format the tests rely on. Do NOT state the counterexample (its steps, schedule
-  or the input or time step that triggers it), where a crash or fault hook fires
-  relative to the system's effects, the cause, the files to change, or the shape of
-  the fix. Do not document crash hooks or stage names: say only that workers (or the
-  service) can be killed at any moment and are restarted, and the tests kill them
-  from outside. A clock command or other control the tests need is documented by its
-  interface only, never which use of it breaks the system. Discovering the failing
-  sequence is the task. The leak review rejects all of these.
+**Tests** (`test_outputs`, `test_support_files`) check the invariants as properties over many
+executions:
+1. A dedicated test per invariant, named after it and marked `# invariant: N` (its number
+   above). It reads only observable state (command output, inspect JSON, files the interface
+   exposes) and asserts the invariant after every step of at least 10 seeds of random
+   schedules: random operations, the process killed (SIGKILL from the test) and restarted,
+   retries, and concurrency where the world allows. Seeds are fixed:
+   `rng = random.Random(seed)` for `seed in range(10)`; never unseeded `random.*` or a clock seed.
+2. The exact counterexample as one case, replayed as `repro.sh` does it (from the image's
+   `WORKDIR`, by absolute `/app/...` paths).
+3. Regression and edge cases for what must keep working, with exact expected values.
+Drive the system only through its interface (never import internals); crashes come from the
+test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
+under 60 s on 1 CPU. Timing assertions need a 5x margin; no test relies on wall-clock speed.
 
-  BAD (an earlier draft; each sentence hands the agent part of the counterexample or the fix):
-  > The documented fault-injection hook is `STOP_AFTER=inventory`: when a claimed
-  > request can be fulfilled, a worker exits with status `70` after the accepted
-  > inventory movement and stock update are durable and before the worker's
-  > remaining completion work. Use `tick --milliseconds 30001` to expire a lease.
-  >
-  > Once a request ID has produced an inventory movement, any later delivery of that
-  > same request ID must reuse that exact durable result without applying another
-  > inventory effect.
+**Instruction** (`instruction`): the symptom users saw, the guarantees that must hold (the
+invariants as observable outcomes), what must keep working, and the interface (every value,
+path, command and format the tests use). NEVER: the counterexample (its steps, schedule or
+trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
+that workers can be killed at any moment and restarted), the cause, the files to change, or
+the shape of the fix, in any words. The leak review rejects all of these.
 
-  GOOD (the same guarantees and interface; no hook, no stages, no schedule, no fix):
-  > A worker process can be killed at any moment (including in the middle of a
-  > write) and a new one started. Time advances only through
-  > `tick --milliseconds N`; a lease lasts 30000 ms.
-  >
-  > Each request ID consumes its submitted quantity at most once, whatever the
-  > retries, crashes and lease expiries; stock never goes negative; and a request
-  > that fits the stock is eventually fulfilled.
-
-  BAD tests: one test that replays the single crash from the counterexample and checks
-  the final stock. GOOD tests: `test_invariant_at_most_one_debit_per_request` and
-  `test_invariant_stock_never_negative` each run 20 seeds of random submits, workers
-  killed at random steps, restarts and ticks, checking the invariant through
-  `inspect --json` after every step; the counterexample is one fixed case in them.
-- **The spec** (`spec`): `correctness_constraints` are the invariants and the
-  must-keep-working behaviors; `coverage` maps each to the tests that check it.
+BAD (a real draft): "The fault-injection hook `STOP_AFTER=inventory` makes a worker exit after
+the inventory update is durable and before its completion work. Use `tick --milliseconds
+30001` to expire a lease. Later deliveries of a request ID must reuse that exact durable result."
+GOOD: "A worker process can be killed at any moment and a new one started. Time advances only
+through `tick --milliseconds N`; a lease lasts 30000 ms. Each request ID consumes its quantity
+at most once, whatever the retries, crashes and lease expiries; stock never goes negative."
 
 # Shape and difficulty
 
@@ -120,40 +63,14 @@ $shape_section
 
 $system_rules
 
-# Writing files
+# The self-check
 
-Write each file with its own heredoc (`cat > /work/x.py <<'EOF'` … `EOF`), or with a
-short Python script saved to `/tmp` that writes the files (and builds draft.json with
-`json.dump`, so its strings are escaped for you). Never nest heredocs that share a
-delimiter: the inner `EOF` ends the outer one, and the quoting error costs minutes.
-
-# Check before you finish
-
-Run these, read the JSON they print, fix the draft, and repeat until both exit 0
-(both commands check the draft against the world in `/input/world/`):
-
-    sde-task check /logs/artifacts/draft.json            # {ok, errors}: the schema and every pipeline rule
-    sde-task run /logs/artifacts/draft.json --as all     # oracle: reward 1; nop: reward 0; wrong: reward 0
-
-`--as all` builds the task image once and runs each role in a fresh container
-(`--as oracle`, `--as nop`, `--as wrong` alone re-run one role; an unchanged
-`environment/` is not rebuilt). It runs them like the evaluation does (1 CPU, 2 GB, the
-solution as the unprivileged `agent` user, the tests as root). Its JSON lists every
-test by name with its status and assertion message (`tests`), and failures caused only
-by setup problems (an import error, a missing file or command, no reward) under
-`setup_errors`: a nop or wrong run that fails only that way does not count. Read
-which tests failed:
-
-- `nop`: the test that replays the world's counterexample MUST be among the failures,
-  failing on the invariant the counterexample violates (the same outcome `repro.sh`
-  observed). A nop that fails only on a missing file, an import error or a crash means
-  the tests do not encode the counterexample: fix the tests.
-- `wrong`: at least one test fails because an invariant is violated, not because of
-  a missing file or a crash.
-
-Then re-read your instruction as the agent would: could someone solve it from the
-instruction alone, without guessing? Does any sentence give away the cause, the fix,
-the failing sequence, or where a fault hook fires relative to the effects? Fix it if so. Finish only when every check passes; never
-weaken or delete a test to make one pass.
+`sde-task check` runs every pipeline rule (schema, paths, the invariant markers, fixed seeds,
+the wrong-fix tag). `sde-task run --as all` builds the image once, runs the oracle (reward 1,
+twice: a flaky test fails it), nop (reward 0) and the wrong fix (reward 0), and lists every
+test with its status. A nop or wrong run that fails only on setup errors (import, missing file,
+no reward) does not count: the counterexample test must be among nop's failures. Write files
+with one heredoc each or a Python script in `/tmp`; never nest heredocs sharing a delimiter.
+Never weaken or delete a test to make a check pass.
 
 $request

@@ -7,11 +7,11 @@ You work as root in a Linux container with a shell, in `/work` (scratch space).
 Docker is available through the host's socket: label everything you start by hand
 with `--label "$SDE_DOCKER_LABEL"` so it is cleaned up.
 
-You have **30 minutes**: the mutated world running by about 20, then the self-check;
-finish within 30. Keep the world to about 300-800 lines in 2-4 modules: change how
-its components interact, do not grow it. `/opt/sde/scaffold/` (see its README) has a
-deterministic scheduler, a fault injector and a repro harness, stdlib only; vendor
-them into `environment/` rather than writing your own (the parent may already have).
+**Aim to be done in ~12 minutes; run the self-check by ~10.** Keep each step's reasoning
+short: decide, act, check; change one module per response and rebuild before the next.
+Keep the world small (about 200-500 lines in 2-3 modules; guidance, never a reason to
+rewrite working code): change how its components interact, do not grow it. `/opt/sde/scaffold/` has stdlib helpers
+(a scheduler, a fault injector, a repro harness); use them only if they save you time.
 
 # The parent world
 
@@ -37,6 +37,10 @@ $target_fix
 $operators_section
 
 Why these: $why
+
+The parent world's hardness checks (`sde-world check` runs them on your world too):
+
+$hardness
 
 Earlier mutations of this world (keep their effects; do not undo them):
 
@@ -79,10 +83,11 @@ $techniques
 
 Write the new world to `$output_dir/`, in the same layout as the parent:
 
-- `environment/`, `repro/repro.sh`, `repro/symptom_check.sh`, `world_fix/fix.sh`,
-  `world_fix/wrong_fix.sh` (the NEW plausible wrong fix, implemented), and
-  `repro/dependent_check.sh` if fix.sh changes only one file (the same contract as
-  a new world: `sde-world check` verifies all of them);
+- `environment/`, `repro/repro.sh`, `world_fix/fix.sh` (the same contract as a new world:
+  `sde-world check` verifies them). A mutation is where difficulty is added, so also write
+  `repro/symptom_check.sh` (the visible symptom only), `world_fix/wrong_fix.sh` (the NEW
+  plausible wrong fix, implemented) and, if fix.sh changes only one file,
+  `repro/dependent_check.sh`: `sde-world check` reports them as hardness WARNINGs;
 - `world.json` with: the parent's spec; the invariants (updated if the mutation adds
   one); the NEW counterexample (sequence, `"reproduce": "repro/repro.sh"`, what was
   observed); and a NEW `plausible_wrong_fix` (the strategy that passed is a good

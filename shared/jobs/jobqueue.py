@@ -58,7 +58,7 @@ class JobQueue:
         """Lease the best claimable job of the given type(s), or return None.
 
         `docker_slots` caps the jobs holding a Docker slot on this machine (jobs whose
-        needs_docker is set), `agent_slots` the hour-long agent jobs among them. The
+        needs_docker is set), `agent_slots` the long agent jobs among them. The
         returned row includes `lease_token`; pass it to every later call.
 
         Owners named `<host>:<pid>:…` (both worker loops do this) get a per-machine
@@ -93,7 +93,7 @@ class JobQueue:
                    agent_slots: int | None) -> tuple[list[JobType], int | None]:
         """The types worth trying now, and the Docker slot cap to claim with.
 
-        Counted once per poll (outside the claim lock): with hour-long agent jobs
+        Counted once per poll (outside the claim lock): with long (20-30 min) agent jobs
         holding the slots, trying every candidate in a locked claim transaction only
         to be refused would churn the database. Types that need Docker only for some
         jobs (create / revise) stay: the claim itself still checks each job.

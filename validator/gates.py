@@ -6,7 +6,9 @@ Functional gates for a task bundle: the `validate` job of PRD §6.3.
     oracle1/2   reference solution: reward 1, twice (catches flaky tests)
     nop         untouched container: reward exactly 0, with a real verdict
     wrong_fix   the author's plausible wrong fix, run as the oracle: reward exactly 0
-    leak        a glm-5.1 review: the instruction must not reveal the hidden cause or fix
+    leak        glm-5.1: a semantic review against the hidden spec and the world, plus a
+                blind fix prediction from the instruction alone: the instruction must not
+                reveal the fix or the failing sequence (docs/VALIDATION_GATES.md)
 
 Gates run cheapest first and stop at the first failure. Each failure carries
 ``feedback``: the exact evidence (failing tests and assertion messages, verifier
@@ -94,11 +96,18 @@ def run_harbor_step(bundle_dir: Path, agent: str, trace_dir: Path, step: str) ->
 
     if not adopted:
         trace_dir.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [config.HARBOR_BIN, "run", "-p", str(bundle_dir), "-a", agent, "-o", str(trace_dir),
-             "--job-name", step, "-y", "-q"],
-            capture_output=True, text=True, timeout=config.GATE_TIMEOUT_SEC,
-        )
+        try:
+            subprocess.run(
+                [config.HARBOR_BIN, "run", "-p", str(bundle_dir), "-a", agent, "-o", str(trace_dir),
+                 "--job-name", step, "-y", "-q"],
+                capture_output=True, text=True, timeout=config.GATE_TIMEOUT_SEC,
+            )
+        finally:
+            # A killed, crashed or timed-out Harbor never runs compose down: its trial
+            # network leaks, and leaked networks exhausted Docker's address pools.
+            from generator.authoring_harness import remove_trial_networks
+
+            remove_trial_networks(job_dir)
 
     trial_dir, result = _read_trial(job_dir)
     if result is None:
@@ -227,9 +236,10 @@ def gate_wrong_fix(bundle_dir: Path, trace_dir: Path) -> Gate:
 
 
 # --- leak review ---------------------------------------------------------------
-# One glm-5.1 call after the functional gates: does the instruction the agent
-# reads give away the hidden root cause or the fix? In the pilots, prompt rules
-# alone did not stop this (pipeline-hard, h6), and it made tasks too easy.
+# Up to three glm-5.1 calls after the functional gates (or at create time, agent
+# mode): does the instruction the agent reads give away the fix or the failing
+# sequence, in any words? In the pilots, prompt rules alone did not stop this
+# (pipeline-hard, h6; P1's STOP_AFTER hook), and it made tasks too easy.
 
 LEAK_SYSTEM = """You review a benchmark task before an AI agent attempts it. You get the
 author's hidden notes (root cause, solution subgoals, correctness constraints), the
@@ -406,12 +416,16 @@ def leak_review_dir(bundle_dir: Path, trace_dir: Path) -> Path:
 
 
 def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
-    """Reject a bundle whose instruction reveals the hidden cause or fix.
+    """Reject a bundle whose instruction reveals the fix or the failing sequence.
 
-    The review is stored at leak_review_dir()/review.json and adopted on retry and
-    by any later job on the same bundle. A leak only counts if its quote really
-    appears in the instruction, so an over-eager or hallucinating reviewer cannot
-    fail a task on its own words.
+    Three calls (_leak_calls): the semantic review (hidden notes + the world + the
+    solution; findings graded direct / strong_hint; a leak is any direct or 2+ strong
+    hints), then, unless SDE_LEAK_BLIND=0, a blind fix prediction from the instruction
+    alone and its judgement against the real fix (only a "specific" match is a leak).
+    The record is stored at leak_review_dir()/review.json and adopted on retry and by
+    any later job on the same bundle. A finding only counts if its quote really appears
+    in the instruction, so an over-eager or hallucinating reviewer cannot fail a task
+    on its own words.
     """
     if not config.LEAK_REVIEW:
         return Gate("leak", True, {"skipped": "disabled (SDE_LEAK_REVIEW=0)", "cost_usd": 0.0})

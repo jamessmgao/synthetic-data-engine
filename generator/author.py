@@ -46,8 +46,8 @@ from shared.taskformat.world_check import _check_structure  # noqa: E402
 
 PROMPTS = Path(config.PROMPTS_DIR)
 WORLD_OUT = "world"  # under the trial's artifacts dir (/logs/artifacts/world/ in the container)
-# The world author's time box (prompt: written by ~20 min, finished within 30).
-AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_WORLD_TIMEOUT_S", "1800"))
+# The world author's hard stop, 25 min (the prompt aims for ~12, self-check by ~10).
+AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_WORLD_TIMEOUT_S", "1500"))
 MAX_WORLD_BYTES = 50_000_000
 MAX_WORLD_FILES = 5_000
 

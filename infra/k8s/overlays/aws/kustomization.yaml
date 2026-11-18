@@ -1,0 +1,24 @@
+# K3s on the 8 AWS runners: 1 server (runners()[0]) + 7 agents, 2 vCPU / 8 GB each.
+# Same data stores and settings as the local overlay (in-cluster Postgres / Redis / RustFS,
+# mock mode, short leases); only placement and image pulls differ. Render with:
+#
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone infra/k8s/overlays/aws
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sde
+resources:
+  - ../local
+patches:
+  # sde-pipeline:local is imported into each node's containerd, never pulled.
+  - path: no-pull.yaml
+    target: {kind: Deployment}
+  - path: no-pull-bootstrap.yaml
+    target: {kind: Job, name: bootstrap}
+  # The API, the one control pod and the data stores on the server node.
+  - path: on-server.yaml
+    target: {kind: Deployment, name: "api|control"}
+  - path: on-server.yaml
+    target: {kind: StatefulSet}
+  # The Docker workers on the agents, spread by their requests.
+  - path: on-agents.yaml
+    target: {kind: Deployment, name: "validate|executor|generation"}

@@ -10,6 +10,29 @@ from generator import authoring_harness as ah
 from shared.contracts import config
 
 
+class RunPopen:
+    """`harbor run` is started with Popen; this one hands it to whatever fake subprocess.run
+    the test installed (so the fakes below serve both), and is finished at once."""
+
+    def __init__(self, cmd, **kw):
+        self.args, self.pid, self.returncode = cmd, -1, 0
+        try:
+            subprocess.run(cmd, **{k: v for k, v in kw.items() if k == "env"})
+        except subprocess.TimeoutExpired:
+            pass  # a fake for a run that never finished: no result, like a stopped trial
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+@pytest.fixture(autouse=True)
+def popen(monkeypatch):
+    monkeypatch.setattr(ah.subprocess, "Popen", RunPopen)
+
+
 def fake_harbor(calls: list, *, exception=None, artifacts=("world/world.json",), tokens=(200_000, 10_000)):
     """Stands in for `harbor run` (writes a trial with result.json and artifacts/)
     and for the docker cleanup calls (recorded, answered as if 2 containers remain)."""
@@ -145,3 +168,94 @@ def test_artifacts_dir_follows_the_manifest_then_the_known_layouts(tmp_path):
     other = tmp_path / "flat"
     (other / "artifacts").mkdir(parents=True)
     assert ah.artifacts_dir(other) == other / "artifacts"
+
+
+# --- the command, and stopping a running trial ---------------------------------------------
+
+
+def test_reasoning_effort_is_passed_only_when_set(tmp_path, monkeypatch):
+    monkeypatch.delenv("SDE_AUTHORING_REASONING_EFFORT", raising=False)
+    assert "--ak" not in ah.harbor_command(tmp_path, tmp_path)
+    monkeypatch.setenv("SDE_AUTHORING_REASONING_EFFORT", "medium")
+    cmd = ah.harbor_command(tmp_path, tmp_path)
+    assert cmd[cmd.index("--ak") + 1] == "reasoning_effort=medium" and cmd[:4] == [config.HARBOR_BIN, "run", "-p", str(tmp_path)]
+
+
+def test_llm_timeout_and_max_tokens_go_to_terminus_as_llm_kwargs(tmp_path, monkeypatch):
+    for var in ("SDE_AUTHORING_REASONING_EFFORT", "SDE_AUTHORING_LLM_TIMEOUT_S", "SDE_AUTHORING_MAX_TOKENS"):
+        monkeypatch.delenv(var, raising=False)
+    assert ah.llm_kwargs() == {} and "--ak" not in ah.harbor_command(tmp_path, tmp_path)  # unset: unchanged
+    monkeypatch.setenv("SDE_AUTHORING_LLM_TIMEOUT_S", "300")
+    monkeypatch.setenv("SDE_AUTHORING_MAX_TOKENS", "32000")
+    cmd = ah.harbor_command(tmp_path, tmp_path)
+    # Harbor JSON-parses --ak values (harbor/cli/utils.py:parse_kwargs) into terminus-2's llm_kwargs.
+    assert cmd[-2:] == ["--ak", 'llm_kwargs={"max_tokens": 32000, "timeout": 300.0}']
+    monkeypatch.setenv("SDE_AUTHORING_MAX_TOKENS", "0")
+    with pytest.raises(ValueError):
+        ah.llm_kwargs()
+    monkeypatch.setenv("SDE_AUTHORING_MAX_TOKENS", "lots")
+    with pytest.raises(ValueError):
+        ah.llm_kwargs()
+
+
+def _real_trial(monkeypatch, tmp_path, cmd):
+    """run_authoring_trial over a real process (`cmd` instead of Harbor), fast polling."""
+    import threading
+
+    monkeypatch.setattr(ah.subprocess, "Popen", REAL_POPEN)
+    monkeypatch.setattr(ah, "harbor_command", lambda task_dir, trace: cmd)
+    monkeypatch.setattr(ah, "POLL_SEC", 0.05)
+    monkeypatch.setattr(ah, "STOP_GRACE_SEC", 2.0)
+    cleaned = []
+    monkeypatch.setattr(ah, "cleanup_docker", lambda job_id: cleaned.append(job_id))
+    out: dict = {}
+    t = threading.Thread(target=lambda: out.update(ah.run_authoring_trial("j1", "x", {}, tmp_path, timeout_sec=60)))
+    t.start()
+    return t, out, cleaned
+
+
+REAL_POPEN = subprocess.Popen
+
+
+def test_stop_trial_kills_the_running_harbor_and_cleans_up(tmp_path, monkeypatch):
+    import time
+
+    t, out, cleaned = _real_trial(monkeypatch, tmp_path, ["sleep", "60"])
+    for _ in range(100):
+        if "j1" in ah._RUNNING:
+            break
+        time.sleep(0.02)
+    started = time.monotonic()
+    assert ah.stop_trial("j1") is True
+    t.join(timeout=10)
+    assert not t.is_alive() and time.monotonic() - started < 5  # stopped, not left to its timeout
+    assert out["exception_type"] == "Cancelled" and cleaned == ["j1"] and "j1" not in ah._RUNNING
+    assert ah.stop_trial("j1") is False  # nothing running any more
+
+
+def test_a_trial_past_its_deadline_is_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "BUILD_TIMEOUT_SEC", -959.5)  # deadline = 60 + build + 900 = 0.5 s
+    t, out, cleaned = _real_trial(monkeypatch, tmp_path, ["sleep", "60"])
+    t.join(timeout=10)
+    assert not t.is_alive() and out["exception_type"] == "NoTrialResult" and cleaned == ["j1"]
+
+
+def test_the_trials_compose_network_is_removed_after_the_run(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls))
+    ah.run_authoring_trial("j", "x", {}, tmp_path)
+    removed = [c["docker"] for c in calls if "docker" in c and c["docker"][1:3] == ["network", "rm"]]
+    # The fake trial dir is authoring__abc: Harbor's compose project is authoring__abc__env.
+    assert removed == [["docker", "network", "rm", "authoring__abc__env_default"]]
+
+
+def test_remove_trial_networks_names_every_trial_dir(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(ah.subprocess, "run", lambda cmd, **kw: seen.append(cmd))
+    job = tmp_path / "authoring"
+    (job / "task__FxDKUvk").mkdir(parents=True)
+    (job / "task__iibRdZX").mkdir()
+    (job / "result.json").write_text("{}")  # files are not trials
+    assert ah.remove_trial_networks(job) == ["task__fxdkuvk__env_default", "task__iibrdzx__env_default"]
+    assert seen == [["docker", "network", "rm", n] for n in ("task__fxdkuvk__env_default", "task__iibrdzx__env_default")]
+    assert ah.remove_trial_networks(tmp_path / "missing") == []

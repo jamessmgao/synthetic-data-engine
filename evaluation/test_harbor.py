@@ -171,3 +171,42 @@ def test_mock_mode_runs_oracle_or_nop_and_pins_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(h, "MOCK_PASS_P", 0.0)
     cmd = h.command(tmp_path, "j", agent, tmp_path, None)
     assert cmd[cmd.index("-a") + 1] == "nop"
+
+
+def test_the_solver_call_timeout_caps_only_the_wait(monkeypatch):
+    """SDE_SOLVER_LLM_TIMEOUT_S reaches Harbor as litellm's REQUEST_TIMEOUT, outside the
+    pinned agent kwargs, so the measured config (and its hash) doesn't change."""
+    monkeypatch.delenv("SDE_SOLVER_LLM_TIMEOUT_S", raising=False)
+    assert "REQUEST_TIMEOUT" not in harbor.trial_env() or os.environ.get("REQUEST_TIMEOUT")
+    before = harbor.pinned_agent()
+    monkeypatch.setenv("SDE_SOLVER_LLM_TIMEOUT_S", "300")
+    assert harbor.trial_env()["REQUEST_TIMEOUT"] == "300.0"
+    assert harbor.pinned_agent() == before
+
+
+def test_trial_networks_are_named_like_harbors_compose_project(tmp_path):
+    job = tmp_path / "t1-v1-rollout1-r0"
+    (job / "task__AbC").mkdir(parents=True)
+    (job / "result.json").write_text("{}")  # files are not trials
+    assert harbor.trial_networks(job) == ["task__abc__env_default"]
+    assert harbor.trial_networks(tmp_path / "missing") == []
+
+
+def test_a_finished_or_cancelled_trial_leaves_no_network(fake, monkeypatch):
+    """Harbor that's killed or stopped never runs compose down, so its network leaked until
+    Docker's address pools ran out. The executor removes it once the trial is over."""
+    traces, _ = fake
+    removed = []
+    monkeypatch.setattr(harbor, "_docker_quiet", lambda args: removed.append(args))
+    run(traces)  # a normal run
+    assert removed and all(a[:2] == ["network", "rm"] and a[2].endswith("__env_default") for a in removed)
+
+    removed.clear()
+    monkeypatch.setenv("FAKE_SLEEP", "30")
+    cancel = threading.Event()
+    # Real Harbor creates the trial dir (and its compose network) as it starts.
+    threading.Timer(0.2, lambda: (traces / "t1-v1-rollout2-r0" / "task__Live").mkdir(parents=True)).start()
+    threading.Timer(0.5, cancel.set).start()
+    with pytest.raises(harbor.Cancelled):
+        run(traces, job_id="t1-v1-rollout2-r0", cancel=cancel)  # stopped mid-run
+    assert ["network", "rm", "task__live__env_default"] in removed

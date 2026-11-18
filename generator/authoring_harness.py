@@ -32,7 +32,10 @@ only as gateway_cost_usd, for audit.
 import json
 import os
 import shutil
+import signal
 import subprocess
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -81,6 +84,22 @@ def cleanup_docker(job_id: str) -> None:
     if ids:
         subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, text=True)
     subprocess.run(["docker", "image", "prune", "-af", "--filter", label], capture_output=True, text=True)
+
+
+def remove_trial_networks(job_dir: Path) -> list[str]:
+    """Remove the compose network of every trial under `job_dir`. Harbor names a trial's
+    compose project `<trial dir name, lowercased>__env`, and its network
+    `<project>_default`. A Harbor that was killed or crashed never runs compose down,
+    and the leaked networks exhausted Docker's address pools (local-agent-b2: "all
+    predefined address pools have been fully subnetted"). `docker network rm` refuses a
+    network still in use, so a live trial's network is left alone. Returns the
+    networks it asked to remove."""
+    if not job_dir.is_dir():
+        return []
+    names = [f"{trial.name.lower()}__env_default" for trial in sorted(job_dir.iterdir()) if trial.is_dir()]
+    for name in names:
+        subprocess.run(["docker", "network", "rm", name], capture_output=True, text=True)
+    return names
 
 
 def _task_toml(job_id: str, timeout_sec: float) -> str:
@@ -189,7 +208,7 @@ def summarize(trial_dir: Path | None, result: dict | None, adopted: bool) -> dic
 
 
 def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
-                        work_dir: str | Path | None = None, timeout_sec: float = 1800) -> dict:
+                        work_dir: str | Path | None = None, timeout_sec: float = 900) -> dict:
     """Run (or adopt) the job's authoring trial; see the module docstring."""
     size = instruction_size(instruction)
     trace = Path(work_dir or config.WORK_DIR) / "traces" / job_id
@@ -204,19 +223,94 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
         job_dir.rename(job_dir.with_name(f"{JOB_NAME}.abandoned-{n}"))
 
     task_dir = render_task(trace / "task", job_id, instruction, files, timeout_sec)
+    stop = _RUNNING.setdefault(job_id, threading.Event())
+    stopped = False
     try:
-        subprocess.run(
-            [config.HARBOR_BIN, "run", "-p", str(task_dir), "-a", "terminus-2",
-             "-m", f"openrouter/{config.MODEL}", "-o", str(trace), "--job-name", JOB_NAME, "-y", "-q"],
-            capture_output=True, text=True, env=dict(os.environ),
-            timeout=timeout_sec + config.BUILD_TIMEOUT_SEC + 900,
+        proc = subprocess.Popen(
+            harbor_command(task_dir, trace), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL, env=dict(os.environ),
+            start_new_session=True,  # its own process group: stop Harbor and its children together
         )
-    except subprocess.TimeoutExpired:
-        pass  # whatever Harbor wrote is read below; a missing result is reported as an error
+        deadline = time.monotonic() + timeout_sec + config.BUILD_TIMEOUT_SEC + 900
+        while proc.poll() is None:
+            if stop.wait(POLL_SEC):
+                stopped = True  # the job was taken away (its task cancelled): stop the trial now
+                _stop(proc)
+            elif time.monotonic() > deadline:
+                _stop(proc)  # whatever Harbor wrote is read below; a missing result is an error
     finally:
+        _RUNNING.pop(job_id, None)
         cleanup_docker(job_id)
+        remove_trial_networks(job_dir)
     trial_dir, result = _finished_trial(job_dir)
-    return {**summarize(trial_dir, result, adopted=False), "instruction_size": size}
+    out = {**summarize(trial_dir, result, adopted=False), "instruction_size": size}
+    if stopped and result is None:
+        out.update(exception_type="Cancelled", error="the authoring trial was stopped: its job was taken away")
+    return out
+
+
+POLL_SEC = 2.0
+STOP_GRACE_SEC = 30.0
+# Authoring trials running in this process, by job id: stop_trial(job_id) stops one.
+_RUNNING: dict[str, threading.Event] = {}
+
+
+def harbor_command(task_dir: Path, trace: Path) -> list[str]:
+    cmd = [config.HARBOR_BIN, "run", "-p", str(task_dir), "-a", "terminus-2",
+           "-m", f"openrouter/{config.MODEL}", "-o", str(trace), "--job-name", JOB_NAME, "-y", "-q"]
+    # SDE_AUTHORING_REASONING_EFFORT (e.g. medium): the authoring agent's reasoning effort;
+    # unset = the provider's default.
+    if effort := os.environ.get("SDE_AUTHORING_REASONING_EFFORT", "").strip():
+        cmd += ["--ak", f"reasoning_effort={effort}"]
+    if llm := llm_kwargs():
+        cmd += ["--ak", f"llm_kwargs={json.dumps(llm, sort_keys=True)}"]
+    return cmd
+
+
+def llm_kwargs() -> dict:
+    """terminus-2's `llm_kwargs`, which Harbor's LiteLLM spreads into every model call:
+    SDE_AUTHORING_LLM_TIMEOUT_S caps one call (litellm's default is 6000 s; in round 1 a
+    hung call cost ~600 s before Harbor's retry), SDE_AUTHORING_MAX_TOKENS the output of
+    one (litellm has no model info for glm-5.1, so the provider's default applies). Unset
+    = not sent. Invalid values raise, so a typo doesn't silently drop the cap."""
+    out: dict = {}
+    if raw := os.environ.get("SDE_AUTHORING_LLM_TIMEOUT_S", "").strip():
+        if (timeout := float(raw)) <= 0:
+            raise ValueError("SDE_AUTHORING_LLM_TIMEOUT_S must be > 0")
+        out["timeout"] = timeout
+    if raw := os.environ.get("SDE_AUTHORING_MAX_TOKENS", "").strip():
+        if (tokens := int(raw)) <= 0:
+            raise ValueError("SDE_AUTHORING_MAX_TOKENS must be > 0")
+        out["max_tokens"] = tokens
+    return out
+
+
+def stop_trial(job_id: str) -> bool:
+    """Stop this process's running authoring trial for `job_id` (its lease was lost: the
+    task was cancelled, or another worker took the job). True if one was running."""
+    event = _RUNNING.get(job_id)
+    if event is None:
+        return False
+    event.set()
+    return True
+
+
+def _stop(proc: subprocess.Popen) -> None:
+    """SIGTERM Harbor's process group so it can remove its containers; SIGKILL after the
+    grace period (as evaluation/harbor.py does for rollouts)."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):  # already gone (macOS: an unreaped zombie)
+        proc.wait()
+        return
+    try:
+        proc.wait(timeout=STOP_GRACE_SEC)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        proc.wait()
 
 
 def instruction_size(instruction: str) -> dict:

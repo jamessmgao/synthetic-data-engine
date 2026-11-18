@@ -41,7 +41,43 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if result["outcome"] != "OK":
         print(f"\naq-world: FAILED at {result['failed_check']}:\n{result['feedback']}", file=sys.stderr)
+    for line in hardness_warnings((result.get("result") or {}).get("hardness")):
+        print(line, file=sys.stderr)
     return 0 if result["outcome"] == "OK" else 1
+
+
+def hardness_warnings(hardness: dict | None) -> list[str]:
+    """One WARNING per failed hardness check, each with what to change. In warn mode they
+    don't fail the check, but a world that misses them makes an easier task."""
+    if not hardness or not hardness.get("failed"):
+        return []
+    details = hardness.get("details") or {}
+    files = details.get("fix_files")
+    say = {
+        "hardness_files": f"missing {details.get('missing')}: write repro/symptom_check.sh (the visible symptom) "
+                          "and world_fix/wrong_fix.sh (the plausible wrong fix), see world.md",
+        "symptom_visible": "repro/symptom_check.sh does not fail on the world: make it reproduce the visible "
+                           "symptom users report (exit 1 on the world)",
+        "symptom_gone_with_fix": "repro/symptom_check.sh still fails after fix.sh: the real fix must remove the "
+                                 "visible symptom too",
+        "fix_not_local": f"fix.sh changes {len(files) if files is not None else '?'} file(s) {files or ''} and "
+                         "there is no working dependent_check.sh: make the fix span 2+ modules, or add a module "
+                         "that depends on the current behavior and a repro/dependent_check.sh the local patch breaks",
+        "dependent_holds": "repro/dependent_check.sh fails on the unfixed world: the dependent must work today",
+        "dependent_holds_with_fix": "repro/dependent_check.sh fails after fix.sh: the real fix must keep the "
+                                    "dependent working",
+        "dependent_breaks_with_wrong_fix": "repro/dependent_check.sh still passes after wrong_fix.sh: the local "
+                                           "patch must break the dependent",
+        "wrong_fix_passes_symptom": "the plausible wrong fix does not pass symptom_check.sh, so it is not tempting: "
+                                    "make it fix the visible symptom",
+        "wrong_fix_fails_repro": "repro.sh passes after wrong_fix.sh, so the wrong fix is actually right: make it "
+                                 "fail on the deep schedule (another crash point, a restart, a concurrent worker)",
+    }
+    mode = hardness.get("mode", "warn")
+    head = ["", f"sde-world: {len(hardness['failed'])} hardness warning(s) (mode {mode}"
+                + (": the world still passes" if mode == "warn" else "") + "). Fix every WARNING before finishing "
+                "if time allows:"]
+    return head + [f"WARNING: {say.get(name, name)}" for name in hardness["failed"]]
 
 
 if __name__ == "__main__":

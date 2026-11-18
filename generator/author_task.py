@@ -11,10 +11,13 @@ Generation Service calls it for `create` and, in agent mode, `revise` jobs.
         "result": {"name", "bundle_sha256", "bundle_path", "draft_path", "world_sha256",
                    "llm_calls": [],  # one agent trial, not chat calls: see `authoring`
                    "authoring": {trial_dir, steps, duration_sec, n_input_tokens,
-                                 n_output_tokens, gateway_cost_usd, adopted, exception_type},
-                   "leak": {passed, verdict, leaks, cost_usd, adopted, ...} | {error},
+                                 n_output_tokens, gateway_cost_usd, adopted, exception_type,
+                                 instruction_size},
+                   "self_check": {by, runs},
+                   "leak": {passed, verdict, leaks, direct, strong_hints, blind, blind_leak,
+                            calls, cost_usd, adopted, ...} | {error},
                    "failure_kind": "infra" | "author",   (FAILED only)
-                   "feedback": str},                      (FAILED by the leak review only)
+                   "feedback": str},                      (FAILED by the self-check or the leak review)
     }
 
 job_input, by origin:
@@ -38,12 +41,15 @@ after writing it (result.authoring.exception_type records it). FAILED results sa
 whose fault: `infra` when the trial failed without leaving a draft (Harbor exception,
 no trial), `author` when a clean trial left no valid draft.
 
-Then the leak review (plan N6): validator/gates.py's glm-5.1 review of the
-instruction against the hidden spec runs here, without a Docker slot. A confirmed
-leak is FAILED / author with the gate's feedback (and the bundle, for the repair);
-the review's cost is added to the job's, and it is recorded by bundle sha, so
-validate's leak gate adopts it instead of paying again. If the review call itself
-fails, the job still succeeds and validate runs the review.
+Then the self-check guard (generator/self_check.py:ensure_task_checked: the author's
+saved `sde-task check`, or the check run here, free) and the leak review (plan N6):
+validator/gates.py:gate_leak, the semantic review against the hidden spec and the
+world plus the blind fix prediction (docs/VALIDATION_GATES.md), runs here without a
+Docker slot. A failing self-check or a leak is FAILED / author with the feedback (and
+the bundle, so after_generation sends it to a repair); the review's cost is added to
+the job's, and it is recorded by bundle sha, so validate's leak gate adopts it instead
+of paying again. If the review call itself fails, the job still succeeds and validate
+runs the review.
 
 Idempotent per job_id: the harness adopts a finished trial under traces/<job_id>/,
 bundles are content-addressed, and the draft record and leak review are written once.
@@ -66,8 +72,8 @@ from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 from generator.worker import _repair_guard, _save_draft_record, format_validation_errors, load_draft_record
 
 PROMPTS = Path(config.PROMPTS_DIR)
-# The task author's time box (prompt: drafted by ~12 min, self-checked within 20).
-AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_CREATE_TIMEOUT_S", "1200"))
+# The task author's hard stop (the prompt asks for done in 10 min).
+AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_CREATE_TIMEOUT_S", "900"))
 DEFAULT_SHAPE, DEFAULT_DIAL = "fix", 2
 REVISE_ORIGINS = ("repair", "easier", "repair_ambiguity")
 
@@ -159,7 +165,11 @@ def _system_rules() -> str:
     start, end = text.find("Return exactly one JSON object"), text.find("## How Harbor runs your task")
     if 0 <= start < end:
         text = text[:start] + text[end:]
-    return text.strip()
+    # The agent author keeps how Harbor runs the task and the rules the pipeline checks;
+    # task_author.md states what makes the task good, and `sde-task check` reports the
+    # mistakes. (Shorter context, every step: the round-1 author prompt was 5k tokens.)
+    cut = text.find("## What makes the task good")
+    return (text[:cut] if cut > 0 else text).strip()
 
 
 def _bullets(items: list[str]) -> str:
@@ -258,7 +268,39 @@ def render_world_mutation_instruction(job_input: dict, parent_world: dict, paren
         why=mutation.get("why") or "(not recorded)",
         history=_bullets([json.dumps(m, sort_keys=True) for m in history[:-1]] if history else []),
         techniques="\n".join(f"- {name}: {text}" for name, text in HARDENING_TECHNIQUES.items()),
+        hardness=hardness_section(job_input.get("hardness")),
     ).rstrip() + "\n"
+
+
+def hardness_section(hardness: dict | None) -> str:
+    """The parent world's hardness checks (world_check's result.hardness, normalized into the
+    mutation input by the pipeline), as what this mutation must fix. Keys absent or None
+    were not run."""
+    if not hardness:
+        return "(not recorded for the parent world)"
+    found = []
+    if hardness.get("fix_not_local") is False:
+        files = hardness.get("fix_files")
+        found.append(f"its fix is local (world_fix/fix.sh changes {len(files) if files else 'only one'} file(s)"
+                     f"{': ' + ', '.join(files) if files else ''}, and no dependent breaks): make the correct fix "
+                     "span 2+ modules, or make another module depend on the current behavior, with a "
+                     "repro/dependent_check.sh the one-file patch breaks")
+    if hardness.get("dependent") is False:
+        found.append("its dependent_check.sh did not break under the wrong fix: the local patch must break it")
+    if hardness.get("wrong_fix_passes_symptom") is False:
+        found.append("its plausible wrong fix does not fix the visible symptom, so it is not tempting: the new "
+                     "wrong fix must make repro/symptom_check.sh pass")
+    if hardness.get("wrong_fix_fails_repro") is False:
+        found.append("its plausible wrong fix survives repro.sh, so it is not wrong: the new one must fail the deep "
+                     "schedule")
+    others = [n for n in hardness.get("failed") or [] if n not in (
+        "fix_not_local", "dependent_breaks_with_wrong_fix", "wrong_fix_passes_symptom", "wrong_fix_fails_repro")]
+    if others:
+        found.append(f"also failed: {', '.join(others)} (see world.md for each check)")
+    if not found:
+        return "The parent world passed every hardness check: keep it that way."
+    return ("The parent world's checks found the following; the mutation must fix these:\n"
+            + "\n".join(f"- {f}" for f in found))
 
 
 # --- the job ------------------------------------------------------------------------

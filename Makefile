@@ -107,3 +107,23 @@ aws-up: aws-bootstrap aws-apply aws-secrets aws-deploy aws-smoke  ## all of the 
 
 k8s-test:        ## chaos test on the k3d cluster (mock mode): kill an executor mid-rollout, restart Postgres
 	$(PYTHON) scripts/k8s_test.py $(ARGS)
+
+# K3s across the runners instead of compose (scripts/k8s_aws.py; docs/K8S_PLAN.md).
+K8S_AWS := $(PYTHON) scripts/k8s_aws.py
+
+.PHONY: aws-k8s-up aws-k8s-deploy aws-k8s-status aws-k8s-logs aws-k8s-test aws-k8s-test-log aws-k8s-down
+
+aws-k8s-up:      ## stop compose; K3s server + agents; image on every node; KEDA
+	$(K8S_AWS) up $(or $(REF),HEAD)
+aws-k8s-deploy:  ## make aws-k8s-deploy [REF=<branch|sha>] [OVERLAY=aws|aws-prod]: ship, rebuild + import, apply
+	$(K8S_AWS) deploy $(or $(REF),HEAD) --overlay $(or $(OVERLAY),aws)
+aws-k8s-status:
+	$(K8S_AWS) status
+aws-k8s-logs:    ## make aws-k8s-logs SVC=api|control|validate|executor|generation|postgres|redis|s3
+	$(K8S_AWS) logs $(or $(SVC),executor)
+aws-k8s-test:    ## make aws-k8s-test [ARGS="--tasks 2"]: scripts/k8s_test.py on the server (systemd unit)
+	$(K8S_AWS) test $(ARGS)
+aws-k8s-test-log:
+	$(K8S_AWS) test-log
+aws-k8s-down:    ## uninstall K3s on every runner (then `make aws-deploy` restores compose)
+	$(K8S_AWS) down

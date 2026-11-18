@@ -1,0 +1,20 @@
+# Prefer agents (the server holds the API, control and the data stores). The requests are on
+# the dind sidecar, where the trials run: a 2-vCPU node takes about three worker pods.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - {key: node-role.kubernetes.io/control-plane, operator: DoesNotExist}
+      initContainers:
+        - name: dind
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}

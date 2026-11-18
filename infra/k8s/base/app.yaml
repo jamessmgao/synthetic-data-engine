@@ -19,7 +19,7 @@ spec:
               while True:
                   try:
                       psycopg.connect(os.environ["DATABASE_URL"]).execute("SELECT 1 FROM jobs LIMIT 0")
-                      boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT_URL"]).head_bucket(Bucket=os.environ["S3_BUCKET"])
+                      boto3.client("s3", endpoint_url=os.environ.get("S3_ENDPOINT_URL") or None).head_bucket(Bucket=os.environ["S3_BUCKET"])
                       break
                   except Exception as e:
                       print("waiting for the bootstrap Job:", e, flush=True)

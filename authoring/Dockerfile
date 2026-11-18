@@ -48,7 +48,14 @@ COPY generator/ /opt/sde/generator/
 COPY validator/ /opt/sde/validator/
 COPY authoring/ /opt/sde/authoring/
 RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/local/bin/ \
- && ln -s /opt/sde/authoring/scaffold /opt/sde/scaffold
+ && cp -r /opt/sde/authoring/scaffold /opt/sde/scaffold
 # /opt/sde/scaffold: stdlib-only helpers a world vendors (scheduler, faults, repro harness).
+# A real directory, not a symlink: `find /opt/sde/scaffold` without -L lists nothing in a link.
+
+# terminus-2 runs commands in a LOGIN shell, where /etc/profile resets PATH and drops
+# the ENV PATH above (Go, the JDK): restore it for login shells, like the task images'
+# /etc/profile.d/00-image-path.sh (shared/taskformat/materialize.py). Checked by
+# scripts/check_authoring_image.sh.
+RUN echo "export PATH=\"$PATH\"" > /etc/profile.d/00-sde-path.sh
 
 WORKDIR /work
