@@ -210,6 +210,17 @@ def test_concurrent_claims_never_share_a_job(env, backend):
     assert all(j["attempts"] == 1 and j["status"] == "DONE" for j in backend.store.task_jobs(t))
 
 
+def test_literal_percent_in_sql_works_on_every_backend(backend, jq):
+    t = add_task(backend)
+    enqueue(backend, jq, t, n=2)
+    rows = backend.store.conn.execute(
+        "SELECT id FROM jobs WHERE id LIKE '%-0' AND task_id = ?", (t,)
+    ).fetchall()
+    assert [r["id"] for r in rows] == [f"{t}-v1-{JobType.CREATE}-0"]
+    no_params = backend.store.conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE id LIKE '%'").fetchone()
+    assert no_params["n"] == 2
+
+
 def test_a_column_added_by_another_process_does_not_break_old_connections(env, backend, jq):
     """Rolling deploy: an old process keeps querying while a new one migrates."""
     t = add_task(backend)

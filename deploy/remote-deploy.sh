@@ -62,8 +62,12 @@ services=""  # all of them
 [ "$role" = runner ] && services="worker-runner"
 
 cd "$release"
+# Build quietly: SSM keeps only the first 24,000 characters of output, and a full
+# build log would push the result lines below out of it.
 # shellcheck disable=SC2086  # $services is intentionally split (or empty)
-docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --build --remove-orphans $services
+docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml build --quiet $services
+# shellcheck disable=SC2086
+docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --remove-orphans $services
 docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml ps
 echo "components:"; grep '_CMD=' /opt/sde/runtime.env
 echo "deployed $sha as $role"

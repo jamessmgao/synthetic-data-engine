@@ -229,3 +229,14 @@ def test_pass_review_that_cannot_run_is_recorded_not_raised():
     analysis, cost = trace_parser.review_passes([], "", None, passed=5, runs=5, cache_key="k", llm_dir=None,
                                                 complete=FakeLLM(RuntimeError("gateway down")))
     assert analysis["trusted"] is False and "gateway down" in analysis["review_error"] and cost == 0.0
+
+
+def test_pass_review_with_a_malformed_reply_or_broken_prompt_does_not_raise(trial, monkeypatch):
+    ev = trace_parser.pass_evidence([("run 1", trial)])
+    analysis, _ = trace_parser.review_passes(ev, "", None, passed=5, runs=5, cache_key="k", llm_dir=None,
+                                             complete=FakeLLM(["not", "an", "object"]))
+    assert analysis["trusted"] is False and "review_error" in analysis
+    monkeypatch.setattr(trace_parser, "_hardening_techniques", lambda: 1 / 0)
+    analysis, cost = trace_parser.review_passes(ev, "", None, passed=5, runs=5, cache_key="k", llm_dir=None,
+                                                complete=FakeLLM(pass_reply()))
+    assert analysis["trusted"] is False and "ZeroDivisionError" in analysis["review_error"] and cost == 0.0

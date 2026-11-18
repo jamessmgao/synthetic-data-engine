@@ -428,6 +428,16 @@ only from the evidence; do not invent facts. Cite evidence ids for every claim.
 def review_passes(evidence: list[dict], instruction: str, spec: dict | None, *, passed: int, runs: int,
                   cache_key: str, llm_dir: Path | None, complete: Complete | None = None) -> tuple[dict, float]:
     """One GLM-5.1 review of why a version was too easy. Returns (analysis, cost). Never raises."""
+    try:
+        return _review_passes(evidence, instruction, spec, passed=passed, runs=runs,
+                              cache_key=cache_key, llm_dir=llm_dir, complete=complete)
+    except Exception as e:  # prompt building or a malformed reply: never block the decision
+        log.warning("%s: pass review failed: %s", cache_key, e)
+        return {"why_easy": None, "trusted": False, "review_error": f"{type(e).__name__}: {str(e)[:300]}"}, 0.0
+
+
+def _review_passes(evidence: list[dict], instruction: str, spec: dict | None, *, passed: int, runs: int,
+                   cache_key: str, llm_dir: Path | None, complete: Complete | None) -> tuple[dict, float]:
     techniques = _hardening_techniques()
     spec_text = json.dumps({k: spec.get(k) for k in ("root_cause", "correctness_constraints", "subgoals",
                                                     "expected_agent_pitfalls")}, indent=1) \

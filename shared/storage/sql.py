@@ -141,7 +141,8 @@ class _PostgresConn:
         self._c = psycopg.connect(url, autocommit=True, row_factory=dict_row, prepare_threshold=None)
 
     def execute(self, sql: str, params: tuple | list = ()) -> Any:
-        return self._c.execute(sql.replace("?", "%s"), params)
+        # psycopg's placeholder is %s, so a literal % (LIKE 'x%') must become %%.
+        return self._c.execute(sql.replace("%", "%%").replace("?", "%s"), params)
 
     @contextmanager
     def tx(self) -> Iterator["_PostgresConn"]:
