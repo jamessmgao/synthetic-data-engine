@@ -30,12 +30,12 @@ from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import DOCKER_SLOTS, JobType
 
 RECORDS_DIR = settings.ROOT_DIR / "records" / "evaluation"
-BATCH_ID = "adhoc"
+ID_PREFIX = "adhoc"  # task ids made by this tool: adhoc-<task dir>-<sha8>
 
 
 def task_id_for(task_dir: Path, sha: str) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", task_dir.name.lower()).strip("-")
-    return f"{BATCH_ID}-{slug}-{sha[:8]}"
+    return f"{ID_PREFIX}-{slug}-{sha[:8]}"
 
 
 def submit(backend: Backend, task_dir: Path, runs: int) -> tuple[str, str]:
@@ -46,10 +46,10 @@ def submit(backend: Backend, task_dir: Path, runs: int) -> tuple[str, str]:
     now = utcnow()
     with backend.store.tx() as c:
         c.execute(
-            """INSERT INTO tasks (id, batch_id, status, stage, current_version, bundle_sha256, name,
+            """INSERT INTO tasks (id, status, stage, current_version, bundle_sha256, name,
                                   created_at, updated_at)
-               VALUES (?, ?, 'CALIBRATING', 'EVALUATING', 1, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
-            (task_id, BATCH_ID, sha, task_dir.name, now, now),
+               VALUES (?, 'CALIBRATING', 'EVALUATING', 1, ?, ?, ?, ?) ON CONFLICT DO NOTHING""",
+            (task_id, sha, task_dir.name, now, now),
         )
         new = [j["id"] for slot in range(1, runs + 1)
                if insert_job(c, id=(j := rollout_job(task_id, 1, slot, sha))["id"], task_id=task_id,

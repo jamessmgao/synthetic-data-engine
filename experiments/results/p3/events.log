@@ -21,3 +21,41 @@
 [16:25:28] h6-data-forensics: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
 [16:26:29] h5-layered-build: gates {'structural': True, 'lint': True, 'oracle1': False}
 [16:26:29] h5-layered-build: drafting (repair)
+[16:28:08] h8-c-extension: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:28:08] h8-c-extension: drafting (repair)
+[16:28:34] h2-reverse-format: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:28:34] h2-reverse-format: drafting (repair)
+[16:29:27] h3-protocol-server: rollout1 VALID_PASS (1P/0F)
+[16:34:06] h3-protocol-server: rollout2 VALID_PASS (2P/0F)
+[16:34:40] h4-go-race: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[16:35:40] h5-layered-build: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:35:40] h5-layered-build: invalid after 2 repairs
+[16:37:17] h3-protocol-server: rollout3 VALID_PASS (3P/0F)
+[16:41:21] h3-protocol-server: rollout4 VALID_PASS (4P/0F)
+[16:41:21] h3-protocol-server: VERDICT too_easy (4P/0F)
+[16:43:02] h1-integration: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[16:43:16] h8-c-extension: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:43:16] h8-c-extension: drafting (repair)
+[16:43:24] h2-reverse-format: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:43:24] h2-reverse-format: drafting (repair)
+[16:43:55] h6-data-forensics: rollout1 VALID_PASS (1P/0F)
+[16:46:23] h6-data-forensics: rollout2 VALID_PASS (2P/0F)
+[16:48:10] h6-data-forensics: rollout3 VALID_PASS (3P/0F)
+[16:50:14] h6-data-forensics: rollout4 VALID_PASS (4P/0F)
+[16:50:14] h6-data-forensics: VERDICT too_easy (4P/0F)
+[16:52:13] h8-c-extension: gates {'structural': True, 'lint': True, 'oracle1': False}
+[16:52:13] h8-c-extension: invalid after 2 repairs
+[16:52:21] h7-exact-performance: rollout4 VALID_PASS (4P/0F)
+[16:53:28] h2-reverse-format: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[16:55:44] h7-exact-performance: rollout5 VALID_PASS (5P/0F)
+[16:55:44] h7-exact-performance: VERDICT too_easy (5P/0F)
+[17:04:59] h4-go-race: rollout1 VALID_PASS (1P/0F)
+[17:08:23] h4-go-race: rollout3 VALID_PASS (2P/0F)
+[17:20:49] h4-go-race: rollout5 VALID_PASS (3P/0F)
+[17:22:31] h4-go-race: rollout2 VALID_PASS (4P/0F)
+[17:25:28] h1-integration: rollout1 VALID_PASS (1P/0F)
+[17:27:05] h4-go-race: rollout4 VALID_PASS (5P/0F)
+[17:27:05] h4-go-race: VERDICT too_easy (5P/0F)
+[17:29:34] h1-integration: rollout2 VALID_PASS (2P/0F)
+[17:30:00] h1-integration: rollout3 VALID_PASS (3P/0F)
+[17:30:49] h1-integration: rollout4 VALID_PASS (4P/0F)

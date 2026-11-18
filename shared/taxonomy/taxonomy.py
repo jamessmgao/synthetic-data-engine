@@ -47,31 +47,28 @@ DEFAULT_DIFFICULTY = {
 }
 
 
-def sample_specs(batch_id: str, count: int) -> list[dict]:
-    """`count` specs for one batch, spread across the taxonomy.
+def sample_spec(existing: list[dict], rng: random.Random | None = None) -> dict:
+    """A spec for one new task, spread across the taxonomy given every task so far.
 
-    Quota sampling: each candidate takes the least-used values so far, ties
-    broken by an RNG seeded with the batch id, so resubmitting a batch samples
-    exactly the same specs.
+    Quota sampling over all tasks ever created (there are no batches): the new
+    task takes an unused (domain, task_type, environment) combination with the
+    least-used values, and the least-used value on every other dimension. Once
+    every combination has been used, repeats are allowed, still least-used first.
+    `existing` is the taxonomies of the tasks already created.
     """
-    rng = random.Random(batch_id)
+    rng = rng or random.Random()
     used = {dim: Counter() for dim in TAXONOMY}
     taken: set[tuple[str, ...]] = set()
-    specs = []
-    for _ in range(count):
-        combos = [c for c in product(*(TAXONOMY[d] for d in UNIQUE_DIMENSIONS)) if c not in taken]
-        if not combos:
-            raise ValueError(f"taxonomy has no unused {UNIQUE_DIMENSIONS} combination left")
-        combo = min(
-            combos,
-            key=lambda c: (sum(used[d][v] for d, v in zip(UNIQUE_DIMENSIONS, c)), rng.random()),
-        )
-        taken.add(combo)
-        taxonomy = dict(zip(UNIQUE_DIMENSIONS, combo))
-        for dim, values in TAXONOMY.items():
-            if dim not in taxonomy:
-                taxonomy[dim] = min(values, key=lambda v: (used[dim][v], rng.random()))
-        for dim, value in taxonomy.items():
-            used[dim][value] += 1
-        specs.append({"taxonomy": taxonomy, "difficulty": DEFAULT_DIFFICULTY})
-    return specs
+    for tax in existing:
+        for dim, value in tax.items():
+            if dim in used:
+                used[dim][value] += 1
+        taken.add(tuple(tax.get(d) for d in UNIQUE_DIMENSIONS))
+    combos = list(product(*(TAXONOMY[d] for d in UNIQUE_DIMENSIONS)))
+    combos = [c for c in combos if c not in taken] or combos
+    combo = min(combos, key=lambda c: (sum(used[d][v] for d, v in zip(UNIQUE_DIMENSIONS, c)), rng.random()))
+    taxonomy = dict(zip(UNIQUE_DIMENSIONS, combo))
+    for dim, values in TAXONOMY.items():
+        if dim not in taxonomy:
+            taxonomy[dim] = min(values, key=lambda v: (used[dim][v], rng.random()))
+    return {"taxonomy": taxonomy, "difficulty": DEFAULT_DIFFICULTY}

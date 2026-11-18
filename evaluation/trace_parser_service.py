@@ -226,15 +226,12 @@ class TraceParserService:
         return verdict.publish(self.backend.artifacts, self.accepted_dir, task,
                                self.backend.store.task_jobs(task["id"]))
 
-    def publish_pending(self, batch_id: str | None = None) -> int:
+    def publish_pending(self) -> int:
         """Publish ACCEPTED tasks not yet in output/accepted/ (a crash between the
         ACCEPTED commit and the copy). Returns how many it published."""
-        sql, params = "SELECT id FROM tasks WHERE status = ?", [str(TaskStatus.ACCEPTED)]
-        if batch_id:
-            sql += " AND batch_id = ?"
-            params.append(batch_id)
         done = 0
-        for row in self.backend.store.conn.execute(sql, params).fetchall():
+        for row in self.backend.store.conn.execute(
+                "SELECT id FROM tasks WHERE status = ?", (str(TaskStatus.ACCEPTED),)).fetchall():
             task = self.backend.store.task(row["id"])
             if verdict.published_dir(self.accepted_dir, task) is None:
                 self.publish(task)

@@ -1,0 +1,33 @@
+[17:06:46] pilot p4: 6 candidates (frontier), budget $80.0, 1+1 docker slots, 8 concurrent drafts
+[17:06:46] f1-behavior-preserving: drafting (initial)
+[17:06:46] f2-custom-interpreter: drafting (initial)
+[17:06:46] f3-optimal-scheduling: drafting (initial)
+[17:06:46] f4-ledger-replay: drafting (initial)
+[17:06:46] f5-incident-diagnosis: drafting (initial)
+[17:06:46] f6-chained-migration: drafting (initial)
+[17:19:35] f1-behavior-preserving: gates {'structural': True, 'lint': True, 'oracle1': False}
+[17:19:35] f1-behavior-preserving: drafting (repair)
+[17:20:27] f4-ledger-replay: gates {'structural': True, 'lint': True, 'oracle1': False}
+[17:20:27] f4-ledger-replay: drafting (repair)
+[17:23:11] f1-behavior-preserving: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:25:43] f1-behavior-preserving: rollout1 VALID_PASS (1P/0F)
+[17:25:47] f4-ledger-replay: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:26:24] f3-optimal-scheduling: gates {'structural': True, 'lint': True, 'oracle1': False}
+[17:26:24] f3-optimal-scheduling: drafting (repair)
+[17:27:43] f1-behavior-preserving: rollout2 VALID_PASS (2P/0F)
+[17:29:05] f6-chained-migration: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:29:32] f1-behavior-preserving: rollout3 VALID_FAIL (2P/1F)
+[17:30:44] f3-optimal-scheduling: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:31:26] f1-behavior-preserving: rollout4 VALID_PASS (3P/1F)
+[17:37:05] pilot p4: 1 candidates (frontier), budget $80.0, 1+1 docker slots, 8 concurrent drafts
+[17:37:05] f1-behavior-preserving: drafting (initial)
+[17:37:06] f1-behavior-preserving: gates {'structural': True, 'lint': True, 'oracle1': False}
+[17:37:06] f1-behavior-preserving: drafting (repair)
+[17:37:06] f1-behavior-preserving: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:37:06] f1-behavior-preserving: rollout1 VALID_PASS (1P/0F)
+[17:37:06] f1-behavior-preserving: rollout2 VALID_PASS (2P/0F)
+[17:37:06] f1-behavior-preserving: rollout3 VALID_FAIL (2P/1F)
+[17:37:06] f1-behavior-preserving: rollout4 VALID_PASS (3P/1F)
+[17:39:55] f1-behavior-preserving: rollout5 VALID_PASS (4P/1F)
+[17:39:55] f1-behavior-preserving: VERDICT too_easy (4P/1F)
+[17:39:55] done: spent $0.07; {"f1-behavior-preserving": "too_easy"}

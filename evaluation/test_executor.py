@@ -70,8 +70,8 @@ def backend(tmp_path):
 def seed(backend, runs=5, task_id="t1"):
     now = utcnow()
     with backend.store.tx() as c:
-        c.execute("""INSERT INTO tasks (id, batch_id, status, stage, created_at, updated_at)
-                     VALUES (?, 'b-test', 'CALIBRATING', 'EVALUATING', ?, ?)""", (task_id, now, now))
+        c.execute("""INSERT INTO tasks (id, status, stage, created_at, updated_at)
+                     VALUES (?, 'CALIBRATING', 'EVALUATING', ?, ?)""", (task_id, now, now))
         for slot in range(1, runs + 1):
             insert_job(c, id=rollout_job(task_id, 1, slot, SHA)["id"], task_id=task_id, version=1,
                        type=JobType.ROLLOUT, slot=slot, bundle_sha256=SHA)

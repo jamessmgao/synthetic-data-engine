@@ -1,0 +1,178 @@
+{
+ "id": "h4-go-race",
+ "spec": {
+  "taxonomy": {
+   "domain": "Distributed systems",
+   "task_type": "Debugging",
+   "core_capability": "Concurrency",
+   "failure_mode": "Race condition",
+   "environment": "Go service",
+   "skill_interaction": "Single skill"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": []
+  },
+  "design": [
+   "Scenario: a Go connection pool or cache passes its existing unit tests but corrupts its state under concurrent load (leaked or double-handed-out resources, lost updates). Reading any single function does not reveal the problem.",
+   "The tests run a stress harness with the race detector enabled and check invariants, plus the existing behavior. The Go toolchain and race detector work in the image.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p3-h4-go-race-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.28444,
+   "rounds": 1,
+   "completion_tokens": 67359,
+   "draft_sec": 752.7,
+   "round_errors": [],
+   "bundle_sha256": "938def32424e30364eddc37cda0241664ecbcdb2a9f4470adbd3e22dd9cfeb2e",
+   "name": "connpool-race-condition"
+  },
+  {
+   "job_id": "p3-h4-go-race-v1-validate0",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward None).\nHarbor exception: RuntimeError: Docker compose command failed for environment connpool-race-condition. Command: docker compose --project-name 938def32424e30364eddc37cda024166__iz7k7k8__env --project-directory /Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/938def32424e30364eddc37cda0241664ecbcdb2a9f4470adbd3e22dd9cfeb2e/environment -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmp5vswzzfh/938def32424e30364eddc37cda024166__iZ7k7K8__env-docker-compose-resources.json -f /Users/jamesgao/.local/share/uv/tools/harbor/lib/python3.13/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpfsao985s/docker-compose-environment.json -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmprwm302rf/docker-compose-mounts.json build. Return code: 1. Stdout:  Image 938def32424e30364eddc37cda024166__iz7k7k8__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 900B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 603B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db\n#3 DONE 0.0s\n\n#4 [internal] load .dockerignore\n#4 transferring context: 2B done\n#4 DONE 0.0s\n\n#5 [1/9] FROM docker.io/library/golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db\n#5 resolve docker.io/library/golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db 0.0s done\n#5 DONE 0.0s\n\n#6 [2/9] WORKDIR /app\n#6 CACHED\n\n#7 [internal] load build context\n#7 transferring context: 19.78kB 0.0s done\n#7 DONE 0.0s\n\n#8 [3/9] COPY connpool/ /app/connpool/\n#8 DONE 0.2s\n\n#9 [4/9] WORKDIR /app/connpool\n#9 DONE 0.1s\n\n#10 [5/9] RUN go mod tidy\n#10 DONE 0.7s\n\n#11 [6/9] RUN go build ./...\n#11 3.994 # connpool\n#11 3.994 ./lifecycle.go:3:8: \"sync\" imported and not used\n#11 3.994 ./pool.go:4:2: \"context\" imported and not used\n#11 ERROR: process \"/bin/sh -c go build ./...\" did not complete successfully: exit code: 1\n------\n > [6/9] RUN go build ./...:\n3.994 # connpool\n3.994 ./lifecycle.go:3:8: \"sync\" imported and not used\n3.994 ./pool.go:4:2: \"context\" imported and not used\n------\nDockerfile:10\n\n--------------------\n\n   8 |     WORKDIR /app/connpool\n\n   9 |     RUN go mod tidy\n\n  10 | >>> RUN go build ./...\n\n  11 |     RUN go test -short -count=1 -timeout=60s ./...\n\n  12 |     \n\n--------------------\n\nfailed to solve: process \"/bin/sh -c go build ./...\" did not complete successfully: exit code: 1\n\n. Stderr: None. ",
+   "sec": 12.6,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p3-h4-go-race-v1-repair1",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.061003,
+   "rounds": 1,
+   "completion_tokens": 10467,
+   "draft_sec": 93.1,
+   "round_errors": [],
+   "bundle_sha256": "7a769bd29544b6f6be40f6c941b8c7a8ca679dbca1787b02aa7fc0b21e3d4cb6",
+   "name": "connpool-race-condition"
+  },
+  {
+   "job_id": "p3-h4-go-race-v1-validate1",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 365.6,
+   "tests_passing_on_nop": [
+    "test_race_detection",
+    "test_no_false_stale_rejection"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h4-go-race/rollout1-r0/7a769bd29544b6f6be40f6c941b8c7a8__REMcjZr",
+   "cost_usd": 0.0386946,
+   "input_tokens": 386616,
+   "output_tokens": 49845,
+   "steps": 26,
+   "duration_sec": 880.2,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h4-go-race/rollout3-r0/7a769bd29544b6f6be40f6c941b8c7a8__527ryRV",
+   "cost_usd": 0.034555472,
+   "input_tokens": 347905,
+   "output_tokens": 49606,
+   "steps": 21,
+   "duration_sec": 754.4,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h4-go-race/rollout5-r0/7a769bd29544b6f6be40f6c941b8c7a8__i8JkRH8",
+   "cost_usd": 0.046272563999999995,
+   "input_tokens": 471801,
+   "output_tokens": 50676,
+   "steps": 27,
+   "duration_sec": 742.1,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h4-go-race/rollout2-r0/7a769bd29544b6f6be40f6c941b8c7a8__zSwQHiy",
+   "cost_usd": 0.10772733400000002,
+   "input_tokens": 1261900,
+   "output_tokens": 112244,
+   "steps": 44,
+   "duration_sec": 1806.2,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h4-go-race/rollout4-r0/7a769bd29544b6f6be40f6c941b8c7a8__Go7hrx6",
+   "cost_usd": 0.0919812513,
+   "input_tokens": 736448,
+   "output_tokens": 101725,
+   "steps": 37,
+   "duration_sec": 1322.3,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794959980.165348,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/7a769bd29544b6f6be40f6c941b8c7a8ca679dbca1787b02aa7fc0b21e3d4cb6",
+ "name": "connpool-race-condition",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794965225.7733278,
+ "wall_sec": 5245.6,
+ "cost_usd": {
+  "authoring": 0.3454,
+  "rollouts": 0.3192,
+  "total": 0.6647
+ }
+}

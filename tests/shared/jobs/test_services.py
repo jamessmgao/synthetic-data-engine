@@ -18,10 +18,10 @@ from shared.storage.sql import claim as sql_claim, insert_job, job_id, rollout_j
 from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import JobType
 from shared.jobs.reconciler import reconcile
-from api.submit import BatchConflict, submit_batch
-from shared.taxonomy.taxonomy import UNIQUE_DIMENSIONS, sample_specs
+from api.submit import TaskConflict, create_task
+from shared.taxonomy.taxonomy import TAXONOMY, UNIQUE_DIMENSIONS, sample_spec
 
-T = "b-1-t01"
+T = "t-1"
 
 
 def review(attribution="model"):
@@ -129,10 +129,8 @@ def score(backend, parser, version, pattern):
 # --- submission --------------------------------------------------------------
 
 
-def test_submit_creates_tasks_and_create_jobs(backend):
-    batch_id, task_ids, created = submit_batch(backend, 3, "b-1")
-    assert (batch_id, created) == ("b-1", True)
-    assert task_ids == ["b-1-t01", "b-1-t02", "b-1-t03"]
+def test_create_task_writes_the_task_and_its_create_job(backend):
+    assert create_task(backend, task_id=T) == (T, True)
     t = task(backend)
     assert (t["status"], t["stage"], t["current_version"]) == ("CREATED", "QUEUED", 1)
     create = backend.store.job(job_id(T, 1, "create"))
@@ -140,28 +138,29 @@ def test_submit_creates_tasks_and_create_jobs(backend):
     assert create["input"]["spec"] == t["slot"] and t["slot"]["taxonomy"]["domain"]
 
 
-def test_submit_is_idempotent_and_conflicts_on_count(backend):
-    submit_batch(backend, 2, "b-1")
-    assert submit_batch(backend, 2, "b-1")[2] is False
+def test_create_task_is_idempotent_and_conflicts_on_a_different_request(backend):
+    create_task(backend, prompt="idea", task_id=T)
+    assert create_task(backend, prompt="idea", task_id=T) == (T, False)
     assert len(ids(backend)) == 1
-    with pytest.raises(BatchConflict):
-        submit_batch(backend, 3, "b-1")
-    assert len(backend.store.batch_tasks("b-1")) == 2
+    with pytest.raises(TaskConflict):
+        create_task(backend, prompt="another idea", task_id=T)
+    assert len(backend.store.tasks()) == 1
 
 
-def test_specs_are_diverse_and_deterministic():
-    specs = sample_specs("b-x", 12)
-    combos = {tuple(s["taxonomy"][d] for d in UNIQUE_DIMENSIONS) for s in specs}
+def test_sampling_spreads_across_every_task_so_far():
+    existing = []
+    for _ in range(12):
+        existing.append(sample_spec(existing)["taxonomy"])
+    combos = {tuple(t[d] for d in UNIQUE_DIMENSIONS) for t in existing}
     assert len(combos) == 12
-    assert len({s["taxonomy"]["domain"] for s in specs}) == 7  # every domain used before any repeats twice
-    assert sample_specs("b-x", 12) == specs
+    assert len({t["domain"] for t in existing}) == len(TAXONOMY["domain"])  # every domain before any repeats
 
 
 # --- the happy path: each service hands off to the next --------------------------
 
 
 def test_accepts_in_band_and_publishes(backend, parser):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     create = claim(backend, job_id(T, 1, "create"))
     handoffs.generation_started(backend)(create)
     assert (task(backend)["status"], task(backend)["stage"]) == ("CALIBRATING", "GENERATING")
@@ -199,7 +198,7 @@ def test_accepts_in_band_and_publishes(backend, parser):
 
 
 def test_publish_is_retried_after_a_crash(backend, parser, monkeypatch):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     real_publish = backend.artifacts.publish
 
@@ -218,8 +217,8 @@ def test_publish_is_retried_after_a_crash(backend, parser, monkeypatch):
 
 
 def test_two_accepted_tasks_with_one_name_both_publish(backend, parser):
-    submit_batch(backend, 2, "b-1")
-    for tid in ("b-1-t01", "b-1-t02"):
+    for tid in (T, "t-2"):
+        create_task(backend, task_id=tid)
         sha = f"sha-{tid}"
         generate(backend, job_id(tid, 1, "create"), sha, name="same-name")
         validate(backend, job_id(tid, 1, "validate", 0))
@@ -229,14 +228,14 @@ def test_two_accepted_tasks_with_one_name_both_publish(backend, parser):
                    followups=[analyze_job(backend.store.job(rollout_job_id(tid, 1, slot, 0)))])
         analyze_all(backend, parser, tid)
     assert sorted(p.name for p in parser.accepted_dir.iterdir() if p.name != ".staging") == \
-        ["same-name", "same-name-b-1-t02"]
+        ["same-name", "same-name-t-2"]
 
 
 # --- repairs -------------------------------------------------------------------
 
 
 def test_failed_gate_gets_repaired_then_rejected(backend):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     generate(backend, job_id(T, 1, "create"), "sha1")
     for k in (0, 1, 2):
         validate(backend, job_id(T, 1, "validate", k), ok=False, feedback=f"oracle failed ({k})")
@@ -253,7 +252,7 @@ def test_failed_gate_gets_repaired_then_rejected(backend):
 
 
 def test_failed_generation_rejects_invalid(backend):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     generate(backend, job_id(T, 1, "create"), None, ok=False)
     t = task(backend)
     assert (t["status"], t["reason"]) == ("REJECTED", "invalid")
@@ -264,7 +263,7 @@ def test_failed_generation_rejects_invalid(backend):
 
 
 def test_too_easy_is_revised_until_exhausted(backend, parser):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     score(backend, parser, 1, "11111")
     t = task(backend)
@@ -287,7 +286,7 @@ def test_too_easy_is_revised_until_exhausted(backend, parser):
 
 
 def test_too_hard_is_made_easier_then_accepted_at_v2(backend, parser):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     score(backend, parser, 1, "00000")
     rev = backend.store.job(job_id(T, 2, "revise"))
@@ -304,7 +303,7 @@ def test_too_hard_is_made_easier_then_accepted_at_v2(backend, parser):
 
 def test_a_failure_blamed_on_the_task_is_repaired_not_measured(backend, tmp_path):
     parser = TraceParserService(backend, accepted_dir=tmp_path / "accepted", complete=review("task"))
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     score(backend, parser, 1, "01010")  # in band, but a failure is the task's fault
     t = task(backend)
@@ -317,7 +316,7 @@ def test_a_failure_blamed_on_the_task_is_repaired_not_measured(backend, tmp_path
 
 
 def test_invalid_runs_are_retried_then_unresolved(backend, parser):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     for retry in range(4):
         run(backend, rollout_job_id(T, 1, 1, retry), "i")
@@ -332,7 +331,7 @@ def test_invalid_runs_are_retried_then_unresolved(backend, parser):
 def test_rejecting_a_task_cancels_its_open_jobs(backend, parser):
     """Slot 1 is out of retries while slots 2–5 are still queued or running:
     the task is rejected and the rest of its work is cancelled, not left orphaned."""
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     claim(backend, rollout_job_id(T, 1, 2, 0))  # a worker is mid-trial
     for retry in range(4):
@@ -346,7 +345,7 @@ def test_rejecting_a_task_cancels_its_open_jobs(backend, parser):
 
 
 def test_a_dead_run_is_retried_by_the_trace_parser_once(backend, parser):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     rid = rollout_job_id(T, 1, 2, 0)
     settle(backend, rid, {"status": "DEAD", "error": "dead-lettered"})
@@ -367,7 +366,7 @@ def test_a_dead_run_is_retried_by_the_trace_parser_once(backend, parser):
 
 
 def test_many_pings_and_two_parsers_decide_a_version_once(backend, tmp_path):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     build(backend, 1, "sha1")
     for slot in range(1, 6):
         run(backend, rollout_job_id(T, 1, slot, 0), "1")  # 5/5: too easy → one revision
@@ -392,7 +391,7 @@ def test_many_pings_and_two_parsers_decide_a_version_once(backend, tmp_path):
 
 
 def test_generate_rows_from_before_the_split_are_migrated(backend, tmp_path):
-    submit_batch(backend, 1, "b-1")
+    create_task(backend, task_id=T)
     with backend.store.tx() as c:
         for jid, origin in ((f"{T}-v1-generate", "initial"), (f"{T}-v1-repair1", "repair"),
                             (f"{T}-v2-generate", "revision")):

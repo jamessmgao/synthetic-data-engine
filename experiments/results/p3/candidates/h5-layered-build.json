@@ -1,0 +1,120 @@
+{
+ "id": "h5-layered-build",
+ "spec": {
+  "taxonomy": {
+   "domain": "Systems programming",
+   "task_type": "Debugging",
+   "core_capability": "Memory and resource management",
+   "failure_mode": "Crash",
+   "environment": "C program built with make",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": []
+  },
+  "design": [
+   "Scenario: a multi-library C project (two static or shared libraries plus a CLI) stopped building after a directory reorganization. Several independent, layered problems each mask the next: for example link order, symbol visibility, a header produced by a code generator script, and a runtime library path.",
+   "The tests build from a clean tree with the documented command and then check the CLI's behavior.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p3-h5-layered-build-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.204602,
+   "rounds": 1,
+   "completion_tokens": 48257,
+   "draft_sec": 499.5,
+   "round_errors": [],
+   "bundle_sha256": "85559be5ec0edbbbd29ee49dcca9dc3d616b11c3bbec95f8dcbb88182277ed4c",
+   "name": "kvstore-build-fix"
+  },
+  {
+   "job_id": "p3-h5-layered-build-v1-validate0",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward 0.0).\nFAILED test_build_succeeds: The test failed in the call phase due to an assertion error\nFAILED test_binary_exists: The test failed in the call phase due to an assertion error\nFAILED test_put_and_get: self = <test_outputs.TestCLIOperations object at 0xffff9e4697f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...nclude \u2018<stdio.h>\u2019 or provide a declaration of \u2018snprintf\u2019\\nmake: *** [Makefile:29: build/src/store/store.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_overwrite: self = <test_outputs.TestCLIOperations object at 0xffff9e4697f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...nclude \u2018<stdio.h>\u2019 or provide a declaration of \u2018snprintf\u2019\\nmake: *** [Makefile:29: build/src/store/store.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_delete: self = <test_outputs.TestCLIOperations object at 0xffff9e4697f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...nclude \u2018<stdio.h>\u2019 or provide a declaration of \u2018snprintf\u2019\\nmake: *** [Makefile:29: build/src/store/store.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_get_nonexistent: self = <test_outputs.TestCLIOperations object at 0xffff9e4697f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...nclude \u2018<stdio.h>\u2019 or provide a declaration of \u2018snprintf\u2019\\nmake: *** [Makefile:29: build/src/store/store.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_dump: self = <test_outputs.TestCLIOperations object at 0xffff9e4697f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...nclude \u2018<stdio.h>\u2019 or provide a declaration of \u2018snprintf\u2019\\nmake: *** [Makefile:29: build/src/store/store.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test",
+   "sec": 62.5,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p3-h5-layered-build-v1-repair1",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.057128,
+   "rounds": 1,
+   "completion_tokens": 9193,
+   "draft_sec": 77.3,
+   "round_errors": [],
+   "bundle_sha256": "be394a5d9613d8d9739c0109ee51151113ea88f3998e8cda0ba7b39424c7e812",
+   "name": "kvstore-build-fix"
+  },
+  {
+   "job_id": "p3-h5-layered-build-v1-validate1",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward 0.0).\nFAILED test_build_succeeds: The test failed in the call phase due to an assertion error\nFAILED test_binary_exists: The test failed in the call phase due to an assertion error\nFAILED test_put_and_get: self = <test_outputs.TestCLIOperations object at 0xffff80cd17f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...strtok_r(NULL, \"\\\\n\", &saveptr);\\n      |              ^\\nmake: *** [Makefile:29: build/src/codec/decode.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_overwrite: self = <test_outputs.TestCLIOperations object at 0xffff80cd17f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...strtok_r(NULL, \"\\\\n\", &saveptr);\\n      |              ^\\nmake: *** [Makefile:29: build/src/codec/decode.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_delete: self = <test_outputs.TestCLIOperations object at 0xffff80cd17f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...strtok_r(NULL, \"\\\\n\", &saveptr);\\n      |              ^\\nmake: *** [Makefile:29: build/src/codec/decode.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_get_nonexistent: self = <test_outputs.TestCLIOperations object at 0xffff80cd17f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...strtok_r(NULL, \"\\\\n\", &saveptr);\\n      |              ^\\nmake: *** [Makefile:29: build/src/codec/decode.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test_dump: self = <test_outputs.TestCLIOperations object at 0xffff80cd17f0>\n\n    @pytest.fixture(scope=\"class\", autouse=True)\n    def build(self):\n        run_cmd([\"make\", \"clean\"], cwd=PROJECT_DIR, timeout=30)\n        result = run_cmd([\"make\"], cwd=PROJECT_DIR, timeout=60)\n>       assert result.returncode == 0, \"Build failed, cannot test CLI\"\nE       AssertionError: Build failed, cannot test CLI\nE       assert 2 == 0\nE        +  where 2 = CompletedProcess(args=['make'], returncode=2, stdout='gcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -c ...strtok_r(NULL, \"\\\\n\", &saveptr);\\n      |              ^\\nmake: *** [Makefile:29: build/src/codec/decode.o] Error 1\\n').returncode\n\n/tests/test_outputs.py:56: AssertionError\nFAILED test",
+   "sec": 60.3,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p3-h5-layered-build-v1-repair2",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.077286,
+   "rounds": 1,
+   "completion_tokens": 13959,
+   "draft_sec": 128.3,
+   "round_errors": [],
+   "bundle_sha256": "d9e70a13e0975f4a441bb6c4f8ce60358492f026026223e09b53fa27eee51ab7",
+   "name": "kvstore-build-fix"
+  },
+  {
+   "job_id": "p3-h5-layered-build-v1-validate2",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward 0.0).\nFAILED test_put_and_get: The test failed in the call phase due to an assertion error\nFAILED test_overwrite: The test failed in the call phase due to an assertion error\nFAILED test_delete: The test failed in the call phase due to an assertion error\nFAILED test_dump: The test failed in the call phase due to an assertion error\nFAILED test_count: The test failed in the call phase due to an assertion error\nFAILED test_persistence: The test failed in the call phase due to an assertion error\nsolve.sh output (tail):\nrm -rf build\nrm -f version.h\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/cli/main.o src/cli/main.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/cli/args.o src/cli/args.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/store/store.o src/store/store.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/store/iter.o src/store/iter.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/store/hash.o src/store/hash.c\nar rcs build/lib/libstore.a build/src/store/store.o build/src/store/iter.o build/src/store/hash.o\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/codec/codec.o src/codec/codec.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/codec/encode.o src/codec/encode.c\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -c -o build/src/codec/decode.o src/codec/decode.c\nar rcs build/lib/libcodec.a build/src/codec/codec.o build/src/codec/encode.o build/src/codec/decode.o\ngcc -Wall -Wextra -Iinclude -Isrc/store -Isrc/codec -std=c11 -D_POSIX_C_SOURCE=200809L -o build/bin/kvstore build/src/cli/main.o build/src/cli/args.o -Lbuild/lib -lcodec -lstore\n\nverifier output (tail):\n  assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['/app/build/bin/kvstore', '-f', '/tmp/pytest-of-root/pytest-0/test_dump0/s.kv', 'dump'], returncode=1, stdout='', stderr='Unknown command: /tmp/pytest-of-root/pytest-0/test_dump0/s.kv\\n').returncode\n\n/tests/test_outputs.py:93: AssertionError\n_________________________ TestCLIOperations.test_count _________________________\n\nself = <test_outputs.TestCLIOperations object at 0xffff972dff00>\ntmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_count0')\n\n    def test_count(self, tmp_path):\n        sf = str(tmp_path / \"s.kv\")\n        kvstore_cmd(\"put\", \"x\", \"1\", store_file=sf)\n        kvstore_cmd(\"put\", \"y\", \"2\", store_file=sf)\n        kvstore_cmd(\"put\", \"z\", \"3\", store_file=sf)\n        r = kvstore_cmd(\"count\", store_file=sf)\n>       assert r.returncode == 0\nE       AssertionError: assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['/app/build/bin/kvstore', '-f', '/tmp/pytest-of-root/pytest-0/test_count0/s.kv', 'count'], returncode=1, stdout='', stderr='Unknown command: /tmp/pytest-of-root/pytest-0/test_count0/s.kv\\n').returncode\n\n/tests/test_outputs.py:103: AssertionError\n______________________ TestCLIOperations.test_persistence ______________________\n\nself = <test_outputs.TestCLIOperations object at 0xffff972dfce0>\ntmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_persistence0')\n\n    def test_persistence(self, tmp_path):\n        sf = str(tmp_path / \"s.kv\")\n        kvstore_cmd(\"put\", \"pk\", \"pv\", store_file=sf)\n        r = kvstore_cmd(\"get\", \"pk\", store_file=sf)\n>       assert r.returncode == 0\nE       AssertionError: assert 1 == 0\nE        +  where 1 = CompletedProcess(args=['/app/build/bin/kvstore', '-f', '/tmp/pytest-of-root/pytest-0/test_persistence0/s.kv', 'get', 'pk'], returncode=1, stdout='', stderr='Unknown command: /tmp/pytest-of-root/pytest-0/test_persistence0/s.kv\\n').returncode\n\n/tests/test_outputs.py:110: Asserti",
+   "sec": 60.4,
+   "tests_passing_on_nop": null
+  }
+ ],
+ "rollouts": [],
+ "verdict": "invalid",
+ "started": 1794959980.165612,
+ "finished": 1794962140.4809039,
+ "wall_sec": 2160.3,
+ "cost_usd": {
+  "authoring": 0.339,
+  "rollouts": 0,
+  "total": 0.339
+ }
+}

@@ -142,7 +142,7 @@ class _ClusterResources:
 
 @dataclass
 class Pipeline:
-    """A batch's backend, the operator's API client, and the pipeline processes."""
+    """A test's backend, the operator's API client, and the pipeline processes."""
 
     kind: str
     tmp: Path
@@ -164,8 +164,14 @@ class Pipeline:
         assert r.status_code < 400, r.text
         return r.json()
 
-    def submit(self, batch_id: str = "b-e2e") -> dict:
-        return self.api("POST", "/v1/batches", json={"count": len(self.scenario), "batch_id": batch_id})
+    @property
+    def task_ids(self) -> list[str]:
+        """One task per scenario entry, named so the fakes can find their script."""
+        return [f"e2e-{suffix}" for suffix in self.scenario]
+
+    def submit(self) -> list[dict]:
+        """Create the scenario's tasks the way a client does: one POST /v1/tasks each."""
+        return [self.api("POST", "/v1/tasks", json={"task_id": t}) for t in self.task_ids]
 
     # pipeline processes ("machines")
 
@@ -234,7 +240,7 @@ class Pipeline:
     # evidence
 
     def jobs(self) -> list[dict]:
-        return [j for t in self.backend.store.batch_tasks("b-e2e") for j in self.backend.store.task_jobs(t["id"])]
+        return [j for t in self.task_ids for j in self.backend.store.task_jobs(t)]
 
     def settled_count(self) -> int:
         return sum(j["status"] in ("DONE", "DEAD") for j in self.jobs())

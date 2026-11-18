@@ -50,7 +50,6 @@ class JobQueue:
         owner: str,
         lease_sec: float = LEASE_TTL_S,
         docker_slots: int | None = None,
-        batch_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Lease the best claimable job of the given type(s), or return None.
 
@@ -68,7 +67,7 @@ class JobQueue:
         for candidate in self.queue.candidates(types):
             with self.store.tx() as c:
                 row = sql_claim(c, owner, types, lease_s=lease_sec, docker_slots=docker_slots,
-                                batch_id=batch_id, only_id=candidate,
+                                only_id=candidate,
                                 process=process if mine else None, host=host)
             if row:
                 if candidate:

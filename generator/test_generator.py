@@ -104,6 +104,12 @@ def test_valid_draft_materializes_into_a_valid_harbor_task(tmp_path):
         assert subprocess.run(["bash", "-n", str(task_dir / script)]).returncode == 0
     for rel in ["environment/Dockerfile", "solution/solve.sh", "tests/test_outputs.py", "tests/test.sh"]:
         assert config.CANARY_GUID in (task_dir / rel).read_text(), rel
+    # A reward file planted by the agent (or by its code, run as root during the
+    # tests) must never survive: cleared before and after pytest.
+    test_sh = (task_dir / "tests" / "test.sh").read_text()
+    pytest_at = test_sh.index("pytest --ctrf")
+    clear = "rm -f /logs/verifier/reward.txt /logs/verifier/reward.json"
+    assert test_sh.index(clear) < pytest_at < test_sh.rindex(clear) < test_sh.index("echo 1 >")
     assert config.CANARY_GUID not in (task_dir / "instruction.md").read_text()
     assert not list(tmp_path.glob(".*tmp*")), "temporary directory left behind"
 

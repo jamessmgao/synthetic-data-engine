@@ -1,0 +1,173 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 16,
+            "passed": 13,
+            "failed": 3,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1794965366.8549883,
+            "stop": 1794965368.3678484
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_standalone_export_matches_source",
+                "status": "passed",
+                "duration": 0.08009404205949977,
+                "start": 1794965366.9415627,
+                "stop": 1794965367.0219464,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_snapshot_matches_source",
+                "status": "passed",
+                "duration": 0.03241941804299131,
+                "start": 1794965367.0221236,
+                "stop": 1794965367.0546918,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_report_matches_spec",
+                "status": "passed",
+                "duration": 0.1142069170018658,
+                "start": 1794965367.0548158,
+                "stop": 1794965367.1692498,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_report_generated_fixture",
+                "status": "passed",
+                "duration": 0.0837991250155028,
+                "start": 1794965367.1695616,
+                "stop": 1794965367.2535317,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_alerts_trigger_attribution",
+                "status": "passed",
+                "duration": 0.12961437599733472,
+                "start": 1794965367.253681,
+                "stop": 1794965367.3834794,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_alerts_generated_fixture",
+                "status": "passed",
+                "duration": 0.04055308297392912,
+                "start": 1794965367.383671,
+                "stop": 1794965367.4244,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_totals_late_mix",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.03839958299067803,
+                "start": 1794965367.424585,
+                "stop": 1794965367.479554,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_totals_late_mix0')\n\n    def test_totals_late_mix(tmp_path):\n        input_path, _ = write_late_mix(tmp_path)\n        records = load_json_file(input_path)\n        proc = _run_ok(\"totals\", \"--input\", input_path)\n>       assert_docs_equal(json.loads(proc.stdout), expected_totals(records), \"totals\")\n\n/tests/test_outputs.py:111: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/spec_helpers.py:218: in assert_docs_equal\n    _compare(actual, expected, label)\n/tests/spec_helpers.py:238: in _compare\n    _compare(item, want, \"%s[%d]\" % (path, pos))\n/tests/spec_helpers.py:229: in _compare\n    _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nactual = '2024-06-01', expected = '2024-05-31', path = 'totals[0].day'\n\n    def _compare(actual, expected, path):\n        if isinstance(expected, dict):\n            if not isinstance(actual, dict):\n                raise AssertionError(\"%s: expected object, got %r\" % (path, actual))\n            if set(actual) != set(expected):\n                raise AssertionError(\"%s: keys %r vs %r\"\n                                     % (path, sorted(actual), sorted(expected)))\n            for key in expected:\n                _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n            return\n        if isinstance(expected, list):\n            if not isinstance(actual, list):\n                raise AssertionError(\"%s: expected list, got %r\" % (path, actual))\n            if len(actual) != len(expected):\n                raise AssertionError(\"%s: %d items, expected %d\"\n                                     % (path, len(actual), len(expected)))\n            for pos, (item, want) in enumerate(zip(actual, expected)):\n                _compare(item, want, \"%s[%d]\" % (path, pos))\n            return\n        if isinstance(expected, bool) or isinstance(actual, bool):\n            if actual is not expected:\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):\n            if not math.isclose(float(actual), float(expected),\n                                rel_tol=1e-9, abs_tol=1e-12):\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if actual != expected:\n>           raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\nE           AssertionError: totals[0].day: '2024-06-01' != '2024-05-31'\n\n/tests/spec_helpers.py:250: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_totals_generated_fixture",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.03690629100310616,
+                "start": 1794965367.4796987,
+                "stop": 1794965367.5297077,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_totals_generated_fixture0')\n\n    def test_totals_generated_fixture(tmp_path):\n        input_path, _ = write_generated(tmp_path)\n        records = load_json_file(input_path)\n        proc = _run_ok(\"totals\", \"--input\", input_path)\n>       assert_docs_equal(json.loads(proc.stdout), expected_totals(records), \"totals\")\n\n/tests/test_outputs.py:118: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/spec_helpers.py:218: in assert_docs_equal\n    _compare(actual, expected, label)\n/tests/spec_helpers.py:238: in _compare\n    _compare(item, want, \"%s[%d]\" % (path, pos))\n/tests/spec_helpers.py:229: in _compare\n    _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nactual = 'flow-b', expected = 'flow-a', path = 'totals[0].sensor'\n\n    def _compare(actual, expected, path):\n        if isinstance(expected, dict):\n            if not isinstance(actual, dict):\n                raise AssertionError(\"%s: expected object, got %r\" % (path, actual))\n            if set(actual) != set(expected):\n                raise AssertionError(\"%s: keys %r vs %r\"\n                                     % (path, sorted(actual), sorted(expected)))\n            for key in expected:\n                _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n            return\n        if isinstance(expected, list):\n            if not isinstance(actual, list):\n                raise AssertionError(\"%s: expected list, got %r\" % (path, actual))\n            if len(actual) != len(expected):\n                raise AssertionError(\"%s: %d items, expected %d\"\n                                     % (path, len(actual), len(expected)))\n            for pos, (item, want) in enumerate(zip(actual, expected)):\n                _compare(item, want, \"%s[%d]\" % (path, pos))\n            return\n        if isinstance(expected, bool) or isinstance(actual, bool):\n            if actual is not expected:\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):\n            if not math.isclose(float(actual), float(expected),\n                                rel_tol=1e-9, abs_tol=1e-12):\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if actual != expected:\n>           raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\nE           AssertionError: totals[0].sensor: 'flow-b' != 'flow-a'\n\n/tests/spec_helpers.py:250: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_coverage_matches_spec",
+                "status": "passed",
+                "duration": 0.12467954299063422,
+                "start": 1794965367.5299134,
+                "stop": 1794965367.654758,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_artifacts_match_standalone",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 0.11849987599998713,
+                "start": 1794965367.6549034,
+                "stop": 1794965367.7842548,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_pipeline_artifacts_match_0')\n\n    def test_pipeline_artifacts_match_standalone(tmp_path):\n        input_path, thresholds_path = write_late_mix(tmp_path)\n        records = load_json_file(input_path)\n        thresholds = load_json_file(thresholds_path)\n        out_dir = tmp_path / \"pipeline\"\n        _run_ok(\"pipeline\", \"--input\", input_path, \"--dir\", out_dir,\n                \"--thresholds\", thresholds_path, \"--interval\", \"1h\")\n    \n        standalone_report = json.loads(\n            _run_ok(\"report\", \"--input\", input_path, \"--interval\", \"1h\").stdout)\n        assert_docs_equal(load_json_file(out_dir / \"report.json\"),\n                          standalone_report, \"report.json\")\n        assert_docs_equal(standalone_report, expected_report(records, \"1h\"),\n                          \"report spec\")\n    \n        standalone_alerts = json.loads(\n            _run_ok(\"alerts\", \"--input\", input_path,\n                    \"--thresholds\", thresholds_path, \"--interval\", \"1h\").stdout)\n        assert_docs_equal(load_json_file(out_dir / \"alerts.json\"),\n                          standalone_alerts, \"alerts.json\")\n        assert_docs_equal(standalone_alerts,\n                          expected_alerts(records, thresholds, \"1h\"), \"alerts spec\")\n    \n        standalone_totals = json.loads(\n            _run_ok(\"totals\", \"--input\", input_path).stdout)\n        assert_docs_equal(load_json_file(out_dir / \"totals.json\"),\n                          standalone_totals, \"totals.json\")\n>       assert_docs_equal(standalone_totals, expected_totals(records),\n                          \"totals spec\")\n\n/tests/test_outputs.py:161: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/spec_helpers.py:218: in assert_docs_equal\n    _compare(actual, expected, label)\n/tests/spec_helpers.py:238: in _compare\n    _compare(item, want, \"%s[%d]\" % (path, pos))\n/tests/spec_helpers.py:229: in _compare\n    _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nactual = '2024-06-01', expected = '2024-05-31', path = 'totals spec[0].day'\n\n    def _compare(actual, expected, path):\n        if isinstance(expected, dict):\n            if not isinstance(actual, dict):\n                raise AssertionError(\"%s: expected object, got %r\" % (path, actual))\n            if set(actual) != set(expected):\n                raise AssertionError(\"%s: keys %r vs %r\"\n                                     % (path, sorted(actual), sorted(expected)))\n            for key in expected:\n                _compare(actual[key], expected[key], \"%s.%s\" % (path, key))\n            return\n        if isinstance(expected, list):\n            if not isinstance(actual, list):\n                raise AssertionError(\"%s: expected list, got %r\" % (path, actual))\n            if len(actual) != len(expected):\n                raise AssertionError(\"%s: %d items, expected %d\"\n                                     % (path, len(actual), len(expected)))\n            for pos, (item, want) in enumerate(zip(actual, expected)):\n                _compare(item, want, \"%s[%d]\" % (path, pos))\n            return\n        if isinstance(expected, bool) or isinstance(actual, bool):\n            if actual is not expected:\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):\n            if not math.isclose(float(actual), float(expected),\n                                rel_tol=1e-9, abs_tol=1e-12):\n                raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\n            return\n        if actual != expected:\n>           raise AssertionError(\"%s: %r != %r\" % (path, actual, expected))\nE           AssertionError: totals spec[0].day: '2024-06-01' != '2024-05-31'\n\n/tests/spec_helpers.py:250: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_verify_ok",
+                "status": "passed",
+                "duration": 0.076884959009476,
+                "start": 1794965367.784394,
+                "stop": 1794965367.8615317,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_verify_detects_tampering",
+                "status": "passed",
+                "duration": 0.06997112403041683,
+                "start": 1794965367.8617785,
+                "stop": 1794965367.9320002,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_is_repeatable",
+                "status": "passed",
+                "duration": 0.07778595795389265,
+                "start": 1794965367.9322488,
+                "stop": 1794965368.0102248,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_empty_input",
+                "status": "passed",
+                "duration": 0.2571611260063946,
+                "start": 1794965368.0103657,
+                "stop": 1794965368.267876,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_cli_error_handling",
+                "status": "passed",
+                "duration": 0.06035216600866988,
+                "start": 1794965368.2681863,
+                "stop": 1794965368.3287203,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_bucket_boundary_attribution",
+                "status": "passed",
+                "duration": 0.03842541700578295,
+                "start": 1794965368.3288827,
+                "stop": 1794965368.3675869,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

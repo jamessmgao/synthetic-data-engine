@@ -106,7 +106,9 @@ def run_harbor_step(bundle_dir: Path, agent: str, trace_dir: Path, step: str) ->
         trial_dir=str(trial_dir),
         reward=rewards.get("reward"),
         exception_type=exc.get("exception_type"),
-        exception_message=(exc.get("exception_message") or "")[:TAIL_CHARS] or None,
+        # The tail: for a failed image build, the compiler error is at the end
+        # of a long BuildKit log.
+        exception_message=(exc.get("exception_message") or "")[-TAIL_CHARS:] or None,
         tests=_ctrf_tests(trial_dir),
         adopted=adopted,
     )

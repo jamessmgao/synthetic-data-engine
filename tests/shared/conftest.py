@@ -77,14 +77,14 @@ def jq(backend):
     return JobQueue(backend)
 
 
-def add_task(backend, task_id: str | None = None, batch_id: str = "b-test", status: str = "CALIBRATING") -> str:
-    """Insert a task row directly (task creation belongs to the Job Service)."""
-    task_id = task_id or f"{batch_id}-{uuid.uuid4().hex[:6]}"
+def add_task(backend, task_id: str | None = None, status: str = "CALIBRATING") -> str:
+    """Insert a task row directly (task creation belongs to the API: api/submit.py)."""
+    task_id = task_id or f"t-{uuid.uuid4().hex[:8]}"
     now = utcnow()
     with backend.store.tx() as c:
         c.execute(
-            """INSERT INTO tasks (id, batch_id, status, stage, created_at, updated_at)
-               VALUES (?, ?, ?, 'QUEUED', ?, ?)""",
-            (task_id, batch_id, status, now, now),
+            """INSERT INTO tasks (id, status, stage, created_at, updated_at)
+               VALUES (?, ?, 'QUEUED', ?, ?)""",
+            (task_id, status, now, now),
         )
     return task_id

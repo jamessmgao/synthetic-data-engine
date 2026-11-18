@@ -1,0 +1,32 @@
+Downloading cpython-3.13.9-linux-aarch64-gnu (download) (27.7MiB)
+ Downloading cpython-3.13.9-linux-aarch64-gnu (download)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 36ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.7.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 16 items
+
+../tests/test_outputs.py ................                                [100%]
+
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_standalone_export_matches_source
+PASSED ../tests/test_outputs.py::test_snapshot_matches_source
+PASSED ../tests/test_outputs.py::test_report_matches_spec
+PASSED ../tests/test_outputs.py::test_report_generated_fixture
+PASSED ../tests/test_outputs.py::test_alerts_trigger_attribution
+PASSED ../tests/test_outputs.py::test_alerts_generated_fixture
+PASSED ../tests/test_outputs.py::test_totals_late_mix
+PASSED ../tests/test_outputs.py::test_totals_generated_fixture
+PASSED ../tests/test_outputs.py::test_coverage_matches_spec
+PASSED ../tests/test_outputs.py::test_pipeline_artifacts_match_standalone
+PASSED ../tests/test_outputs.py::test_pipeline_verify_ok
+PASSED ../tests/test_outputs.py::test_verify_detects_tampering
+PASSED ../tests/test_outputs.py::test_pipeline_is_repeatable
+PASSED ../tests/test_outputs.py::test_empty_input
+PASSED ../tests/test_outputs.py::test_cli_error_handling
+PASSED ../tests/test_outputs.py::test_bucket_boundary_attribution
+============================== 16 passed in 2.86s ==============================

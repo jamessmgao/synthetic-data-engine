@@ -1,0 +1,1643 @@
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ asciinema rec --stdin /logs/agent/recording.cast
+[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
+[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ clear
+[?2004l[H[J[3J[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ find . -maxdepth 3 -type f -print | sort
+[?2004l./README.md
+./data/day1.json
+./data/thresholds.json
+./pipelinesense/__init__.py
+./pipelinesense/__main__.py
+./pipelinesense/__pycache__/__init__.cpython-312.pyc
+./pipelinesense/__pycache__/__main__.cpython-312.pyc
+./pipelinesense/__pycache__/aggregate.cpython-312.pyc
+./pipelinesense/__pycache__/alerts.cpython-312.pyc
+./pipelinesense/__pycache__/archive.cpython-312.pyc
+./pipelinesense/__pycache__/cli.cpython-312.pyc
+./pipelinesense/__pycache__/coverage.cpython-312.pyc
+./pipelinesense/__pycache__/exporter.cpython-312.pyc
+./pipelinesense/__pycache__/model.cpython-312.pyc
+./pipelinesense/__pycache__/pipeline.cpython-312.pyc
+./pipelinesense/__pycache__/report.cpython-312.pyc
+./pipelinesense/__pycache__/store.cpython-312.pyc
+./pipelinesense/__pycache__/timeutil.cpython-312.pyc
+./pipelinesense/__pycache__/totals.cpython-312.pyc
+./pipelinesense/aggregate.py
+./pipelinesense/alerts.py
+./pipelinesense/archive.py
+./pipelinesense/cli.py
+./pipelinesense/coverage.py
+./pipelinesense/exporter.py
+./pipelinesense/model.py
+./pipelinesense/pipeline.py
+./pipelinesense/report.py
+./pipelinesense/store.py
+./pipelinesense/timeutil.py
+./pipelinesense/totals.py
+./pyproject.toml
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ sed -n '1,260p' pipelinesense/*.py
+[?2004l"""Pipelinesense: a small telemetry reading pipeline toolkit."""
+
+__version__ = "0.4.1"
+"""Entry point for python -m pipelinesense."""
+import sys
+
+from .cli import main
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""Fixed-interval bucket aggregation over readings."""
+from dataclasses import dataclass
+
+from . import timeutil
+
+
+@dataclass
+class Bucket:
+    sensor: str
+    start: str
+    count: int
+    minimum: float
+    maximum: float
+    mean: float
+
+
+def aggregate(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    for r in readings:
+        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)
+    readings.sort(key=lambda r: (r.sensor, r.timestamp))
+    grouped = {}
+    for r in readings:
+        grouped.setdefault((r.sensor, r.timestamp), []).append(r.value)
+    buckets = []
+    for (sensor, start), values in grouped.items():
+        buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+                              count=len(values), minimum=min(values),
+                              maximum=max(values),
+                              mean=sum(values) / len(values)))
+    buckets.sort(key=lambda b: (b.sensor, b.start))
+    return buckets
+
+
+def bucket_to_dict(bucket):
+    return {"sensor": bucket.sensor, "start": bucket.start,
+            "count": bucket.count, "min": bucket.minimum,
+            "max": bucket.maximum, "mean": bucket.mean}
+"""Threshold alerts over interval buckets."""
+from . import aggregate as agg
+from . import timeutil
+
+
+def evaluate_alerts(readings, thresholds, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    alerts = []
+    for bucket in agg.aggregate(readings, interval):
+        threshold = thresholds.get(bucket.sensor)
+        if threshold is None or bucket.maximum <= threshold:
+            continue
+        trigger = None
+        for r in readings:
+            if r.sensor != bucket.sensor or r.value <= threshold:
+                continue
+            if timeutil.bucket_start(r.timestamp, seconds).isoformat() != bucket.start:
+                continue
+            if trigger is None or r.timestamp < trigger.timestamp:
+                trigger = r
+        alerts.append({"sensor": bucket.sensor,
+                       "bucket_start": bucket.start,
+                       "threshold": threshold,
+                       "triggered_at": trigger.timestamp.isoformat(),
+                       "value": trigger.value})
+    alerts.sort(key=lambda a: (a["sensor"], a["bucket_start"]))
+    return alerts
+"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+"""Command line interface for the pipelinesense toolkit."""
+import argparse
+import json
+import os
+import sys
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import model
+from . import pipeline as pipeline_mod
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _print_json(doc):
+    print(json.dumps(doc, indent=2))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="pipelinesense",
+        description="Batch telemetry pipeline toolkit for sensor reading files")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("report", help="aggregate report document")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("alerts", help="threshold alerts")
+    p.add_argument("--input", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("totals", help="daily totals with cumulative sums")
+    p.add_argument("--input", required=True)
+
+    p = sub.add_parser("coverage", help="bucket coverage report")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("export", help="CSV export of the raw readings")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("snapshot", help="archive raw and aggregated data")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("verify", help="check an archive against its source")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("pipeline", help="run every stage over one input")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "report":
+            readings = store.load_readings(args.input)
+            _print_json(report.build_report(readings, args.interval))
+            return 0
+        if args.command == "alerts":
+            readings = store.load_readings(args.input)
+            thresholds = store.load_thresholds(args.thresholds)
+            _print_json(alerts_mod.evaluate_alerts(readings, thresholds, args.interval))
+            return 0
+        if args.command == "totals":
+            _print_json(totals_mod.daily_totals(store.load_readings(args.input)))
+            return 0
+        if args.command == "coverage":
+            _print_json(coverage.coverage_gaps(store.load_readings(args.input),
+                                               args.interval))
+            return 0
+        if args.command == "export":
+            exporter.export_csv(store.load_readings(args.input), args.out)
+            return 0
+        if args.command == "snapshot":
+            archive.snapshot(store.load_readings(args.input), args.dir,
+                             os.path.basename(args.input), args.interval)
+            return 0
+        if args.command == "verify":
+            return archive.verify(args.input, args.dir, args.interval)
+        if args.command == "pipeline":
+            result = pipeline_mod.run_pipeline(args.input, args.dir,
+                                               args.thresholds, args.interval)
+            _print_json(result)
+            return 0
+    except (OSError, model.ReadingError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    return 2
+"""Bucket coverage report."""
+from datetime import datetime, timedelta
+
+from . import aggregate as agg
+from . import timeutil
+
+
+def coverage_gaps(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    grouped = {}
+    for bucket in agg.aggregate(readings, interval):
+        grouped.setdefault(bucket.sensor, []).append(bucket)
+    reports = []
+    for sensor in sorted(grouped):
+        buckets = grouped[sensor]
+        first = datetime.fromisoformat(buckets[0].start)
+        last = datetime.fromisoformat(buckets[-1].start)
+        present = {b.start for b in buckets}
+        missing = []
+        cursor = first
+        while cursor <= last:
+            if cursor.isoformat() not in present:
+                missing.append(cursor.isoformat())
+            cursor = cursor + timedelta(seconds=seconds)
+        reports.append({"sensor": sensor,
+                        "first": first.isoformat(),
+                        "last": last.isoformat(),
+                        "expected": len(present) + len(missing),
+                        "present": len(present),
+                        "missing": missing})
+    return reports
+"""CSV export of raw readings."""
+
+
+def export_csv(readings, path):
+    lines = ["sensor,timestamp,value"]
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/out
+[?2004l{
+  "readings": 38
+}
+error: raw section does not match source
+error: aggregate section does not match recomputation
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ for f in pipelinesense/model.py pipelinesense/store.py pipelinesense/report.py pipelinesense/pipeline.py pipelinesense/archive.py pipelinesense/exporter.py pipelinesense/totals.py pipelinesense/timeutil.py; do echo "===== $f ====="; cat "$f"; done
+[?2004l===== pipelinesense/model.py =====
+"""Reading record model."""
+from dataclasses import dataclass
+from datetime import datetime
+
+
+class ReadingError(ValueError):
+    pass
+
+
+@dataclass
+class Reading:
+    sensor: str
+    timestamp: datetime
+    value: float
+
+
+def from_dict(payload):
+    if not isinstance(payload, dict):
+        raise ReadingError("reading must be a JSON object")
+    try:
+        return Reading(sensor=str(payload["sensor"]),
+                       timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+                       value=float(payload["value"]))
+    except KeyError as exc:
+        raise ReadingError("missing field: %s" % exc) from None
+
+
+def to_dict(reading):
+    return {"sensor": reading.sensor,
+            "timestamp": reading.timestamp.isoformat(),
+            "value": reading.value}
+===== pipelinesense/store.py =====
+"""Reading and threshold file access."""
+import json
+
+from . import model
+
+
+def load_readings(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, list):
+        raise model.ReadingError("input file must contain a JSON list of readings")
+    return [model.from_dict(item) for item in payload]
+
+
+def dump_readings(readings, path):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump([model.to_dict(r) for r in readings], fh, indent=2)
+        fh.write("\n")
+
+
+def load_thresholds(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise model.ReadingError("thresholds file must contain a JSON object")
+    return {str(key): float(value) for key, value in payload.items()}
+===== pipelinesense/report.py =====
+"""Aggregated report document."""
+from . import aggregate as agg
+
+
+def build_report(readings, interval="1h"):
+    daily = agg.aggregate(readings, "1d")
+    hourly = agg.aggregate(readings, interval)
+    return {
+        "summary": [agg.bucket_to_dict(b) for b in daily],
+        "hourly": [agg.bucket_to_dict(b) for b in hourly],
+    }
+===== pipelinesense/pipeline.py =====
+"""End-to-end pipeline over a single input file."""
+import json
+import os
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _write_json(path, doc):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+
+
+def run_pipeline(input_path, out_dir, thresholds_path, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    readings = store.load_readings(input_path)
+    thresholds = store.load_thresholds(thresholds_path) if thresholds_path else {}
+
+    _write_json(os.path.join(out_dir, "report.json"),
+                report.build_report(readings, interval))
+    _write_json(os.path.join(out_dir, "alerts.json"),
+                alerts_mod.evaluate_alerts(readings, thresholds, interval))
+    _write_json(os.path.join(out_dir, "totals.json"),
+                totals_mod.daily_totals(readings))
+    _write_json(os.path.join(out_dir, "coverage.json"),
+                coverage.coverage_gaps(readings, interval))
+    exporter.export_csv(readings, os.path.join(out_dir, "readings.csv"))
+    archive.snapshot(readings, out_dir, os.path.basename(input_path), interval)
+    return {"readings": len(readings)}
+===== pipelinesense/archive.py =====
+"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+===== pipelinesense/exporter.py =====
+"""CSV export of raw readings."""
+
+
+def export_csv(readings, path):
+    lines = ["sensor,timestamp,value"]
+    for r in readings:
+        lines.append("%s,%s,%s" % (r.sensor, r.timestamp.isoformat(),
+                                    format_value(r.value)))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def format_value(value):
+    return str(value)
+===== pipelinesense/totals.py =====
+"""Per-sensor daily totals with a running cumulative sum."""
+from . import aggregate as agg
+
+
+def daily_totals(readings):
+    agg.aggregate(readings, "1d")
+    rows = []
+    index = {}
+    for r in readings:
+        day = r.timestamp.date().isoformat()
+        key = (r.sensor, day)
+        if key not in index:
+            row = {"sensor": r.sensor, "day": day, "samples": 0,
+                   "daily_sum": 0.0, "cumulative": 0.0}
+            index[key] = row
+            rows.append(row)
+        index[key]["samples"] += 1
+        index[key]["daily_sum"] += r.value
+    cumulative = {}
+    for row in rows:
+        cumulative[row["sensor"]] = cumulative.get(row["sensor"], 0.0) + row["daily_sum"]
+        row["cumulative"] = cumulative[row["sensor"]]
+    return rows
+===== pipelinesense/timeutil.py =====
+"""Interval parsing and epoch-aligned bucketing helpers."""
+import re
+from datetime import datetime, timedelta
+
+_EPOCH = datetime(1970, 1, 1)
+_UNITS = {"m": 60, "h": 3600, "d": 86400}
+_PATTERN = re.compile(r"^([1-9][0-9]*)([mhd])$")
+
+
+def interval_seconds(interval):
+    match = _PATTERN.match(str(interval))
+    if not match:
+        raise ValueError("invalid interval: %r" % (interval,))
+    return int(match.group(1)) * _UNITS[match.group(2)]
+
+
+def bucket_start(ts, seconds):
+    delta = ts - _EPOCH
+    offset = (delta // timedelta(seconds=seconds)) * seconds
+    return _EPOCH + timedelta(seconds=offset)
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ cat data/day1.json; printf '\n--- thresholds ---\n'; cat data/thresholds.json
+[?2004l[
+  {"sensor": "temp-1", "timestamp": "2024-05-01T00:04:11", "value": 12.4},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T00:07:52", "value": 48.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T00:12:03", "value": 9.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T01:22:40", "value": 11.9},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T01:31:19", "value": 47.5},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T02:05:44", "value": 10.2},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T02:47:02", "value": 12.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T03:58:27", "value": 13.1},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T04:06:33", "value": 46.8},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T04:44:58", "value": 10.6},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T05:15:09", "value": 33.6},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T05:41:37", "value": 31.5},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T06:02:14", "value": 49.1},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T06:29:48", "value": 14.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T06:55:21", "value": 32.7},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T07:38:55", "value": 15.4},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T08:11:26", "value": 45.9},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T08:47:39", "value": 11.3},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T09:52:03", "value": 34.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T10:26:17", "value": 12.1},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T11:04:45", "value": 44.7},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T12:18:29", "value": 16.3},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T13:39:02", "value": 33.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T14:07:31", "value": 17.0},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T15:22:48", "value": 43.6},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T16:14:12", "value": 34.5},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T17:45:59", "value": 18.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T18:28:06", "value": 14.7},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T19:53:40", "value": 42.9},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T20:36:15", "value": 15.8},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T21:59:28", "value": 13.9},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T22:42:07", "value": 44.1},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T23:19:54", "value": 14.5},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T23:51:36", "value": 12.6},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T05:09:47", "value": 32.9},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T05:32:12", "value": 30.8},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T06:47:26", "value": 49.9},
+  {"sensor": "temp-2", "timestamp": "2024-04-30T18:26:51", "value": 8.9}
+]
+
+--- thresholds ---
+{
+  "temp-1": 30.0,
+  "temp-2": 30.0,
+  "hum-1": 50.0
+}
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ printf '%s\n' '--- pipeline report ---'; cat /tmp/out/report.json 2>/dev/null; printf '%s\n' '--- pipeline csv ---'; cat /tmp/out/readings.csv 2>/dev/null; printf '%s\n' '--- pipeline raw ---'; cat /tmp/out/raw.json 2>/dev/null
+[?2004l--- pipeline report ---
+{
+  "summary": [
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 10,
+      "min": 42.9,
+      "max": 49.9,
+      "mean": 46.269999999999996
+    },
+    {
+      "sensor": "temp-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 14,
+      "min": 11.9,
+      "max": 34.2,
+      "mean": 18.735714285714288
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-04-30T00:00:00",
+      "count": 1,
+      "min": 8.9,
+      "max": 8.9,
+      "mean": 8.9
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-05-01T00:00:00",
+      "count": 13,
+      "min": 9.8,
+      "max": 34.5,
+      "mean": 19.884615384615383
+    }
+  ],
+  "hourly": [
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 10,
+      "min": 42.9,
+      "max": 49.9,
+      "mean": 46.269999999999996
+    },
+    {
+      "sensor": "temp-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 14,
+      "min": 11.9,
+      "max": 34.2,
+      "mean": 18.735714285714288
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-04-30T00:00:00",
+      "count": 1,
+      "min": 8.9,
+      "max": 8.9,
+      "mean": 8.9
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-05-01T00:00:00",
+      "count": 13,
+      "min": 9.8,
+      "max": 34.5,
+      "mean": 19.884615384615383
+    }
+  ]
+}
+--- pipeline csv ---
+sensor,timestamp,value
+hum-1,2024-05-01T00:00:00,48.2
+hum-1,2024-05-01T00:00:00,47.5
+hum-1,2024-05-01T00:00:00,46.8
+hum-1,2024-05-01T00:00:00,49.1
+hum-1,2024-05-01T00:00:00,45.9
+hum-1,2024-05-01T00:00:00,44.7
+hum-1,2024-05-01T00:00:00,43.6
+hum-1,2024-05-01T00:00:00,42.9
+hum-1,2024-05-01T00:00:00,44.1
+hum-1,2024-05-01T00:00:00,49.9
+temp-1,2024-05-01T00:00:00,12.4
+temp-1,2024-05-01T00:00:00,11.9
+temp-1,2024-05-01T00:00:00,12.8
+temp-1,2024-05-01T00:00:00,13.1
+temp-1,2024-05-01T00:00:00,33.6
+temp-1,2024-05-01T00:00:00,14.2
+temp-1,2024-05-01T00:00:00,15.4
+temp-1,2024-05-01T00:00:00,34.2
+temp-1,2024-05-01T00:00:00,16.3
+temp-1,2024-05-01T00:00:00,17.0
+temp-1,2024-05-01T00:00:00,18.2
+temp-1,2024-05-01T00:00:00,15.8
+temp-1,2024-05-01T00:00:00,14.5
+temp-1,2024-05-01T00:00:00,32.9
+temp-2,2024-04-30T00:00:00,8.9
+temp-2,2024-05-01T00:00:00,9.8
+temp-2,2024-05-01T00:00:00,10.2
+temp-2,2024-05-01T00:00:00,10.6
+temp-2,2024-05-01T00:00:00,31.5
+temp-2,2024-05-01T00:00:00,32.7
+temp-2,2024-05-01T00:00:00,11.3
+temp-2,2024-05-01T00:00:00,12.1
+temp-2,2024-05-01T00:00:00,33.8
+temp-2,2024-05-01T00:00:00,34.5
+temp-2,2024-05-01T00:00:00,14.7
+temp-2,2024-05-01T00:00:00,13.9
+temp-2,2024-05-01T00:00:00,12.6
+temp-2,2024-05-01T00:00:00,30.8
+--- pipeline raw ---
+[
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 48.2
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 47.5
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 46.8
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 49.1
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 45.9
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 44.7
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 43.6
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 42.9
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 44.1
+  },
+  {
+    "sensor": "hum-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 49.9
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 12.4
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 11.9
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 12.8
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 13.1
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 33.6
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 14.2
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 15.4
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 34.2
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 16.3
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 17.0
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 18.2
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 15.8
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 14.5
+  },
+  {
+    "sensor": "temp-1",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 32.9
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-04-30T00:00:00",
+    "value": 8.9
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 9.8
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 10.2
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 10.6
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 31.5
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 32.7
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 11.3
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 12.1
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 33.8
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 34.5
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 14.7
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 13.9
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 12.6
+  },
+  {
+    "sensor": "temp-2",
+    "timestamp": "2024-05-01T00:00:00",
+    "value": 30.8
+  }
+]
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ cat pipelinesense/archive.py; printf '\n===== README =====\n'; sed -n '1,260p' README.md; printf '\n===== pyproject =====\n'; cat pyproject.toml
+[?2004l"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+
+===== README =====
+# Pipelinesense
+
+A small, dependency-free toolkit for batch telemetry pipelines. It reads JSON
+files of sensor readings and produces aggregate reports, threshold alerts,
+daily totals, coverage reports, CSV exports and archive snapshots.
+
+## Usage
+
+Run from the repository root:
+
+    python3 -m pipelinesense report --input data/day1.json
+    python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json
+    python3 -m pipelinesense totals --input data/day1.json
+    python3 -m pipelinesense coverage --input data/day1.json --interval 15m
+    python3 -m pipelinesense export --input data/day1.json --out readings.csv
+    python3 -m pipelinesense snapshot --input data/day1.json --dir /tmp/archive
+    python3 -m pipelinesense verify --input data/day1.json --dir /tmp/archive
+    python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json
+
+## Input format
+
+A reading file is a JSON list of objects:
+
+    {"sensor": "temp-1", "timestamp": "2024-05-01T09:52:03", "value": 34.2}
+
+Readings are stored in arrival order: sensors are interleaved and files may
+end with late-arriving samples, so never assume a reading file is sorted.
+
+===== pyproject =====
+[project]
+name = "pipelinesense"
+version = "0.4.1"
+description = "Small telemetry reading pipeline toolkit"
+requires-python = ">=3.10"
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ rm -rf /tmp/standalone && mkdir -p /tmp/standalone && python3 -m pipelinesense report --input data/day1.json > /tmp/standalone/report.json && python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json > /tmp/standalone/alerts.json && python3 -m pipelinesense totals --input data/day1.json > /tmp/standalone/totals.json && python3 -m pipelinesense coverage --input data/day1.json > /tmp/standalone/coverage.json && python3 -m pipelinesense export --input data/day1.json --out /tmp/standalone/readings.csv && python3 -m pipelinesense snapshot --input data/day1.json --dir /tmp/standalone M[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[C[Ke
+[?2004l[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> from pathlib import Path
+[?2004l[?2004h> path = Path('pipelinesense/aggregate.py')
+[?2004l[?2004h> text = path.read_text()
+[?2004l[?2004h> text = text.replace('from dataclasses import dataclass\n', 'from dataclasses import dataclass, replace\n')
+[?2004l[?2004h> text = text.replace('    seconds = timeutil.interval_seconds(interval)\n    for r in readings:\n        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)\n    readings.sort(key=lambda r: (r.sensor, r.timestamp))\n', '    seconds = timeutil.interval_seconds(interval)\n    # Aggregate a copy so callers retain their input order and original\n    # timestamps.  Stages in the pipeline intentionally share one list.\n    readings = [replace(r) for r in readings]\n    for r in readings:\n        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)\n    readings.sort(key=lambda r: (r.sensor, r.timestamp))\n')
+[?2004l[?2004h> path.write_text(text)
+[?2004l[?2004h> PY
+[?2004l[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ sed -n '1,100p' pipelinesense/aggregate.py
+[?2004l"""Fixed-interval bucket aggregation over readings."""
+from dataclasses import dataclass, replace
+
+from . import timeutil
+
+
+@dataclass
+class Bucket:
+    sensor: str
+    start: str
+    count: int
+    minimum: float
+    maximum: float
+    mean: float
+
+
+def aggregate(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    # Aggregate a copy so callers retain their input order and original
+    # timestamps.  Stages in the pipeline intentionally share one list.
+    readings = [replace(r) for r in readings]
+    for r in readings:
+        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)
+    readings.sort(key=lambda r: (r.sensor, r.timestamp))
+    grouped = {}
+    for r in readings:
+        grouped.setdefault((r.sensor, r.timestamp), []).append(r.value)
+    buckets = []
+    for (sensor, start), values in grouped.items():
+        buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+                              count=len(values), minimum=min(values),
+                              maximum=max(values),
+                              mean=sum(values) / len(values)))
+    buckets.sort(key=lambda b: (b.sensor, b.start))
+    return buckets
+
+
+def bucket_to_dict(bucket):
+    return {"sensor": bucket.sensor, "start": bucket.start,
+            "count": bucket.count, "min": bucket.minimum,
+            "max": bucket.maximum, "mean": bucket.mean}
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ rm -rf /tmp/out && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/out
+[?2004l{
+  "readings": 38
+}
+OK: archive matches source
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ for name in report alerts totals coverage readings.csv; do if cmp -s "/tmp/standalone/$name" "/tmp/out/$name"; then echo "OK $name"; else echo "DIFF $name"; diff -u "/tmp/standalone/$name" "/tmp/out/$name"; fi; done; for name in raw.json aggregates.json meta.json; do cmp -s "/tmp/standalone/$name" "/tmp/out/$name" && echo "OK $name" || { echo "DIFF $name"; diff -u "/tmp/standalone/$name" "/tmp/out/$name"; }; done
+[?2004lDIFF report
+diff: /tmp/standalone/report: No such file or directory
+diff: /tmp/out/report: No such file or directory
+DIFF alerts
+diff: /tmp/standalone/alerts: No such file or directory
+diff: /tmp/out/alerts: No such file or directory
+DIFF totals
+diff: /tmp/standalone/totals: No such file or directory
+diff: /tmp/out/totals: No such file or directory
+DIFF coverage
+diff: /tmp/standalone/coverage: No such file or directory
+diff: /tmp/out/coverage: No such file or directory
+OK readings.csv
+OK raw.json
+OK aggregates.json
+OK meta.json
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m pipelinesense report --input data/day1.json | sed -n '1,90p'; printf '\n--- alerts ---\n'; python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json
+[?2004l{
+  "summary": [
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 10,
+      "min": 42.9,
+      "max": 49.9,
+      "mean": 46.269999999999996
+    },
+    {
+      "sensor": "temp-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 14,
+      "min": 11.9,
+      "max": 34.2,
+      "mean": 18.735714285714288
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-04-30T00:00:00",
+      "count": 1,
+      "min": 8.9,
+      "max": 8.9,
+      "mean": 8.9
+    },
+    {
+      "sensor": "temp-2",
+      "start": "2024-05-01T00:00:00",
+      "count": 13,
+      "min": 9.8,
+      "max": 34.5,
+      "mean": 19.884615384615383
+    }
+  ],
+  "hourly": [
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T00:00:00",
+      "count": 1,
+      "min": 48.2,
+      "max": 48.2,
+      "mean": 48.2
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T01:00:00",
+      "count": 1,
+      "min": 47.5,
+      "max": 47.5,
+      "mean": 47.5
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T04:00:00",
+      "count": 1,
+      "min": 46.8,
+      "max": 46.8,
+      "mean": 46.8
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T06:00:00",
+      "count": 2,
+      "min": 49.1,
+      "max": 49.9,
+      "mean": 49.5
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T08:00:00",
+      "count": 1,
+      "min": 45.9,
+      "max": 45.9,
+      "mean": 45.9
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T11:00:00",
+      "count": 1,
+      "min": 44.7,
+      "max": 44.7,
+      "mean": 44.7
+    },
+    {
+      "sensor": "hum-1",
+      "start": "2024-05-01T15:00:00",
+      "count": 1,
+      "min": 43.6,
+      "max": 43.6,
+
+--- alerts ---
+[
+  {
+    "sensor": "temp-1",
+    "bucket_start": "2024-05-01T05:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T05:09:47",
+    "value": 32.9
+  },
+  {
+    "sensor": "temp-1",
+    "bucket_start": "2024-05-01T09:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T09:52:03",
+    "value": 34.2
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T05:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T05:32:12",
+    "value": 30.8
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T06:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T06:55:21",
+    "value": 32.7
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T13:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T13:39:02",
+    "value": 33.8
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T16:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T16:14:12",
+    "value": 34.5
+  }
+]
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ cat > /tmp/unsorted.json <<'EOF'
+[?2004l[?2004h> [
+[?2004l[?2004h>   {"sensor":"b","timestamp":"2024-01-01T01:30:00","value":5},
+[?2004l[?2004h>   {"sensor":"a","timestamp":"2024-01-01T00:10:00","value":3},
+[?2004l[?2004h>   {"sensor":"b","timestamp":"2024-01-01T00:20:00","value":7},
+[?2004l[?2004h>   {"sensor":"a","timestamp":"2024-01-01T00:00:00","value":1}
+[?2004l[?2004h> ]
+[?2004l[?2004h> EOF
+[?2004l[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ rm -rf /tmp/edge && python3 -m pipelinesense pipeline --input /tmp/unsorted.json --dir /tmp/edge --thresholds data/thresholds.json >/tmp/edge.stdout && python3 -m pipelinesense verify --input /tmp/unsorted.json --dir /tmp/edge && diff -u <(python3 -m pipelinesense report --input /tmp/unsorted.json) /tmp/edge/report.json && diff -u <(python3 -m pipelinesense alerts --input /tmp/unsorted.json --thresholds data/thresholds.json) /tmp/edge/alerts.json
+[?2004lOK: archive matches source
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ printf '[]' >/tmp/empty.json; rm -rf /tmp/emptyout; python3 -m pipelinesense pipeline --input /tmp/empty.json --dir /tmp/emptyout --thresholds data/thresholds.json >/tmp/empty.stdout && python3 -m pipelinesense verify --input /tmp/empty.json --dir /tmp/emptyout && test "$(cat /tmp/emptyout/readings.csv)" = 'sensor,timestamp,value' && echo 'EMPTY OK'
+[?2004lOK: archive matches source
+EMPTY OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ git diff --check && git diff -- pipelinesense/aggregate.py; python3 -m compileall -q pipelinesense
+[?2004lbash: git: command not found
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ for name in report.json alerts.json totals.json coverage.json readings.csv raw.json aggregates.json meta.json; do if cmp -s "/tmp/standalone/$name" "/tmp/out/$name"; then echo "OK $name"; else echo "DIFF $name"; diff -u "/tmp/standalone/$name" "/tmp/out/$name"; fi; done
+[?2004lDIFF report.json
+--- /tmp/standalone/report.json	2026-11-18 01:28:16.459960002 +0000
++++ /tmp/out/report.json	2026-11-18 01:28:17.591960002 +0000
+@@ -37,22 +37,182 @@
+     {
+       "sensor": "hum-1",
+       "start": "2024-05-01T00:00:00",
+-      "count": 10,
+-      "min": 42.9,
++      "count": 1,
++      "min": 48.2,
++      "max": 48.2,
++      "mean": 48.2
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T01:00:00",
++      "count": 1,
++      "min": 47.5,
++      "max": 47.5,
++      "mean": 47.5
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T04:00:00",
++      "count": 1,
++      "min": 46.8,
++      "max": 46.8,
++      "mean": 46.8
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T06:00:00",
++      "count": 2,
++      "min": 49.1,
+       "max": 49.9,
+-      "mean": 46.269999999999996
++      "mean": 49.5
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T08:00:00",
++      "count": 1,
++      "min": 45.9,
++      "max": 45.9,
++      "mean": 45.9
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T11:00:00",
++      "count": 1,
++      "min": 44.7,
++      "max": 44.7,
++      "mean": 44.7
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T15:00:00",
++      "count": 1,
++      "min": 43.6,
++      "max": 43.6,
++      "mean": 43.6
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T19:00:00",
++      "count": 1,
++      "min": 42.9,
++      "max": 42.9,
++      "mean": 42.9
++    },
++    {
++      "sensor": "hum-1",
++      "start": "2024-05-01T22:00:00",
++      "count": 1,
++      "min": 44.1,
++      "max": 44.1,
++      "mean": 44.1
+     },
+     {
+       "sensor": "temp-1",
+       "start": "2024-05-01T00:00:00",
+-      "count": 14,
++      "count": 1,
++      "min": 12.4,
++      "max": 12.4,
++      "mean": 12.4
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T01:00:00",
++      "count": 1,
+       "min": 11.9,
++      "max": 11.9,
++      "mean": 11.9
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T02:00:00",
++      "count": 1,
++      "min": 12.8,
++      "max": 12.8,
++      "mean": 12.8
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T03:00:00",
++      "count": 1,
++      "min": 13.1,
++      "max": 13.1,
++      "mean": 13.1
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T05:00:00",
++      "count": 2,
++      "min": 32.9,
++      "max": 33.6,
++      "mean": 33.25
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T06:00:00",
++      "count": 1,
++      "min": 14.2,
++      "max": 14.2,
++      "mean": 14.2
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T07:00:00",
++      "count": 1,
++      "min": 15.4,
++      "max": 15.4,
++      "mean": 15.4
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T09:00:00",
++      "count": 1,
++      "min": 34.2,
+       "max": 34.2,
+-      "mean": 18.735714285714288
++      "mean": 34.2
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T12:00:00",
++      "count": 1,
++      "min": 16.3,
++      "max": 16.3,
++      "mean": 16.3
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T14:00:00",
++      "count": 1,
++      "min": 17.0,
++      "max": 17.0,
++      "mean": 17.0
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T17:00:00",
++      "count": 1,
++      "min": 18.2,
++      "max": 18.2,
++      "mean": 18.2
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T20:00:00",
++      "count": 1,
++      "min": 15.8,
++      "max": 15.8,
++      "mean": 15.8
++    },
++    {
++      "sensor": "temp-1",
++      "start": "2024-05-01T23:00:00",
++      "count": 1,
++      "min": 14.5,
++      "max": 14.5,
++      "mean": 14.5
+     },
+     {
+       "sensor": "temp-2",
+-      "start": "2024-04-30T00:00:00",
++      "start": "2024-04-30T18:00:00",
+       "count": 1,
+       "min": 8.9,
+       "max": 8.9,
+@@ -61,10 +221,98 @@
+     {
+       "sensor": "temp-2",
+       "start": "2024-05-01T00:00:00",
+-      "count": 13,
++      "count": 1,
+       "min": 9.8,
++      "max": 9.8,
++      "mean": 9.8
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T02:00:00",
++      "count": 1,
++      "min": 10.2,
++      "max": 10.2,
++      "mean": 10.2
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T04:00:00",
++      "count": 1,
++      "min": 10.6,
++      "max": 10.6,
++      "mean": 10.6
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T05:00:00",
++      "count": 2,
++      "min": 30.8,
++      "max": 31.5,
++      "mean": 31.15
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T06:00:00",
++      "count": 1,
++      "min": 32.7,
++      "max": 32.7,
++      "mean": 32.7
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T08:00:00",
++      "count": 1,
++      "min": 11.3,
++      "max": 11.3,
++      "mean": 11.3
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T10:00:00",
++      "count": 1,
++      "min": 12.1,
++      "max": 12.1,
++      "mean": 12.1
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T13:00:00",
++      "count": 1,
++      "min": 33.8,
++      "max": 33.8,
++      "mean": 33.8
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T16:00:00",
++      "count": 1,
++      "min": 34.5,
+       "max": 34.5,
+-      "mean": 19.884615384615383
++      "mean": 34.5
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T18:00:00",
++      "count": 1,
++      "min": 14.7,
++      "max": 14.7,
++      "mean": 14.7
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T21:00:00",
++      "count": 1,
++      "min": 13.9,
++      "max": 13.9,
++      "mean": 13.9
++    },
++    {
++      "sensor": "temp-2",
++      "start": "2024-05-01T23:00:00",
++      "count": 1,
++      "min": 12.6,
++      "max": 12.6,
++      "mean": 12.6
+     }
+   ]
+ }
+DIFF alerts.json
+--- /tmp/standalone/alerts.json	2026-11-18 01:28:16.568960002 +0000
++++ /tmp/out/alerts.json	2026-11-18 01:28:17.591960002 +0000
+@@ -3,42 +3,42 @@
+     "sensor": "temp-1",
+     "bucket_start": "2024-05-01T05:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T05:00:00",
+-    "value": 33.6
++    "triggered_at": "2024-05-01T05:09:47",
++    "value": 32.9
+   },
+   {
+     "sensor": "temp-1",
+     "bucket_start": "2024-05-01T09:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T09:00:00",
++    "triggered_at": "2024-05-01T09:52:03",
+     "value": 34.2
+   },
+   {
+     "sensor": "temp-2",
+     "bucket_start": "2024-05-01T05:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T05:00:00",
+-    "value": 31.5
++    "triggered_at": "2024-05-01T05:32:12",
++    "value": 30.8
+   },
+   {
+     "sensor": "temp-2",
+     "bucket_start": "2024-05-01T06:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T06:00:00",
++    "triggered_at": "2024-05-01T06:55:21",
+     "value": 32.7
+   },
+   {
+     "sensor": "temp-2",
+     "bucket_start": "2024-05-01T13:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T13:00:00",
++    "triggered_at": "2024-05-01T13:39:02",
+     "value": 33.8
+   },
+   {
+     "sensor": "temp-2",
+     "bucket_start": "2024-05-01T16:00:00",
+     "threshold": 30.0,
+-    "triggered_at": "2024-05-01T16:00:00",
++    "triggered_at": "2024-05-01T16:14:12",
+     "value": 34.5
+   }
+ ]
+DIFF totals.json
+--- /tmp/standalone/totals.json	2026-11-18 01:28:16.697960002 +0000
++++ /tmp/out/totals.json	2026-11-18 01:28:17.592960002 +0000
+@@ -1,5 +1,12 @@
+ [
+   {
++    "sensor": "temp-1",
++    "day": "2024-05-01",
++    "samples": 14,
++    "daily_sum": 262.3,
++    "cumulative": 262.3
++  },
++  {
+     "sensor": "hum-1",
+     "day": "2024-05-01",
+     "samples": 10,
+@@ -7,24 +14,17 @@
+     "cumulative": 462.7
+   },
+   {
+-    "sensor": "temp-1",
++    "sensor": "temp-2",
+     "day": "2024-05-01",
+-    "samples": 14,
+-    "daily_sum": 262.3,
+-    "cumulative": 262.3
++    "samples": 13,
++    "daily_sum": 258.5,
++    "cumulative": 258.5
+   },
+   {
+     "sensor": "temp-2",
+     "day": "2024-04-30",
+     "samples": 1,
+     "daily_sum": 8.9,
+-    "cumulative": 8.9
+-  },
+-  {
+-    "sensor": "temp-2",
+-    "day": "2024-05-01",
+-    "samples": 13,
+-    "daily_sum": 258.5,
+     "cumulative": 267.4
+   }
+ ]
+OK coverage.json
+OK readings.csv
+OK raw.json
+OK aggregates.json
+OK meta.json
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ cat >/tmp/ties.json <<'EOF'
+[?2004l[?2004h> [
+[?2004l[?2004h>   {"sensor":"s","timestamp":"2024-01-01T00:10:00","value":31},
+[?2004l[?2004h>   {"sensor":"s","timestamp":"2024-01-01T00:10:00","value":32}
+[?2004l[?2004h> ]
+[?2004l[?2004h> EOF
+[?2004l[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ test "$(python3 -m pipelinesense alerts --input /tmp/ties.json --thresholds data/thresholds.json)" = '[
+[?2004l[?2004h>   {
+[?2004l[?2004h>     "sensor": "s",
+[?2004l[?2004h>     "bucket_start": "2024-01-01T00:00:00",
+[?2004l[?2004h>     "threshold": 30.0,
+[?2004l[?2004h>     "triggered_at": "2024-01-01T00:10:00",
+[?2004l[?2004h>     "value": 31.0
+[?2004l[?2004h>   }
+[?2004l[?2004h> ]' && echo 'TIE OK'
+[?2004l[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m compileall -q pipelinesense && python3 - <<'PY'
+[?2004l[?2004h> import json
+[?2004l[?2004h> from pathlib import Path
+[?2004l[?2004h> source = json.loads(Path('data/day1.json').read_text())
+[?2004l[?2004h> raw = json.loads(Path('/tmp/out/raw.json').read_text())
+[?2004l[?2004h> assert raw == source
+[?2004l[?2004h> assert [r['timestamp'] for r in raw] == [r['timestamp'] for r in source]
+[?2004l[?2004h> report = json.loads(Path('/tmp/out/report.json').read_text())
+[?2004l[?2004h> assert report['summary'] and report['hourly']
+[?2004l[?2004h> print('VALIDATION OK')
+[?2004l[?2004h> PY
+[?2004lVALIDATION OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ rm -rf /tmp/standalone && mkdir -p /tmp/standalone && python3 -m pipelinesense report --input data/day1.json > /tmp/standalone/report.json && python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json > /tmp/standalone/alerts.json && python3 -m pipelinesense totals --input data/day1.json > /tmp/standalone/totals.json && python3 -m pipelinesense coverage --input data/day1.json > /tmp/standalone/coverage.json && python3 -m pipelinesense export --input data/day1.json --out /tmp/standalone/readings.csv && python3 -m pipelinesense snapshot --input data/day1.json --dir /tmp/standalone && for name in report.json alerts.json totals.json coverage.json readings.csv raw.json aggregates.json meta.json; do cmp -s "/tmp/standalone/$name" "/tmp/out/$name" && echo "OK $name" || { echo "DIFF $name"; diff -u "/tmp/standalone/$name" "/tmp/out/$name"; }; done
+[?2004lOK report.json
+OK alerts.json
+OK totals.json
+OK coverage.json
+OK readings.csv
+OK raw.json
+OK aggregates.json
+OK meta.json
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m pipelinesense alerts --input /tmp/ties.json --thresholds data/thresholds.json
+[?2004l[]
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> import json
+[?2004l[?2004h> import subprocess
+[?2004l[?2004h> actual = json.loads(subprocess.check_output(['python3', '-m', 'pipelinesense', 'alerts', '--input', '/tmp/ties.json', '--thresholds', 'data/thresholds.json']))
+[?2004l[?2004h> assert actual == [{'sensor': 's', 'bucket_start': '2024-01-01T00:00:00', 'threshold': 30.0, 'triggered_at': '2024-01-01T00:10:00', 'value': 31.0}], actual
+[?2004l[?2004h> print('TIE OK')
+[?2004l[?2004h> PY
+[?2004lTraceback (most recent call last):
+  File "<stdin>", line 4, in <module>
+AssertionError: []
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ rm -rf /tmp/out && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/out && python3 -m compileall -q pipelinesense && echo 'ALL CHECKS OK'
+[?2004l{
+  "readings": 38
+}
+OK: archive matches source
+ALL CHECKS OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ printf '{"s":30}' >/tmp/ties-thresholds.json; python3 - <<'PY'
+[?2004l[?2004h> import json
+[?2004l[?2004h> import subprocess
+[?2004l[?2004h> actual = json.loads(subprocess.check_output(['python3', '-m', 'pipelinesense', 'alerts', '--input', '/tmp/ties.json', '--thresholds', '/tmp/ties-thresholds.json']))
+[?2004l[?2004h> assert actual == [{'sensor': 's', 'bucket_start': '2024-01-01T00:00:00', 'threshold': 30.0, 'triggered_at': '2024-01-01T00:10:00', 'value': 31.0}], actual
+[?2004l[?2004h> print('TIE OK')
+[?2004l[?2004h> PY
+[?2004lTIE OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m pipelinesense report --input /tmp/unsorted.json --interval 90x >/tmp/invalid.out 2>/tmp/invalid.err; code=$?; test "$code" -eq 2 && grep -q '^error:' /tmp/invalid.err && echo 'INVALID INTERVAL OK' || { echo "exit=$code"; cat /tmp/invalid.err; }
+[?2004lINVALID INTERVAL OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ python3 -m compileall -q pipelinesense && echo 'FINAL CHECKS OK'
+[?2004lFINAL CHECKS OK
+[?2004h[01;32magent@0bc54e53e0e2[00m:[01;34m/app[00m$ 

@@ -1,0 +1,164 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 16,
+            "passed": 16,
+            "failed": 0,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1794965134.177712,
+            "stop": 1794965137.0327373
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_standalone_export_matches_source",
+                "status": "passed",
+                "duration": 0.17981629198766313,
+                "start": 1794965134.2784715,
+                "stop": 1794965134.4586723,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_snapshot_matches_source",
+                "status": "passed",
+                "duration": 0.03695970799890347,
+                "start": 1794965134.45887,
+                "stop": 1794965134.4960122,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_report_matches_spec",
+                "status": "passed",
+                "duration": 0.19601041701389477,
+                "start": 1794965134.4961522,
+                "stop": 1794965134.692524,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_report_generated_fixture",
+                "status": "passed",
+                "duration": 0.11683945803088136,
+                "start": 1794965134.6928306,
+                "stop": 1794965134.8101597,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_alerts_trigger_attribution",
+                "status": "passed",
+                "duration": 0.07623458301532082,
+                "start": 1794965134.8105156,
+                "stop": 1794965134.8871186,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_alerts_generated_fixture",
+                "status": "passed",
+                "duration": 0.10340624998207204,
+                "start": 1794965134.8873255,
+                "stop": 1794965134.9915998,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_totals_late_mix",
+                "status": "passed",
+                "duration": 0.10437025100691244,
+                "start": 1794965134.9920678,
+                "stop": 1794965135.0970514,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_totals_generated_fixture",
+                "status": "passed",
+                "duration": 0.08517208398552611,
+                "start": 1794965135.0976236,
+                "stop": 1794965135.1830623,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_coverage_matches_spec",
+                "status": "passed",
+                "duration": 0.36125833401456475,
+                "start": 1794965135.1833422,
+                "stop": 1794965135.5450368,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_artifacts_match_standalone",
+                "status": "passed",
+                "duration": 0.5756494160159491,
+                "start": 1794965135.5453942,
+                "stop": 1794965136.1216114,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_verify_ok",
+                "status": "passed",
+                "duration": 0.10675616699154489,
+                "start": 1794965136.1220825,
+                "stop": 1794965136.2291024,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_verify_detects_tampering",
+                "status": "passed",
+                "duration": 0.08895775003475137,
+                "start": 1794965136.2293098,
+                "stop": 1794965136.318481,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_pipeline_is_repeatable",
+                "status": "passed",
+                "duration": 0.1659243339963723,
+                "start": 1794965136.3186796,
+                "stop": 1794965136.485136,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_empty_input",
+                "status": "passed",
+                "duration": 0.3584184590145014,
+                "start": 1794965136.485679,
+                "stop": 1794965136.8453648,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_cli_error_handling",
+                "status": "passed",
+                "duration": 0.13114849998964928,
+                "start": 1794965136.845862,
+                "stop": 1794965136.977275,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            },
+            {
+                "name": "test_outputs.py::test_bucket_boundary_attribution",
+                "status": "passed",
+                "duration": 0.05341883297660388,
+                "start": 1794965136.9774911,
+                "stop": 1794965137.0317051,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

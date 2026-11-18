@@ -65,7 +65,7 @@ aws-status:
 	$(AWS_OPS) status
 aws-logs:        ## make aws-logs [SERVICE=worker-runner]
 	$(AWS_OPS) logs $(SERVICE)
-aws-stop:        ## stop the runner (the expensive part) when no batch is running
+aws-stop:        ## stop the runner (the expensive part) when nothing is running
 	$(AWS_OPS) stop
 aws-start:
 	$(AWS_OPS) start

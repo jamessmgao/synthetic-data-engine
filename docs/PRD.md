@@ -20,13 +20,14 @@ can check each verdict without reading code, and the pipeline survives being kil
 ### Core
 
 **Operator**
-1. An operator can start a batch of N new candidate tasks with one command (`sde run --count 10`).
+1. An operator can create a task with one API call (`POST /v1/tasks`): from a free-text idea, an
+   explicit spec, or nothing (the service samples one). Creating 10 is 10 calls (`scripts/run_tasks.py`).
 2. An operator can see where every candidate is (stage, version, pass pattern) at any time.
 3. An operator can kill the pipeline at any point and restart it. It continues where it stopped
    and never re-runs (or re-pays for) a finished LLM call or trial.
 4. An operator can run two copies at once against the same state without duplicated or corrupted
    work.
-5. An operator gets a batch report: structural / functional / learnable yield, pass
+5. An operator gets a report over any set of tasks: structural / functional / learnable yield, pass
    distribution, cost, and wall time.
 
 **System**
@@ -71,14 +72,14 @@ reusing or adapting public tasks.
 |---|---|---|---|
 | N1 | **Durability of evidence** | Zero lost results once a trial or LLM call is recorded. Bundles, LLM transcripts and Harbor job dirs are immutable and never deleted; an abandoned Harbor dir is renamed, not removed. | A trial costs minutes of Docker time and real spend, and a verdict is only as good as the evidence that can be re-checked. |
 | N2 | **Reliable, idempotent processing** | At-least-once execution, exactly-once *effects*: a reclaimed, retried or concurrently claimed row never produces a second scored slot, a duplicate version, a second hand-off (next-stage job), a second accepted bundle or a second terminal transition. After a restart, no finished trial or LLM call is re-run; only a call in flight at the kill can repeat, and the report says so. | A kill at any point, a restart, and two copies at once must all leave the same result. |
-| N3 | **Fast acknowledgement** | `sde run --count N` commits the tasks and their `create` jobs in < 1 s, before any LLM call, so a kill right after it loses nothing. `sde status` / `sde inspect` answer in < 1 s while workers run (WAL readers never block on writers). | The operator, including during kill tests, can see and trust state at any moment. |
+| N3 | **Fast acknowledgement** | `POST /v1/tasks` commits the task and its `create` job in < 1 s, before any LLM call, so a kill right after it loses nothing. `GET /v1/tasks` / `GET /v1/tasks/{id}` answer in < 1 s while workers run (WAL readers never block on writers). | The operator, including during kill tests, can see and trust state at any moment. |
 | N4 | **Processing latency** | With a free slot, claimable work starts within 5 s (poll ≤ 2 s), including the next stage's job a worker just handed off. An expired lease is reclaimed within its TTL (10 min) + one poll. Pipeline overhead (everything except LLM and Harbor time) is < 5% of wall time. | Time, not money, is the constraint (§ back-of-the-envelope); the pipeline itself must not be the bottleneck. |
-| N5 | **Throughput scales with slots** | Roughly linear from 1 → 2 → 4 Docker slots on one batch; drafting overlaps evaluation so slots never sit idle while work exists. Measured in M5. | A 10-candidate batch is ~140 Harbor runs; slot use decides wall time. |
+| N5 | **Throughput scales with slots** | Roughly linear from 1 → 2 → 4 Docker slots on one run of tasks; drafting overlaps evaluation so slots never sit idle while work exists. Measured in M5. | A 10-candidate batch is ~140 Harbor runs; slot use decides wall time. |
 | N6 | **Large artifacts stay out of the database** | Bundles (≤ 2 MB, enforced by `schema.py`), Harbor job dirs (trajectories, possibly tens of MB) and transcripts are files referenced by path + sha256. DB rows stay in the KB range. | Keeps SQLite fast and the DB small enough to inspect by hand. |
 | N7 | **Trustworthy verdicts** | A verdict counts only 5 *valid* rollouts of one bundle sha under one config hash; timeouts and infra errors never count as 0. Every `VALID_FAIL` cites evidence excerpts from the logs and an attribution; an explanation that cites nothing is kept and shown as `unexplained`, never hidden. Invalid rollouts are shown with their exception type. | README criterion 1: "a failing run should mean the model failed, not the task", and "know why it fails". |
 | N8 | **Isolation and secrets** | No API key, tests or solution in the agent-visible image. Generated code runs only inside Harbor's containers. The key is never logged. | Reward hacking; untrusted generated Dockerfiles. |
-| N9 | **Yield and diversity** | At least 40% of initial candidates accepted within v3 and at least 80% functionally valid (working goals, reported as measured). No two tasks in a batch share (domain, task type, environment); lexical similarity < 0.3 to any batch task or example. | Primary metric; diverse sets are worth more for training. |
-| N10 | **Simplicity and cost** | Nothing beyond Docker, Python 3.12+, Harbor and `.env`: one SQLite file with two tables, one `sde` binary. Under $10 per accepted task including spend on rejected ones; hard stop at a configurable batch cap (default $100). | Anyone can run it on a laptop, and the cost per task stays far below $200. |
+| N9 | **Yield and diversity** | At least 40% of initial candidates accepted within v3 and at least 80% functionally valid (working goals, reported as measured). A new task takes an unused (domain, task type, environment) combination while any is left; lexical similarity < 0.3 to any batch task or example. | Primary metric; diverse sets are worth more for training. |
+| N10 | **Simplicity and cost** | Nothing beyond Docker, Python 3.12+, Harbor and `.env`: one SQLite file with two tables. Under $10 per accepted task including spend on rejected ones; hard stop at a configurable spend cap (default $100). | Anyone can run it on a laptop, and the cost per task stays far below $200. |
 
 Consistency: every state transition, together with the next stage's job it hands off, is one
 transaction (compare-and-set). Reports and `status` can be a few seconds stale.
@@ -91,7 +92,7 @@ transaction (compare-and-set). Reports and `status` can be a few seconds stale.
 - Trial time: the smoke test took 78 s on an easy example; in-band tasks will be longer. Assume
   ~8 min average → 10 candidates × 14 runs × 8 min / 4 slots ≈ **4.7 h**.
 - Eval cost: ~$0.002 for the 78 s smoke trial; assume ≤ $0.05 for a long trial → ≤ $7 per
-  10-candidate batch. Authoring (GLM-5.1, ~30–80 k tokens per draft including repairs) is
+  10-candidate run. Authoring (GLM-5.1, ~30–80 k tokens per draft including repairs) is
   measured in M1. Trace parsing is one GLM-5.1 review per failed run (measured live at $0.005–0.01 each).
   Time, not money, is the constraint.
 
@@ -119,15 +120,15 @@ What we deliberately don't have:
 - **No events/audit table.** Job rows already record every step; task decisions are on `tasks`;
   LLM transcripts and traces are objects referenced from job rows. In production the job row
   inserted in the same transaction is also the outbox (`jobs.published_at`).
-- **No batches table.** A batch is the `tasks.batch_id` label on the tasks one submission
-  created. The pinned evaluation config lives in `shared/contracts/config.py`, and every job records its
+- **No batches at all.** Tasks are created one at a time; a "batch of 10" is just ten tasks a
+  client created and names in the report. The pinned evaluation config lives in `shared/contracts/config.py`, and every job records its
   `config_hash`.
 
 Task bundles, LLM transcripts and raw Harbor traces are **objects** (the diagram's S3), referenced
 by key and sha256, never stored in tables.
 
 ```
-tasks 1───* jobs        per version: generate (+ repairs) · validate · rollout ×5 (+ retries)
+tasks 1───* jobs        per version: create or revise (+ repairs) · validate · rollout ×5 (+ retries)
                                      · analyze (one ping per settled rollout)
 
 Object store (S3 in prod, ./work locally):
@@ -135,15 +136,14 @@ Object store (S3 in prod, ./work locally):
   llm/<request_sha256>.json  prompt + response + usage, written before the job settles
   traces/<job_id>/           raw Harbor job dir(s) for one job (trajectory, verifier logs)
 output/accepted/<name>/      accepted bundles + verdict.md
-output/reports/<batch_id>/   summary.json + report.md
+output/reports/<name>/       summary.json + report.md (written by scripts/run_tasks.py)
 ```
 
 **`tasks`**
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | text PK | `<batch_id>-t03`. Deterministic, so resubmitting the same batch inserts nothing new (`INSERT OR IGNORE`). |
-| `batch_id` | text | Label, e.g. `b-20261117-01`. Indexed. |
+| `id` | text PK | `t-<date>-<hex>`, or the client's `task_id`. Reusing an id with the same request inserts nothing. |
 | `slot` | json | The taxonomy slot and difficulty profile it was sampled with (§6.2). |
 | `status` | text | `CREATED → CALIBRATING → ACCEPTED \| REJECTED`. |
 | `reason` | text, nullable | Why it was rejected: `exhausted` (out of band at v3), `invalid` (repairs spent), `infra_unresolved`. |
@@ -215,7 +215,7 @@ transition has one owning service (§5.1).
 | Later need | What changes |
 |---|---|
 | Postgres/Redis/S3 at scale | Swap the `Store` / `Queue` / `ArtifactStore` adapters (§5). Same tables in Postgres; `jobs` stays the source of truth and Redis sorted sets carry only job ids, published from rows with `published_at IS NULL`. |
-| Batch-level settings or quotas | Add a `batches` table then; `tasks.batch_id` is already the foreign key. |
+| Grouping tasks for reports | A nullable `tasks.label` set by `POST /v1/tasks` and a report filter on it; no lifecycle. |
 | Fine-grained timeline (every lease change, every state transition) | Add an append-only `events` table; nothing else changes. |
 | Querying past versions often | Add a `task_versions` view (or table) over `jobs` grouped by `(task_id, version)`. |
 | Rechecks for band stability | Rollout slots 6–10; no new table. |
@@ -226,40 +226,50 @@ transition has one owning service (§5.1).
 ## 4. API
 
 One FastAPI service, which is the diagram's **API Gateway** (there is no separate gateway in
-front of it). JSON, under `/v1`. Submission returns immediately; nothing blocks on generation or
-evaluation. The operator is identified by an `X-Api-Key` header. Errors: `404` unknown id, `409`
-conflicting batch id with a different count, `422` validation.
+front of it). JSON, under `/v1`. **One call creates one task; the system has no batches.**
+Creation returns immediately; nothing blocks on generation or evaluation. The operator is
+identified by an `X-Api-Key` header. Errors: `404` unknown id, `409` a `task_id` reused for a
+different request, `422` validation.
 
 ```
-POST /v1/batches                      → 202 { batch_id, task_ids }
-     { count: 10, batch_id? }           Idempotent on batch_id: task ids are <batch_id>-t01…tNN,
-                                        so a repeat creates nothing new.
+POST /v1/tasks          → 202 { task_id, created }
+     one of:
+       { "prompt": "A Go job queue that loses jobs when a worker crashes." }
+           free-text idea; it seeds the standard authoring prompt (quality rules,
+           environment limits and difficulty targets still apply)
+       { "spec": { "taxonomy": {...}, "difficulty": {...}, "design": ["...", ...] } }
+           explicit spec; missing difficulty gets the default profile; extra keys
+           are passed to the generator unchanged
+       { "raw_prompt": "<the complete user message>" }
+           for prompt experiments: sent to GLM-5.1 verbatim instead of the template.
+           The system prompt and the response schema still apply (so does every
+           gate); the task is flagged {"raw_prompt": ...} as outside the sampler
+       { }
+           the service samples a taxonomy slot: the least-used combination across
+           every task created so far
+     optional "task_id": a retry with the same id and request creates nothing
+     (created: false); the same id with a different request is 409.
 
-GET  /v1/batches/{batch_id}           → { batch_id, counts_by_status,
-                                          tasks: [{ id, status, current_version, version_state,
-                                                    pass_pattern: "✓✗✗✓✗", cost_usd }] }
+GET  /v1/tasks          → [{ id, name, status, reason, current_version, stage,
+       ?status= &since=      pass_pattern: "✓✗✗✓✗", cost_usd, created_at }]
 
-GET  /v1/tasks/{task_id}              → the verdict: { task, versions: [{ n, origin, state,
-                                          bundle_sha256, gates, pass_count }],
-                                          rollouts: [{ id, slot, retry, outcome, reward, error,
-                                          trace_uri, trace_metrics, failure, cost_usd }],
-                                          decision, reason }
+GET  /v1/tasks/{id}     → the verdict: { task, versions: [{ n, origin, state, bundle_sha256,
+                          gates, pass_count }], rollouts: [{ id, slot, retry, outcome, reward,
+                          error, trace_uri, trace_metrics, failure, cost_usd }], decision, reason }
 
-GET  /v1/batches/{batch_id}/report    → summary.json (below), from the Analytics service
-GET  /healthz                         → liveness + DB/queue reachability
+GET  /v1/report         → summary.json (below) over a set of tasks:
+       ?task_id=…&task_id=…   the tasks a client created, or
+       ?since=<time>          every task created at/after a time (all tasks if neither)
+
+GET  /healthz           → liveness + DB/queue reachability
 ```
 
-The `sde` CLI calls the same service functions directly, so it works with or without the server
-running:
+**A batch of 10 is a client concern, not a system concept.**
+`scripts/run_tasks.py` posts N tasks, waits for them to finish, and prints `GET /v1/report`
+for exactly those task ids:
 
 ```
-sde run --count 10 [--batch ID]   submit (POST /v1/batches) + run every worker role until done
-sde work [--roles …]              run service roles only: generation, validate, executor, trace-parser, reconcile
-sde status <batch>                GET /v1/batches/{id}
-sde inspect <task>                GET /v1/tasks/{id}  (also written as verdict.md)
-sde report <batch>                GET /v1/batches/{id}/report → output/reports/<batch>/
-sde serve                         start the API service (the diagram's API Gateway)
-sde generate "<topic>"            one draft + gates, no evaluation (scripts/generate.sh)
+python scripts/run_tasks.py --count 10 [--url http://localhost:8000] [--prompt "..."]
 ```
 
 The services themselves (what compose's `worker-control` / `worker-runner` run):
@@ -272,17 +282,18 @@ python -m evaluation.executor                            Executor (the run queue
 python -m evaluation.trace_parser_service                Trace Parser (the analyze queue)
 ```
 
-Exit codes: `0` success, `2` budget cap reached, `3` nothing claimable but unfinished work is
-leased by another live process.
+Developer tools: `scripts/generate.sh "<topic>"` (one draft + gates, no evaluation),
+`scripts/evaluate.sh <task_dir>` (five rollouts of an existing task directory).
 
 `summary.json` (all counts over **initial candidates**, not versions; `null` = not measured):
 
 ```json
 {
-  "batch_id": "b-20261117-01", "candidates": 10,
+  "task_ids": ["t-20261118-1a2b3c4d", "…"], "candidates": 10,
   "structural_pass": 10, "functional_pass": 9,
   "accepted_v1": 3, "accepted_total": 6,
   "rejected": {"exhausted": 2, "invalid": 1, "infra_unresolved": 1},
+  "in_progress": 0,
   "pass_count_histogram": {"0": 4, "1": 3, "2": 4, "3": 2, "4": 3, "5": 1},
   "valid_rollouts": 104, "invalid_rollouts": 7,
   "cost_usd": {"authoring": 11.2, "evaluation": 1.9, "total": 13.1, "per_accepted": 2.18},
@@ -306,7 +317,7 @@ containerized execution and S3. The diagram is
 [`agent-evaluation-system_calibration_v3.excalidraw`](../agent-evaluation-system_calibration_v3.excalidraw).
 
 ```
- Client ──► API service (FastAPI)   POST /v1/batches · GET status · GET results
+ Client ──► API service (FastAPI)   POST /v1/tasks · GET /v1/tasks · GET /v1/report
               │  one txn: tasks (CREATED) + one "create" job each
               ▼
        ┌─ create queue (sde:create) ──┐      ┌─ revise queue (sde:revise) ◄──────────────────────────┐
@@ -342,7 +353,7 @@ containerized execution and S3. The diagram is
 
 | Component | Queue in → what it does → queue out | Module |
 |---|---|---|
-| **API service (FastAPI)** | Entry point, not a worker. `POST /v1/batches` writes the batch's tasks and one `create` job each in one transaction and returns `202`. Read endpoints serve status, verdicts and reports (§4). It is also the diagram's "API Gateway": no separate gateway product sits in front of it. | `api/` |
+| **API service (FastAPI)** | Entry point, not a worker. `POST /v1/tasks` writes one task and its `create` job in one transaction and returns `202`. Read endpoints serve status, verdicts and reports (§4). It is also the diagram's "API Gateway": no separate gateway product sits in front of it. | `api/` |
 | **Generation Service** | **create queue** (`sde:create`): GLM-5.1 drafts a new task from its spec. **revise queue** (`sde:revise`): GLM-5.1 changes an existing task, either a *repair* (it failed its gates) or a *revision* (the Trace Parser found it too easy, too hard or unfair), continuing from the old task plus the evidence (§6.1, §6.6). Either way: bundle to S3, then enqueue `validate`. Revise jobs run before create jobs, so started tasks finish first. | `generator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
 | **Build + Validate** | `sde:validate` → build, structural validator, `harbor lint`, oracle × 2, nop (§6.3) → **pass:** 5 jobs on the run queue; **fail:** a repair on the revise queue (≤ 2 per version), else reject the task (`invalid`). | `validator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
 | **Executor** | **run queue** (`sde:rollout`) → one Harbor run in an Execution Pod, timeouts and resource limits enforced → upload the whole trace (trajectory, terminal output, verifier logs, result) to S3 → record outcome, reward, cost → **always** enqueue an `analyze` ping; an `INVALID` run also enqueues a retry of the same slot. | `evaluation/executor.py` |
@@ -353,7 +364,7 @@ containerized execution and S3. The diagram is
 | **Outbox publisher** | Adds committed job rows with `published_at IS NULL` to Redis. Duplicate publishes are harmless (stable ids). | `shared/jobs/jobqueue.py` |
 | **S3** | Immutable task bundles, LLM transcripts, raw execution traces and logs. | `ArtifactStore` |
 | **Reconciler** | Reclaims expired leases, dead-letters jobs that keep killing their worker (a dead run still pings `sde:analyze`), re-publishes unpublished jobs, rebuilds Redis from PostgreSQL. | `shared/jobs/reconciler.py` |
-| **Analytics** | Read-only: pass rates, duration, cost and failure patterns by taxonomy dimension, pitfall, invalid reason and version. Serves the batch report. | `api/` report endpoint |
+| **Analytics** | Read-only: pass rates, duration, cost and failure patterns by taxonomy dimension, pitfall, invalid reason and version. Serves `GET /v1/report`. | `api/` report endpoint |
 | **Inference egress gateway** | **Future.** The first deployment calls the provided SDE inference API directly. | none |
 
 **Who may change a task.** Every task change is a compare-and-set on `(current_version, stage)`,
@@ -372,8 +383,8 @@ Client → API service → create queue → Generation Service → Build + Valid
 Executor → Execution Pods → S3 + PostgreSQL → Trace Parser → Accept, or revise queue →
 Generation Service
 
-1. **Request ingestion.** The client submits a batch. The API service writes the tasks and their
-   `create` jobs in **one PostgreSQL transaction**; the unpublished job rows are the outbox,
+1. **Request ingestion.** The client creates a task. The API service writes the task and its
+   `create` job in **one PostgreSQL transaction**; the unpublished job rows are the outbox,
    and the outbox publisher adds them to Redis. The API returns `202` immediately.
 2. **Task generation.** The Generation Service claims a `create` job, GLM-5.1 writes the task,
    the bundle is stored in S3 as an immutable, content-addressed version, and the service
@@ -440,8 +451,8 @@ backed locally and all roles can run in one process, so nothing beyond Docker is
 
 | FR | Path through the system |
 |---|---|
-| 1. Start batch | API service: tasks and their `create` jobs in one transaction. |
-| 2. Status | API service → PostgreSQL (`GET /v1/batches/{id}`, `sde status`). |
+| 1. Create a task | API service: the task and its `create` job in one transaction. |
+| 2. Status | API service → PostgreSQL (`GET /v1/tasks`, `GET /v1/tasks/{id}`). |
 | 3. Kill/restart | All work is leased `jobs` rows; the reconciler reclaims expired leases; finished LLM calls and traces are found by key in S3 and reused (§6.7). |
 | 4. Two copies | Every claim and commit is a compare-and-set on `lease_token`; deterministic job ids make each hand-off a no-op the second time; each task stage has one owner. |
 | 5. Report | Analytics → `summary.json` + `report.md`. |
@@ -451,7 +462,7 @@ backed locally and all roles can run in one process, so nothing beyond Docker is
 | 9. Explain failures | Executor pings `analyze` → Trace Parser: extraction + GLM-5.1 review → `trace_metrics` and `failure` on each run (§6.5). |
 | 10. Accept / revise | Trace Parser → `ACCEPTED`, or a `revise` job on the revise queue (§6.6). |
 | 11. Publish | Trace Parser copies the bundle + `verdict.md` to `output/accepted/<name>/` inside the ACCEPTED transition. |
-| 12. Inspect | API service → `GET /v1/tasks/{id}` / `sde inspect` / `verdict.md` (§6.8). |
+| 12. Inspect | API service → `GET /v1/tasks/{id}` / `verdict.md` (§6.8). |
 
 ---
 
@@ -530,6 +541,18 @@ as Harbor environment exceptions and are repaired with the build log. Gates 2–
 `validate` job, which holds one Docker slot; its Harbor dirs go under `traces/<job_id>/oracle1`,
 `…/oracle2` and `…/nop`, so a reclaimed validate job adopts finished steps instead of rerunning
 them. Each step's result is recorded in the validate job's `result.gates`.
+
+**The repair loop runs through the revise queue, not inside Build + Validate.** A failed gate
+puts a repair on the revise queue with the gate's evidence (`feedback`: the failing gate, the
+failing test and its assertion, the tail of the build log or of `solve.sh`'s output). The
+Generation Service continues GLM-5.1's own authoring conversation with it, and the new bundle
+comes back to validate. At most 2 repairs per version, then `REJECTED (invalid)`. Looping inside
+the validate worker would hold a Docker slot idle through each 4–12 min GLM-5.1 call, mix the
+model client into the Docker-bound service, and lose per-step crash safety; the queue hop
+itself costs one row. The cap is measured: in task-builder's pilots (53 candidates), 38 needed no
+repair, 11 one and 4 two, and 2 of those 4 still failed. The first repair rescues most drafts
+(hard briefs: 3/8 pass first time, 6/8 with repairs), and drafts that survive two rarely
+converge, as when a test can't pass in the environment at all.
 
 ### 6.4 Evaluation and trial classification
 
@@ -645,12 +668,12 @@ RETURNING id, lease_token;
   transition: copy to temp, rename. A second analyze job sees `ACCEPTED` and skips.
 
 Tests (§8, M3): kill `-9` at random points over 20 runs, check no rollout ran twice (Harbor
-dirs = rollout job rows) and the final counts are unchanged; run two `sde work` processes on one batch
+dirs = rollout job rows) and the final counts are unchanged; run two copies of every service on the same tasks
 and check the uniqueness invariants.
 
 ### 6.8 Audit records
 
-Per task, `sde inspect <task>` and `verdict.md` (also written into the accepted bundle) show:
+Per task, `GET /v1/tasks/{id}` and `verdict.md` (also written into the accepted bundle) show:
 
 1. **Decision** with its rule: "ACCEPTED: v2 passed 2/5 valid rollouts (band 1–3)".
 2. **Spec**: taxonomy slot, difficulty profile, hidden `TaskSpec` (root cause, constraints,
@@ -666,7 +689,7 @@ Per task, `sde inspect <task>` and `verdict.md` (also written into the accepted 
 
 Everything links to raw files (`work/llm/…`, `work/traces/…`), so a reviewer can check any claim
 against the source. The task's job rows, ordered by time, are the full timeline
-(`sde inspect --timeline`).
+(`GET /v1/tasks/{id}` lists every rollout; the `jobs` rows hold the rest).
 
 ### 6.9 Diversity and novelty
 
@@ -684,11 +707,12 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 - **Quota sampler:** each new candidate takes the least-used value on each dimension (with
   seeded tie-breaking), skipping combinations listed as incompatible. Results are stored in
   `tasks.slot`.
-- **Hard rule:** no two tasks in a batch share (domain, task type, environment).
+- **Spread:** a new task takes an unused (domain, task type, environment) combination across
+  every task so far; repeats only once all have been used.
 - **Lexical novelty:** word 5-gram MinHash Jaccard of instruction + `TaskSpec.root_cause` against
   every earlier bundle and the six `examples/`. Above 0.3 → new pitch. This is a heuristic, not
   semantic novelty (that's the deferred embedding feature).
-- **Report:** distribution of every dimension across the batch.
+- **Report:** distribution of every dimension across the reported tasks.
 
 ### 6.10 Task quality and reward hacking
 
@@ -711,7 +735,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
   Harbor, both summed into the `cost_usd` of the job that caused them (each GLM call is also listed
   in the create / revise job's `result.llm_calls`). Missing values are recorded as
   null, not estimated.
-- A budget check runs before every paid action: stop claiming new work at the batch cap and exit 2.
+- A budget check runs before every paid action: stop claiming new work at the spend cap.
 - Scheduling favors finishing what's started: analyze before rollouts, rollouts before new
   validations, validations before revisions, and revisions before new drafts (`priority`:
   the revise queue drains before the create queue). A new candidate is only drafted when fewer
@@ -731,7 +755,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 
 | # | Decision | Proposal |
 |---|---|---|
-| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; a batch is a label. **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
+| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; tasks are created one per request, with no batches (2026-11-18). **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
 | D2 | How `tests/test.sh` gets pytest | Install pinned `uv` + pytest at verify time into a fresh interpreter (agent can't tamper). Accept the `verifier-runtime-install` / `verifier-network-download` lint warnings and document why. Alternative: pytest baked into the image, lint-clean but tamperable. |
 | D3 | Wrong-solution gate | Add `wrong_solution_script` to `TaskDraft` (the pitfall the spec predicts, as code); must score 0. Cheap and the strongest test-sensitivity evidence. |
 | D4 | Diagnosis prompt | Use GLM-5.1 to explain failures, bound to code-extracted evidence (§6.5). The alternative, code-only evidence with no prose, is weaker for "know why it fails". |
@@ -745,12 +769,12 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
    `sde generate` produces a task with oracle = 1 and nop = 0. Hand-review it against `examples/`.
 3. **M2 calibration:** executor workers (trial runner, classifier, trace upload, retries). Pilot
    3–5 candidates and tune the v1 difficulty default from what `glm-5.3-flash` actually does.
-4. **M3 robustness:** SQLite store (2 tables), job leases, adoption, `sde run/work/status/inspect`, kill and
-   two-copy tests. (Built before the real batch so that batch runs on it.)
+4. **M3 robustness:** SQLite store (2 tables), job leases, adoption, the service entry points, kill and
+   two-copy tests. (Built before the real run so that run uses it.)
 5. **M3b services on queues:** the Generation Service (create + revise queues), Build + Validate
    and the Executor each hand off their next stage in their settle transaction; executors ping
    `sde:analyze`; the Trace Parser service extracts evidence and has GLM-5.1 review each failed run, writes `failure` / `trace_metrics`, and decides accept /
    revision / repair / reject. Owner per stage transition as in §5.1.
 6. **M4 revision loop:** operators, v2/v3 through the Generation Service's revision path, before/after in the report.
-7. **M5 batch:** 10+ candidates, `sde report`, update `CHANGELOG.md` with measured results.
+7. **M5 run:** 10+ candidates via `scripts/run_tasks.py`, `GET /v1/report`, update `CHANGELOG.md` with measured results.
 8. **M6 human-likeness:** blind rubric comparison with `examples/`; optional compose backend.

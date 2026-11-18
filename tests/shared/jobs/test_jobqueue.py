@@ -150,14 +150,6 @@ def test_jobs_of_decided_tasks_are_not_claimed(backend, jq):
     assert jq.claim("create", "w1") is None
 
 
-def test_batch_filter(backend, jq):
-    a = add_task(backend, batch_id="b-a")
-    b = add_task(backend, batch_id="b-b")
-    enqueue(backend, jq, a)
-    enqueue(backend, jq, b)
-    assert jq.claim("create", "w1", batch_id="b-b")["task_id"] == b
-
-
 def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
@@ -242,3 +234,23 @@ def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):
     assert jq.queue.reconcile() == 3
     got = {jq.claim("create", "w1")["id"] for _ in range(3)}
     assert got == set(ids)
+
+
+def test_schema_init_drops_the_old_batch_id_column(tmp_path):
+    """Databases created before batches were removed lose tasks.batch_id on startup."""
+    import sqlite3
+
+    from shared.storage.sql import SqlStore
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as c:
+        c.execute("""CREATE TABLE tasks (id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, slot TEXT NOT NULL DEFAULT '{}',
+                     status TEXT NOT NULL, reason TEXT, current_version INTEGER NOT NULL DEFAULT 1,
+                     stage TEXT NOT NULL, bundle_sha256 TEXT, name TEXT, accepted_version INTEGER,
+                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        c.execute("CREATE INDEX tasks_batch ON tasks (batch_id)")
+        c.execute("INSERT INTO tasks (id, batch_id, status, stage, created_at, updated_at)"
+                  " VALUES ('t-old', 'b-1', 'CREATED', 'QUEUED', 'x', 'x')")
+    store = SqlStore(f"sqlite:///{db}")
+    cols = {d[0] for d in store.conn.execute("SELECT * FROM tasks LIMIT 0").description}
+    assert "batch_id" not in cols and store.task("t-old")["status"] == "CREATED"

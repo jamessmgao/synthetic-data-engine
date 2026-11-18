@@ -1,0 +1,154 @@
+{
+ "id": "h7-exact-performance",
+ "spec": {
+  "taxonomy": {
+   "domain": "Data pipelines",
+   "task_type": "Debugging",
+   "core_capability": "Consistency of aggregated results",
+   "failure_mode": "Data corruption",
+   "environment": "Python service",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": []
+  },
+  "design": [
+   "Scenario: a log reconciliation tool is correct but quadratic. It must process a generated input of about two million lines within a strict time and memory budget (at least a 5x margin between the reference solution and the original code) with byte-identical output, including stable tie-breaking and edge cases.",
+   "The tests generate the large input at verify time from a fixed seed, and also check small edge cases.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p3-h7-exact-performance-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.176271,
+   "rounds": 1,
+   "completion_tokens": 41478,
+   "draft_sec": 430.4,
+   "round_errors": [],
+   "bundle_sha256": "066cbfab82d346fa192009f027d60a62ac2aa45b5c2a58d4bacc26c306a1b0bf",
+   "name": "log-reconciler-perf"
+  },
+  {
+   "job_id": "p3-h7-exact-performance-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 290.9,
+   "tests_passing_on_nop": [
+    "test_small_input_correctness",
+    "test_tie_breaking_deterministic",
+    "test_duplicate_removal",
+    "test_empty_trace_id",
+    "test_output_format"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h7-exact-performance/rollout2-r0/066cbfab82d346fa192009f027d60a62__2HbpugG",
+   "cost_usd": 0.027530016,
+   "input_tokens": 324657,
+   "output_tokens": 23168,
+   "steps": 21,
+   "duration_sec": 346.3,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h7-exact-performance/rollout3-r0/066cbfab82d346fa192009f027d60a62__WywieWy",
+   "cost_usd": 0.025751232,
+   "input_tokens": 193044,
+   "output_tokens": 31550,
+   "steps": 14,
+   "duration_sec": 380.2,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h7-exact-performance/rollout1-r0/066cbfab82d346fa192009f027d60a62__KTgqKzr",
+   "cost_usd": 0.042863609999999996,
+   "input_tokens": 373423,
+   "output_tokens": 56387,
+   "steps": 22,
+   "duration_sec": 745.1,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h7-exact-performance/rollout4-r0/066cbfab82d346fa192009f027d60a62__hkmWbnm",
+   "cost_usd": 0.139223158,
+   "input_tokens": 2234969,
+   "output_tokens": 119767,
+   "steps": 64,
+   "duration_sec": 2085.4,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h7-exact-performance/rollout5-r0/066cbfab82d346fa192009f027d60a62__eF9xFsp",
+   "cost_usd": 0.12012735799999999,
+   "input_tokens": 1530600,
+   "output_tokens": 125157,
+   "steps": 47,
+   "duration_sec": 2253.9,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794959980.165838,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/066cbfab82d346fa192009f027d60a62ac2aa45b5c2a58d4bacc26c306a1b0bf",
+ "name": "log-reconciler-perf",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794963344.833695,
+ "wall_sec": 3364.7,
+ "cost_usd": {
+  "authoring": 0.1763,
+  "rollouts": 0.3555,
+  "total": 0.5318
+ }
+}

@@ -1,0 +1,222 @@
+Downloading cpython-3.13.9-linux-aarch64-gnu (download) (27.7MiB)
+ Downloading cpython-3.13.9-linux-aarch64-gnu (download)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 18ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.7.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 16 items
+
+../tests/test_outputs.py ......FF.F......                                [100%]
+
+=================================== FAILURES ===================================
+_____________________________ test_totals_late_mix _____________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_totals_late_mix0')
+
+    def test_totals_late_mix(tmp_path):
+        input_path, _ = write_late_mix(tmp_path)
+        records = load_json_file(input_path)
+        proc = _run_ok("totals", "--input", input_path)
+>       assert_docs_equal(json.loads(proc.stdout), expected_totals(records), "totals")
+
+/tests/test_outputs.py:111: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/tests/spec_helpers.py:218: in assert_docs_equal
+    _compare(actual, expected, label)
+/tests/spec_helpers.py:238: in _compare
+    _compare(item, want, "%s[%d]" % (path, pos))
+/tests/spec_helpers.py:229: in _compare
+    _compare(actual[key], expected[key], "%s.%s" % (path, key))
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actual = '2024-06-01', expected = '2024-05-31', path = 'totals[0].day'
+
+    def _compare(actual, expected, path):
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                raise AssertionError("%s: expected object, got %r" % (path, actual))
+            if set(actual) != set(expected):
+                raise AssertionError("%s: keys %r vs %r"
+                                     % (path, sorted(actual), sorted(expected)))
+            for key in expected:
+                _compare(actual[key], expected[key], "%s.%s" % (path, key))
+            return
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                raise AssertionError("%s: expected list, got %r" % (path, actual))
+            if len(actual) != len(expected):
+                raise AssertionError("%s: %d items, expected %d"
+                                     % (path, len(actual), len(expected)))
+            for pos, (item, want) in enumerate(zip(actual, expected)):
+                _compare(item, want, "%s[%d]" % (path, pos))
+            return
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            if actual is not expected:
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+            if not math.isclose(float(actual), float(expected),
+                                rel_tol=1e-9, abs_tol=1e-12):
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if actual != expected:
+>           raise AssertionError("%s: %r != %r" % (path, actual, expected))
+E           AssertionError: totals[0].day: '2024-06-01' != '2024-05-31'
+
+/tests/spec_helpers.py:250: AssertionError
+________________________ test_totals_generated_fixture _________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_totals_generated_fixture0')
+
+    def test_totals_generated_fixture(tmp_path):
+        input_path, _ = write_generated(tmp_path)
+        records = load_json_file(input_path)
+        proc = _run_ok("totals", "--input", input_path)
+>       assert_docs_equal(json.loads(proc.stdout), expected_totals(records), "totals")
+
+/tests/test_outputs.py:118: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/tests/spec_helpers.py:218: in assert_docs_equal
+    _compare(actual, expected, label)
+/tests/spec_helpers.py:238: in _compare
+    _compare(item, want, "%s[%d]" % (path, pos))
+/tests/spec_helpers.py:229: in _compare
+    _compare(actual[key], expected[key], "%s.%s" % (path, key))
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actual = 'flow-b', expected = 'flow-a', path = 'totals[0].sensor'
+
+    def _compare(actual, expected, path):
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                raise AssertionError("%s: expected object, got %r" % (path, actual))
+            if set(actual) != set(expected):
+                raise AssertionError("%s: keys %r vs %r"
+                                     % (path, sorted(actual), sorted(expected)))
+            for key in expected:
+                _compare(actual[key], expected[key], "%s.%s" % (path, key))
+            return
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                raise AssertionError("%s: expected list, got %r" % (path, actual))
+            if len(actual) != len(expected):
+                raise AssertionError("%s: %d items, expected %d"
+                                     % (path, len(actual), len(expected)))
+            for pos, (item, want) in enumerate(zip(actual, expected)):
+                _compare(item, want, "%s[%d]" % (path, pos))
+            return
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            if actual is not expected:
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+            if not math.isclose(float(actual), float(expected),
+                                rel_tol=1e-9, abs_tol=1e-12):
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if actual != expected:
+>           raise AssertionError("%s: %r != %r" % (path, actual, expected))
+E           AssertionError: totals[0].sensor: 'flow-b' != 'flow-a'
+
+/tests/spec_helpers.py:250: AssertionError
+___________________ test_pipeline_artifacts_match_standalone ___________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_pipeline_artifacts_match_0')
+
+    def test_pipeline_artifacts_match_standalone(tmp_path):
+        input_path, thresholds_path = write_late_mix(tmp_path)
+        records = load_json_file(input_path)
+        thresholds = load_json_file(thresholds_path)
+        out_dir = tmp_path / "pipeline"
+        _run_ok("pipeline", "--input", input_path, "--dir", out_dir,
+                "--thresholds", thresholds_path, "--interval", "1h")
+    
+        standalone_report = json.loads(
+            _run_ok("report", "--input", input_path, "--interval", "1h").stdout)
+        assert_docs_equal(load_json_file(out_dir / "report.json"),
+                          standalone_report, "report.json")
+        assert_docs_equal(standalone_report, expected_report(records, "1h"),
+                          "report spec")
+    
+        standalone_alerts = json.loads(
+            _run_ok("alerts", "--input", input_path,
+                    "--thresholds", thresholds_path, "--interval", "1h").stdout)
+        assert_docs_equal(load_json_file(out_dir / "alerts.json"),
+                          standalone_alerts, "alerts.json")
+        assert_docs_equal(standalone_alerts,
+                          expected_alerts(records, thresholds, "1h"), "alerts spec")
+    
+        standalone_totals = json.loads(
+            _run_ok("totals", "--input", input_path).stdout)
+        assert_docs_equal(load_json_file(out_dir / "totals.json"),
+                          standalone_totals, "totals.json")
+>       assert_docs_equal(standalone_totals, expected_totals(records),
+                          "totals spec")
+
+/tests/test_outputs.py:161: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/tests/spec_helpers.py:218: in assert_docs_equal
+    _compare(actual, expected, label)
+/tests/spec_helpers.py:238: in _compare
+    _compare(item, want, "%s[%d]" % (path, pos))
+/tests/spec_helpers.py:229: in _compare
+    _compare(actual[key], expected[key], "%s.%s" % (path, key))
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actual = '2024-06-01', expected = '2024-05-31', path = 'totals spec[0].day'
+
+    def _compare(actual, expected, path):
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                raise AssertionError("%s: expected object, got %r" % (path, actual))
+            if set(actual) != set(expected):
+                raise AssertionError("%s: keys %r vs %r"
+                                     % (path, sorted(actual), sorted(expected)))
+            for key in expected:
+                _compare(actual[key], expected[key], "%s.%s" % (path, key))
+            return
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                raise AssertionError("%s: expected list, got %r" % (path, actual))
+            if len(actual) != len(expected):
+                raise AssertionError("%s: %d items, expected %d"
+                                     % (path, len(actual), len(expected)))
+            for pos, (item, want) in enumerate(zip(actual, expected)):
+                _compare(item, want, "%s[%d]" % (path, pos))
+            return
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            if actual is not expected:
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+            if not math.isclose(float(actual), float(expected),
+                                rel_tol=1e-9, abs_tol=1e-12):
+                raise AssertionError("%s: %r != %r" % (path, actual, expected))
+            return
+        if actual != expected:
+>           raise AssertionError("%s: %r != %r" % (path, actual, expected))
+E           AssertionError: totals spec[0].day: '2024-06-01' != '2024-05-31'
+
+/tests/spec_helpers.py:250: AssertionError
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_standalone_export_matches_source
+PASSED ../tests/test_outputs.py::test_snapshot_matches_source
+PASSED ../tests/test_outputs.py::test_report_matches_spec
+PASSED ../tests/test_outputs.py::test_report_generated_fixture
+PASSED ../tests/test_outputs.py::test_alerts_trigger_attribution
+PASSED ../tests/test_outputs.py::test_alerts_generated_fixture
+PASSED ../tests/test_outputs.py::test_coverage_matches_spec
+PASSED ../tests/test_outputs.py::test_pipeline_verify_ok
+PASSED ../tests/test_outputs.py::test_verify_detects_tampering
+PASSED ../tests/test_outputs.py::test_pipeline_is_repeatable
+PASSED ../tests/test_outputs.py::test_empty_input
+PASSED ../tests/test_outputs.py::test_cli_error_handling
+PASSED ../tests/test_outputs.py::test_bucket_boundary_attribution
+FAILED ../tests/test_outputs.py::test_totals_late_mix - AssertionError: total...
+FAILED ../tests/test_outputs.py::test_totals_generated_fixture - AssertionErr...
+FAILED ../tests/test_outputs.py::test_pipeline_artifacts_match_standalone - A...
+========================= 3 failed, 13 passed in 1.52s =========================

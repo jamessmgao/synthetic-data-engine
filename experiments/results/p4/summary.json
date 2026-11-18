@@ -1,0 +1,9 @@
+{
+ "pilot": "p4",
+ "candidates": 1,
+ "spent_usd": 0.0735,
+ "wall_sec": 170.1,
+ "verdicts": {
+  "f1-behavior-preserving": "too_easy"
+ }
+}

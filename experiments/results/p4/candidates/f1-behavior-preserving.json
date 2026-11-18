@@ -1,0 +1,202 @@
+{
+ "id": "f1-behavior-preserving",
+ "spec": {
+  "taxonomy": {
+   "domain": "Data pipelines",
+   "task_type": "Debugging",
+   "core_capability": "Consistency of aggregated results",
+   "failure_mode": "Data corruption",
+   "environment": "Python service",
+   "skill_interaction": "Multiple interacting constraints"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": [
+    "Difficulty comes from coupled decisions that must all be right, not from size or obscurity"
+   ]
+  },
+  "design": [
+   "Scenario: a utility module that many other modules in the repository depend on has a defect or needs a stated behavior change. The fix must not change any other observable behavior of the system.",
+   "The tests include a large regression suite generated from the original system's behavior across all the dependent modules (stored only in the tests), plus tests for the stated change.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface.",
+   "The agent has a shell and an hour; difficulty must survive that. If a quick script or solver would trivialize the task, raise the coupling between requirements instead of the size.",
+   "The agent's own obvious checks should pass for a plausible but wrong solution: the tests probe the interactions and edge cases the instruction states, not only the main path."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p4-f1-behavior-preserving-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0,
+   "rounds": 1,
+   "completion_tokens": 70157,
+   "draft_sec": 722.3,
+   "round_errors": [],
+   "bundle_sha256": "1e6462f708165c31f249fef7be228541a18f7fdf3ad4702b886cab2200136144",
+   "name": "pipelinesense-reading-corruption"
+  },
+  {
+   "job_id": "p4-f1-behavior-preserving-v1-validate0",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward 0.0).\nFAILED test_alerts_trigger_attribution: The test failed in the call phase due to an assertion error\nFAILED test_coverage_matches_spec: The test failed in the call phase\nsolve.sh output (tail):\n{\n  \"readings\": 38\n}\nOK: archive matches source\n\nverifier output (tail):\nrite_late_mix(tmp_path)\n        records = load_json_file(input_path)\n        thresholds = load_json_file(thresholds_path)\n        for interval in (\"1h\", \"15m\"):\n            proc = _run_ok(\"alerts\", \"--input\", input_path,\n                           \"--thresholds\", thresholds_path, \"--interval\", interval)\n            alerts = json.loads(proc.stdout)\n            assert alerts, \"expected alerts at %s\" % interval\n            for alert in alerts:\n>               assert alert[\"triggered_at\"] != alert[\"bucket_start\"], alert\nE               AssertionError: {'bucket_start': '2024-06-01T11:45:00', 'sensor': 'gamma', 'threshold': 100.0, 'triggered_at': '2024-06-01T11:45:00', ...}\nE               assert '2024-06-01T11:45:00' != '2024-06-01T11:45:00'\n\n/tests/test_outputs.py:87: AssertionError\n__________________________ test_coverage_matches_spec __________________________\n\ntmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_coverage_matches_spec0')\n\n    def test_coverage_matches_spec(tmp_path):\n        for writer in (write_late_mix, write_generated):\n            subdir = tmp_path / writer.__name__\n            input_path, _ = writer(subdir)\n            records = load_json_file(input_path)\n            for interval in (\"1h\", \"6h\"):\n                proc = _run_ok(\"coverage\", \"--input\", input_path,\n                               \"--interval\", interval)\n                assert_docs_equal(json.loads(proc.stdout),\n>                                 expected_coverage(records, interval),\n                                  ^^^^^^^^^^^^^^^^^\n                                  \"coverage(%s, %s)\" % (writer.__name__, interval))\nE               NameError: name 'expected_coverage' is not defined\n\n/tests/test_outputs.py:126: NameError\n==================================== PASSES ====================================\n=========================== short test summary info ============================\nPASSED ../tests/test_outputs.py::test_standalone_export_matches_source\nPASSED ../tests/test_outputs.py::test_snapshot_matches_source\nPASSED ../tests/test_outputs.py::test_report_matches_spec\nPASSED ../tests/test_outputs.py::test_report_generated_fixture\nPASSED ../tests/test_outputs.py::test_alerts_generated_fixture\nPASSED ../tests/test_outputs.py::test_totals_late_mix\nPASSED ../tests/test_outputs.py::test_totals_generated_fixture\nPASSED ../tests/test_outputs.py::test_pipeline_artifacts_match_standalone\nPASSED ../tests/test_outputs.py::test_pipeline_verify_ok\nPASSED ../tests/test_outputs.py::test_verify_detects_tampering\nPASSED ../tests/test_outputs.py::test_pipeline_is_repeatable\nPASSED ../tests/test_outputs.py::test_empty_input\nPASSED ../tests/test_outputs.py::test_cli_error_handling\nPASSED ../tests/test_outputs.py::test_bucket_boundary_attribution\nFAILED ../tests/test_outputs.py::test_alerts_trigger_attribution - AssertionE...\nFAILED ../tests/test_outputs.py::test_coverage_matches_spec - NameError: name...\n========================= 2 failed, 14 passed in 1.58s =========================\n",
+   "sec": 0.8,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p4-f1-behavior-preserving-v1-repair1",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0,
+   "rounds": 1,
+   "completion_tokens": 16949,
+   "draft_sec": 105.2,
+   "round_errors": [],
+   "bundle_sha256": "e4ee8c4aee08fa3da00a964f90e8ac8e726110a2627289af112a58063ec00daa",
+   "name": "pipelinesense-reading-corruption"
+  },
+  {
+   "job_id": "p4-f1-behavior-preserving-v1-validate1",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 0.5,
+   "tests_passing_on_nop": [
+    "test_standalone_export_matches_source",
+    "test_snapshot_matches_source",
+    "test_totals_late_mix",
+    "test_totals_generated_fixture",
+    "test_coverage_matches_spec",
+    "test_verify_detects_tampering",
+    "test_pipeline_is_repeatable",
+    "test_empty_input",
+    "test_cli_error_handling"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p4-f1-behavior-preserving/rollout1-r0/e4ee8c4aee08fa3da00a964f90e8ac8e__RJdwywv",
+   "cost_usd": 0.014036346,
+   "input_tokens": 161532,
+   "output_tokens": 9713,
+   "steps": 13,
+   "duration_sec": 145.1,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p4-f1-behavior-preserving/rollout2-r0/e4ee8c4aee08fa3da00a964f90e8ac8e__bHFbkD7",
+   "cost_usd": 0.006952198,
+   "input_tokens": 70740,
+   "output_tokens": 6328,
+   "steps": 8,
+   "duration_sec": 115.5,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p4-f1-behavior-preserving/rollout3-r0/e4ee8c4aee08fa3da00a964f90e8ac8e__4zcmwKu",
+   "cost_usd": 0.009044602,
+   "input_tokens": 121937,
+   "output_tokens": 6236,
+   "steps": 10,
+   "duration_sec": 104.8,
+   "failing_tests": [
+    {
+     "test": "test_totals_late_mix",
+     "message": "The test failed in the call phase due to an assertion error"
+    },
+    {
+     "test": "test_totals_generated_fixture",
+     "message": "The test failed in the call phase due to an assertion error"
+    },
+    {
+     "test": "test_pipeline_artifacts_match_standalone",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p4-f1-behavior-preserving/rollout4-r0/e4ee8c4aee08fa3da00a964f90e8ac8e__PsicGGC",
+   "cost_usd": 0.015401894,
+   "input_tokens": 161983,
+   "output_tokens": 8723,
+   "steps": 11,
+   "duration_sec": 108.3,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p4-f1-behavior-preserving/rollout5-r0/e4ee8c4aee08fa3da00a964f90e8ac8e__oCe3BZ2",
+   "cost_usd": 0.028099207,
+   "input_tokens": 295307,
+   "output_tokens": 21590,
+   "steps": 19,
+   "duration_sec": 164.3,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794965825.4132512,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/e4ee8c4aee08fa3da00a964f90e8ac8e726110a2627289af112a58063ec00daa",
+ "name": "pipelinesense-reading-corruption",
+ "passes": 4,
+ "fails": 1,
+ "finished": 1794965995.546716,
+ "wall_sec": 170.1,
+ "cost_usd": {
+  "authoring": 0,
+  "rollouts": 0.0735,
+  "total": 0.0735
+ }
+}

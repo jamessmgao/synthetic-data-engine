@@ -1,9 +1,11 @@
 """
 Authoring prompts, rendered deterministically from a spec.
 
-A spec is what the Job Service samples for a candidate (PRD §6.2, §6.9):
+A spec comes from POST /v1/tasks (api/submit.py): sampled from the taxonomy,
+given explicitly, or built from a requester's free-text idea (`seed`) (PRD §6.2, §6.9):
 
     {
+      "seed": "optional free-text task idea; the task is built around it",
       "taxonomy": {"domain": ..., "task_type": ..., "core_capability": ...,
                    "failure_mode": ..., "environment": ..., "skill_interaction": ...},
       "difficulty": {"level": "medium-hard", "relevant_files": "15-25",
@@ -80,11 +82,16 @@ def render_initial_prompt(spec: dict) -> str:
         "",
         "Create a NEW task from scratch. This is the first generation of the task; no previous task or "
         "agent evaluation results exist.",
-        "",
-        "TASK TAXONOMY",
-        "",
     ]
-    lines += [f"{label}: {tax[key]}" for key, label in TAXONOMY_LABELS if tax.get(key)]
+    if spec.get("seed"):
+        # A requester's free-text idea (POST /v1/tasks {"prompt": ...}): build the task
+        # around it; everything below still applies.
+        lines += ["", "TASK IDEA (from the requester)", "", spec["seed"].strip(), "",
+                  "Build the task around this idea. Where it leaves the domain, environment or "
+                  "failure mode open, choose ones that fit it realistically."]
+    if any(tax.get(key) for key, _ in TAXONOMY_LABELS):
+        lines += ["", "TASK TAXONOMY", ""]
+        lines += [f"{label}: {tax[key]}" for key, label in TAXONOMY_LABELS if tax.get(key)]
     lines += ["", "TARGET DIFFICULTY", "", f"Target level: {diff.get('level', 'medium-hard')}", "",
               "The task should require:"]
     if diff.get("relevant_files"):

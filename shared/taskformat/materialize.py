@@ -37,11 +37,18 @@ from shared.taskformat.schema import AGENT_USER, BASE_IMAGES, FileEntry, TaskDra
 # be installed, or pytest errors out before judging, no reward file is written
 # and Harbor records the trial as an infrastructure error, never as the model
 # failing.
+#
+# /logs/verifier is bind-mounted into the agent's container and writable by
+# the agent user, and Harbor reads reward.json before reward.txt. So any reward
+# file present is removed before the tests and again after them (the tests run
+# the agent's code as root, which could plant one): the only reward that can
+# survive is the one written below from pytest's exit status.
 TEST_SH = f"""#!/bin/bash
 # {config.CANARY_LINE}
 set -uo pipefail
 
 mkdir -p /logs/verifier
+rm -f /logs/verifier/reward.txt /logs/verifier/reward.json
 
 if ! command -v curl >/dev/null 2>&1; then
   for i in 1 2 3; do
@@ -61,6 +68,7 @@ fi
 uvx -p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 \\
   pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
 status=$?
+rm -f /logs/verifier/reward.txt /logs/verifier/reward.json
 
 # 0: all tests passed. 1: tests ran and some failed. Anything else (interrupted,
 # internal error, usage error, nothing collected) is not a verdict on the agent.

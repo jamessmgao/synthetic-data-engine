@@ -1,7 +1,7 @@
 """
-Read models behind the API (docs/PRD.md §4): batch status, the task verdict and
-the batch report, computed from the `pipeline` store. Submission goes through
-`api.submit.submit_batch`; nothing here writes.
+Read models behind the API (docs/PRD.md §4): the task list, the task verdict and
+the report over a set of tasks, computed from the `pipeline` store. Task creation
+goes through `api.submit.create_task`; nothing here writes.
 
 What the services write and these read (PRD §5.1):
   - create / revise (Generation Service): `input.origin` in {initial, repair,
@@ -35,20 +35,19 @@ class NotFound(Exception):
     pass
 
 
-def _batch_rows(store: SqlStore, batch_id: str) -> tuple[list[dict], dict[str, list[dict]]]:
-    """The batch's tasks (in id order) and their jobs grouped by task id."""
-    tasks = store.batch_tasks(batch_id)
-    if not tasks:
-        raise NotFound(f"batch {batch_id!r} not found")
+def _jobs_by_task(store: SqlStore, tasks: list[dict]) -> dict[str, list[dict]]:
+    """The tasks' jobs, grouped by task id, in creation order."""
     jobs_by_task: dict[str, list[dict]] = defaultdict(list)
-    rows = store.conn.execute(
-        "SELECT j.* FROM jobs j JOIN tasks t ON t.id = j.task_id"
-        " WHERE t.batch_id = ? ORDER BY j.created_at, j.id",
-        (batch_id,),
-    ).fetchall()
-    for job in map(row_dict, rows):
-        jobs_by_task[job["task_id"]].append(job)
-    return tasks, jobs_by_task
+    ids = [t["id"] for t in tasks]
+    for start in range(0, len(ids), 500):  # keep the IN list a sane size
+        chunk = ids[start:start + 500]
+        rows = store.conn.execute(
+            f"SELECT * FROM jobs WHERE task_id IN ({','.join('?' * len(chunk))}) ORDER BY created_at, id",
+            chunk,
+        ).fetchall()
+        for job in map(row_dict, rows):
+            jobs_by_task[job["task_id"]].append(job)
+    return jobs_by_task
 
 
 def _scored(jobs: list[dict], version: int) -> dict[int, str]:
@@ -70,36 +69,25 @@ def _gate_passed(gate: Any) -> bool:
     return gate is True or (isinstance(gate, dict) and gate.get("passed") is True)
 
 
-def list_batches(store: SqlStore) -> list[dict]:
-    rows = store.conn.execute(
-        """SELECT batch_id, COUNT(*) AS tasks, MIN(created_at) AS created_at,
-                  COUNT(*) FILTER (WHERE status = 'ACCEPTED') AS accepted,
-                  COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected
-             FROM tasks GROUP BY batch_id ORDER BY MIN(created_at) DESC"""
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def get_batch(store: SqlStore, batch_id: str) -> dict:
-    tasks, jobs_by_task = _batch_rows(store, batch_id)
+def list_tasks(store: SqlStore, status: str | None = None, since: str | None = None) -> list[dict]:
+    """Every task (optionally one status, or created at/after `since`), oldest first."""
+    tasks = store.tasks(status=status, since=since)
+    jobs_by_task = _jobs_by_task(store, tasks)
     n_runs = eval_config()["n_runs"]
-    return {
-        "batch_id": batch_id,
-        "counts_by_status": dict(Counter(t["status"] for t in tasks)),
-        "tasks": [
-            {
-                "id": t["id"],
-                "name": t["name"],
-                "status": t["status"],
-                "reason": t["reason"],
-                "current_version": t["current_version"],
-                "stage": t["stage"],
-                "pass_pattern": pass_pattern(jobs_by_task[t["id"]], t["current_version"], n_runs),
-                "cost_usd": _sum_cost(jobs_by_task[t["id"]]),
-            }
-            for t in tasks
-        ],
-    }
+    return [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "status": t["status"],
+            "reason": t["reason"],
+            "current_version": t["current_version"],
+            "stage": t["stage"],
+            "pass_pattern": pass_pattern(jobs_by_task[t["id"]], t["current_version"], n_runs),
+            "cost_usd": _sum_cost(jobs_by_task[t["id"]]),
+            "created_at": t["created_at"],
+        }
+        for t in tasks
+    ]
 
 
 def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> dict:
@@ -149,7 +137,7 @@ def get_task(store: SqlStore, task_id: str) -> dict:
     )
     return {
         "task": {k: task[k] for k in (
-            "id", "batch_id", "name", "slot", "status", "reason", "current_version", "stage",
+            "id", "name", "slot", "status", "reason", "current_version", "stage",
             "accepted_version", "created_at", "updated_at",
         )},
         "versions": [_version_view(task, v, jobs, n_runs) for v in range(1, task["current_version"] + 1)],
@@ -166,10 +154,17 @@ def get_task(store: SqlStore, task_id: str) -> dict:
     }
 
 
-def batch_report(store: SqlStore, batch_id: str) -> dict:
-    """summary.json (docs/PRD.md §4). Counts are over initial candidates (tasks),
-    not versions; `null` means not measured yet, never zero."""
-    tasks, jobs_by_task = _batch_rows(store, batch_id)
+def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None = None) -> dict:
+    """summary.json (docs/PRD.md §4) over the named tasks, or those created at/after
+    `since` (all tasks if neither is given). Counts are over initial candidates
+    (tasks), not versions; `null` means not measured yet, never zero."""
+    tasks = store.tasks(ids=task_ids, since=since)
+    if task_ids and len(tasks) != len(set(task_ids)):
+        missing = sorted(set(task_ids) - {t["id"] for t in tasks})
+        raise NotFound(f"unknown task ids: {missing}")
+    if not tasks:
+        raise NotFound("no tasks match")
+    jobs_by_task = _jobs_by_task(store, tasks)
     all_jobs = [j for t in tasks for j in jobs_by_task[t["id"]]]
     cfg = eval_config()
 
@@ -202,7 +197,7 @@ def batch_report(store: SqlStore, batch_id: str) -> dict:
     hashes = sorted({j["config_hash"] for j in rollouts if j["config_hash"]})
 
     return {
-        "batch_id": batch_id,
+        "task_ids": [t["id"] for t in tasks],
         "candidates": len(tasks),
         "structural_pass": sum(
             any(_gate_passed(((j["result"] or {}).get("gates") or {}).get("structural")) for j in validates(t["id"]))

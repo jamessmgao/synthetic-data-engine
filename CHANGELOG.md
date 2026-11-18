@@ -1,10 +1,34 @@
 # Changelog
 
+## 2026-11-18: one task per request; no batches
+
+**What changed**
+- `POST /v1/batches` and every batch route are gone. `POST /v1/tasks` creates one task from a
+  free-text `prompt` (it seeds the standard authoring prompt), an explicit `spec` (taxonomy,
+  difficulty, design lines), or nothing (the service samples the least-used taxonomy slot across
+  all tasks). An optional `task_id` makes retries safe; reusing it for a different request is 409.
+- `GET /v1/tasks` lists tasks; `GET /v1/report` reports over named task ids or everything since a
+  time. `tasks.batch_id` is dropped (schema init migrates old databases) along with the queue's
+  batch filter, `--batch` flags and the batch store helpers.
+- `scripts/run_tasks.py` is the batch run: post N tasks, wait, report on those ids.
+
+**Why**
+- The system never needed to group work: every service handles one task's jobs. Batches only
+  shaped the API and the report, and pulled sampling, idempotency and status into a concept that
+  had no behaviour of its own. One task per request is simpler, and a batch of 10
+  is just ten requests whose ids the report is given.
+
+**Tradeoffs**
+- Diversity sampling now looks at every task ever created rather than one batch, so it spreads
+  across runs too. A report needs the caller's task ids (or a time window) instead of a batch id.
+- Dropping a column breaks still-running old code: stop every process before starting the new
+  release (no rolling deploy across this change).
+
 ## 2026-11-17: services on queues; Generation Service and Trace Parser own the loop
 
 **What changed**
-- **No central orchestrator; `job_service/` is gone.** The API service only submits a batch
-  (tasks plus one `create` job each) and serves reads. Every other component is a service on its
+- **No central orchestrator; `job_service/` is gone.** The API service only creates tasks
+  (one task plus its `create` job per call) and serves reads. Every other component is a service on its
   own queue: a **create** queue for new tasks, a **revise** queue for repairs and revisions, a
   validate queue, the **run** queue (`sde:rollout`) and an `sde:analyze` queue. Each service settles
   its job and enqueues the next stage's job in the same transaction (`docs/PRD.md` §5).

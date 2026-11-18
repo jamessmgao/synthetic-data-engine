@@ -1,0 +1,1396 @@
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ asciinema rec --stdin /logs/agent/recording.cast
+[?2004l[0;32masciinema: recording asciicast to /logs/agent/recording.cast[0m
+[0;32masciinema: press <ctrl-d> or type "exit" when you're done[0m
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ clear
+[?2004l[H[J[3J[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ ls -la && find pipelinesense -maxdepth 2 -type f -print
+[?2004ltotal 24
+drwxr-xr-x 1 agent agent 4096 Nov 18 01:18 [0m[01;34m.[0m
+drwxr-xr-x 1 root  root  4096 Nov 18 01:23 [01;34m..[0m
+-rw-r--r-- 1 agent agent 1200 Nov 18 01:18 README.md
+drwxr-xr-x 1 agent agent 4096 Nov 18 01:18 [01;34mdata[0m
+drwxr-xr-x 1 agent agent 4096 Nov 18 01:18 [01;34mpipelinesense[0m
+-rw-r--r-- 1 agent agent  135 Nov 18 01:18 pyproject.toml
+pipelinesense/cli.py
+pipelinesense/model.py
+pipelinesense/pipeline.py
+pipelinesense/totals.py
+pipelinesense/aggregate.py
+pipelinesense/archive.py
+pipelinesense/report.py
+pipelinesense/__init__.py
+pipelinesense/exporter.py
+pipelinesense/coverage.py
+pipelinesense/__main__.py
+pipelinesense/timeutil.py
+pipelinesense/alerts.py
+pipelinesense/store.py
+pipelinesense/__pycache__/__main__.cpython-312.pyc
+pipelinesense/__pycache__/aggregate.cpython-312.pyc
+pipelinesense/__pycache__/report.cpython-312.pyc
+pipelinesense/__pycache__/totals.cpython-312.pyc
+pipelinesense/__pycache__/archive.cpython-312.pyc
+pipelinesense/__pycache__/__init__.cpython-312.pyc
+pipelinesense/__pycache__/store.cpython-312.pyc
+pipelinesense/__pycache__/cli.cpython-312.pyc
+pipelinesense/__pycache__/pipeline.cpython-312.pyc
+pipelinesense/__pycache__/timeutil.cpython-312.pyc
+pipelinesense/__pycache__/alerts.cpython-312.pyc
+pipelinesense/__pycache__/exporter.cpython-312.pyc
+pipelinesense/__pycache__/model.cpython-312.pyc
+pipelinesense/__pycache__/coverage.cpython-312.pyc
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ sed -n '1,260p' pipelinesense/*.py
+[?2004l"""Pipelinesense: a small telemetry reading pipeline toolkit."""
+
+__version__ = "0.4.1"
+"""Entry point for python -m pipelinesense."""
+import sys
+
+from .cli import main
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""Fixed-interval bucket aggregation over readings."""
+from dataclasses import dataclass
+
+from . import timeutil
+
+
+@dataclass
+class Bucket:
+    sensor: str
+    start: str
+    count: int
+    minimum: float
+    maximum: float
+    mean: float
+
+
+def aggregate(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    for r in readings:
+        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)
+    readings.sort(key=lambda r: (r.sensor, r.timestamp))
+    grouped = {}
+    for r in readings:
+        grouped.setdefault((r.sensor, r.timestamp), []).append(r.value)
+    buckets = []
+    for (sensor, start), values in grouped.items():
+        buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+                              count=len(values), minimum=min(values),
+                              maximum=max(values),
+                              mean=sum(values) / len(values)))
+    buckets.sort(key=lambda b: (b.sensor, b.start))
+    return buckets
+
+
+def bucket_to_dict(bucket):
+    return {"sensor": bucket.sensor, "start": bucket.start,
+            "count": bucket.count, "min": bucket.minimum,
+            "max": bucket.maximum, "mean": bucket.mean}
+"""Threshold alerts over interval buckets."""
+from . import aggregate as agg
+from . import timeutil
+
+
+def evaluate_alerts(readings, thresholds, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    alerts = []
+    for bucket in agg.aggregate(readings, interval):
+        threshold = thresholds.get(bucket.sensor)
+        if threshold is None or bucket.maximum <= threshold:
+            continue
+        trigger = None
+        for r in readings:
+            if r.sensor != bucket.sensor or r.value <= threshold:
+                continue
+            if timeutil.bucket_start(r.timestamp, seconds).isoformat() != bucket.start:
+                continue
+            if trigger is None or r.timestamp < trigger.timestamp:
+                trigger = r
+        alerts.append({"sensor": bucket.sensor,
+                       "bucket_start": bucket.start,
+                       "threshold": threshold,
+                       "triggered_at": trigger.timestamp.isoformat(),
+                       "value": trigger.value})
+    alerts.sort(key=lambda a: (a["sensor"], a["bucket_start"]))
+    return alerts
+"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+"""Command line interface for the pipelinesense toolkit."""
+import argparse
+import json
+import os
+import sys
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import model
+from . import pipeline as pipeline_mod
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _print_json(doc):
+    print(json.dumps(doc, indent=2))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="pipelinesense",
+        description="Batch telemetry pipeline toolkit for sensor reading files")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("report", help="aggregate report document")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("alerts", help="threshold alerts")
+    p.add_argument("--input", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("totals", help="daily totals with cumulative sums")
+    p.add_argument("--input", required=True)
+
+    p = sub.add_parser("coverage", help="bucket coverage report")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("export", help="CSV export of the raw readings")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("snapshot", help="archive raw and aggregated data")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("verify", help="check an archive against its source")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("pipeline", help="run every stage over one input")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "report":
+            readings = store.load_readings(args.input)
+            _print_json(report.build_report(readings, args.interval))
+            return 0
+        if args.command == "alerts":
+            readings = store.load_readings(args.input)
+            thresholds = store.load_thresholds(args.thresholds)
+            _print_json(alerts_mod.evaluate_alerts(readings, thresholds, args.interval))
+            return 0
+        if args.command == "totals":
+            _print_json(totals_mod.daily_totals(store.load_readings(args.input)))
+            return 0
+        if args.command == "coverage":
+            _print_json(coverage.coverage_gaps(store.load_readings(args.input),
+                                               args.interval))
+            return 0
+        if args.command == "export":
+            exporter.export_csv(store.load_readings(args.input), args.out)
+            return 0
+        if args.command == "snapshot":
+            archive.snapshot(store.load_readings(args.input), args.dir,
+                             os.path.basename(args.input), args.interval)
+            return 0
+        if args.command == "verify":
+            return archive.verify(args.input, args.dir, args.interval)
+        if args.command == "pipeline":
+            result = pipeline_mod.run_pipeline(args.input, args.dir,
+                                               args.thresholds, args.interval)
+            _print_json(result)
+            return 0
+    except (OSError, model.ReadingError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    return 2
+"""Bucket coverage report."""
+from datetime import datetime, timedelta
+
+from . import aggregate as agg
+from . import timeutil
+
+
+def coverage_gaps(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    grouped = {}
+    for bucket in agg.aggregate(readings, interval):
+        grouped.setdefault(bucket.sensor, []).append(bucket)
+    reports = []
+    for sensor in sorted(grouped):
+        buckets = grouped[sensor]
+        first = datetime.fromisoformat(buckets[0].start)
+        last = datetime.fromisoformat(buckets[-1].start)
+        present = {b.start for b in buckets}
+        missing = []
+        cursor = first
+        while cursor <= last:
+            if cursor.isoformat() not in present:
+                missing.append(cursor.isoformat())
+            cursor = cursor + timedelta(seconds=seconds)
+        reports.append({"sensor": sensor,
+                        "first": first.isoformat(),
+                        "last": last.isoformat(),
+                        "expected": len(present) + len(missing),
+                        "present": len(present),
+                        "missing": missing})
+    return reports
+"""CSV export of raw readings."""
+
+
+def export_csv(readings, path):
+    lines = ["sensor,timestamp,value"]
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '\n--- day1.json ---\n'; cat data/day1.json; printf '\n--- thresholds ---\n'; cat data/thresholds.json
+[?2004l
+--- day1.json ---
+[
+  {"sensor": "temp-1", "timestamp": "2024-05-01T00:04:11", "value": 12.4},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T00:07:52", "value": 48.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T00:12:03", "value": 9.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T01:22:40", "value": 11.9},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T01:31:19", "value": 47.5},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T02:05:44", "value": 10.2},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T02:47:02", "value": 12.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T03:58:27", "value": 13.1},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T04:06:33", "value": 46.8},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T04:44:58", "value": 10.6},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T05:15:09", "value": 33.6},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T05:41:37", "value": 31.5},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T06:02:14", "value": 49.1},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T06:29:48", "value": 14.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T06:55:21", "value": 32.7},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T07:38:55", "value": 15.4},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T08:11:26", "value": 45.9},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T08:47:39", "value": 11.3},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T09:52:03", "value": 34.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T10:26:17", "value": 12.1},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T11:04:45", "value": 44.7},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T12:18:29", "value": 16.3},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T13:39:02", "value": 33.8},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T14:07:31", "value": 17.0},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T15:22:48", "value": 43.6},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T16:14:12", "value": 34.5},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T17:45:59", "value": 18.2},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T18:28:06", "value": 14.7},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T19:53:40", "value": 42.9},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T20:36:15", "value": 15.8},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T21:59:28", "value": 13.9},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T22:42:07", "value": 44.1},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T23:19:54", "value": 14.5},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T23:51:36", "value": 12.6},
+  {"sensor": "temp-1", "timestamp": "2024-05-01T05:09:47", "value": 32.9},
+  {"sensor": "temp-2", "timestamp": "2024-05-01T05:32:12", "value": 30.8},
+  {"sensor": "hum-1", "timestamp": "2024-05-01T06:47:26", "value": 49.9},
+  {"sensor": "temp-2", "timestamp": "2024-04-30T18:26:51", "value": 8.9}
+]
+
+--- thresholds ---
+{
+  "temp-1": 30.0,
+  "temp-2": 30.0,
+  "hum-1": 50.0
+}
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ find . -maxdepth 3 -type f \( -name '*test*' -o -name 'README*' \) -print
+[?2004l./README.md
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ cat pipelinesense/model.py; printf '\n--- timeutil ---\n'; cat pipelinesense/timeutil.py; printf '\n--- aggregate ---\n'; cat pipelinesense/aggregate.py
+[?2004l"""Reading record model."""
+from dataclasses import dataclass
+from datetime import datetime
+
+
+class ReadingError(ValueError):
+    pass
+
+
+@dataclass
+class Reading:
+    sensor: str
+    timestamp: datetime
+    value: float
+
+
+def from_dict(payload):
+    if not isinstance(payload, dict):
+        raise ReadingError("reading must be a JSON object")
+    try:
+        return Reading(sensor=str(payload["sensor"]),
+                       timestamp=datetime.fromisoformat(str(payload["timestamp"])),
+                       value=float(payload["value"]))
+    except KeyError as exc:
+        raise ReadingError("missing field: %s" % exc) from None
+
+
+def to_dict(reading):
+    return {"sensor": reading.sensor,
+            "timestamp": reading.timestamp.isoformat(),
+            "value": reading.value}
+
+--- timeutil ---
+"""Interval parsing and epoch-aligned bucketing helpers."""
+import re
+from datetime import datetime, timedelta
+
+_EPOCH = datetime(1970, 1, 1)
+_UNITS = {"m": 60, "h": 3600, "d": 86400}
+_PATTERN = re.compile(r"^([1-9][0-9]*)([mhd])$")
+
+
+def interval_seconds(interval):
+    match = _PATTERN.match(str(interval))
+    if not match:
+        raise ValueError("invalid interval: %r" % (interval,))
+    return int(match.group(1)) * _UNITS[match.group(2)]
+
+
+def bucket_start(ts, seconds):
+    delta = ts - _EPOCH
+    offset = (delta // timedelta(seconds=seconds)) * seconds
+    return _EPOCH + timedelta(seconds=offset)
+
+--- aggregate ---
+"""Fixed-interval bucket aggregation over readings."""
+from dataclasses import dataclass
+
+from . import timeutil
+
+
+@dataclass
+class Bucket:
+    sensor: str
+    start: str
+    count: int
+    minimum: float
+    maximum: float
+    mean: float
+
+
+def aggregate(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    for r in readings:
+        r.timestamp = timeutil.bucket_start(r.timestamp, seconds)
+    readings.sort(key=lambda r: (r.sensor, r.timestamp))
+    grouped = {}
+    for r in readings:
+        grouped.setdefault((r.sensor, r.timestamp), []).append(r.value)
+    buckets = []
+    for (sensor, start), values in grouped.items():
+        buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+                              count=len(values), minimum=min(values),
+                              maximum=max(values),
+                              mean=sum(values) / len(values)))
+    buckets.sort(key=lambda b: (b.sensor, b.start))
+    return buckets
+
+
+def bucket_to_dict(bucket):
+    return {"sensor": bucket.sensor, "start": bucket.start,
+            "count": bucket.count, "min": bucket.minimum,
+            "max": bucket.maximum, "mean": bucket.mean}
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '%s\n' '--- alerts ---'; cat pipelinesense/alerts.py; printf '%s\n' '--- archive ---'; cat pipelinesense/archive.py; printf '%s\n' '--- pipeline ---'; cat pipelinesense/pipeline.py
+[?2004l--- alerts ---
+"""Threshold alerts over interval buckets."""
+from . import aggregate as agg
+from . import timeutil
+
+
+def evaluate_alerts(readings, thresholds, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    alerts = []
+    for bucket in agg.aggregate(readings, interval):
+        threshold = thresholds.get(bucket.sensor)
+        if threshold is None or bucket.maximum <= threshold:
+            continue
+        trigger = None
+        for r in readings:
+            if r.sensor != bucket.sensor or r.value <= threshold:
+                continue
+            if timeutil.bucket_start(r.timestamp, seconds).isoformat() != bucket.start:
+                continue
+            if trigger is None or r.timestamp < trigger.timestamp:
+                trigger = r
+        alerts.append({"sensor": bucket.sensor,
+                       "bucket_start": bucket.start,
+                       "threshold": threshold,
+                       "triggered_at": trigger.timestamp.isoformat(),
+                       "value": trigger.value})
+    alerts.sort(key=lambda a: (a["sensor"], a["bucket_start"]))
+    return alerts
+--- archive ---
+"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+--- pipeline ---
+"""End-to-end pipeline over a single input file."""
+import json
+import os
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _write_json(path, doc):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+
+
+def run_pipeline(input_path, out_dir, thresholds_path, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    readings = store.load_readings(input_path)
+    thresholds = store.load_thresholds(thresholds_path) if thresholds_path else {}
+
+    _write_json(os.path.join(out_dir, "report.json"),
+                report.build_report(readings, interval))
+    _write_json(os.path.join(out_dir, "alerts.json"),
+                alerts_mod.evaluate_alerts(readings, thresholds, interval))
+    _write_json(os.path.join(out_dir, "totals.json"),
+                totals_mod.daily_totals(readings))
+    _write_json(os.path.join(out_dir, "coverage.json"),
+                coverage.coverage_gaps(readings, interval))
+    exporter.export_csv(readings, os.path.join(out_dir, "readings.csv"))
+    archive.snapshot(readings, out_dir, os.path.basename(input_path), interval)
+    return {"readings": len(readings)}
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '%s\n' '--- store ---'; cat pipelinesense/store.py; printf '%s\n' '--- exporter ---'; cat pipelinesense/exporter.py; printf '%s\n' '--- cli ---'; cat pipelinesense/cli.py
+[?2004l--- store ---
+"""Reading and threshold file access."""
+import json
+
+from . import model
+
+
+def load_readings(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, list):
+        raise model.ReadingError("input file must contain a JSON list of readings")
+    return [model.from_dict(item) for item in payload]
+
+
+def dump_readings(readings, path):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump([model.to_dict(r) for r in readings], fh, indent=2)
+        fh.write("\n")
+
+
+def load_thresholds(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise model.ReadingError("thresholds file must contain a JSON object")
+    return {str(key): float(value) for key, value in payload.items()}
+--- exporter ---
+"""CSV export of raw readings."""
+
+
+def export_csv(readings, path):
+    lines = ["sensor,timestamp,value"]
+    for r in readings:
+        lines.append("%s,%s,%s" % (r.sensor, r.timestamp.isoformat(),
+                                    format_value(r.value)))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def format_value(value):
+    return str(value)
+--- cli ---
+"""Command line interface for the pipelinesense toolkit."""
+import argparse
+import json
+import os
+import sys
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import model
+from . import pipeline as pipeline_mod
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _print_json(doc):
+    print(json.dumps(doc, indent=2))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="pipelinesense",
+        description="Batch telemetry pipeline toolkit for sensor reading files")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("report", help="aggregate report document")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("alerts", help="threshold alerts")
+    p.add_argument("--input", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("totals", help="daily totals with cumulative sums")
+    p.add_argument("--input", required=True)
+
+    p = sub.add_parser("coverage", help="bucket coverage report")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("export", help="CSV export of the raw readings")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("snapshot", help="archive raw and aggregated data")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("verify", help="check an archive against its source")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("pipeline", help="run every stage over one input")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "report":
+            readings = store.load_readings(args.input)
+            _print_json(report.build_report(readings, args.interval))
+            return 0
+        if args.command == "alerts":
+            readings = store.load_readings(args.input)
+            thresholds = store.load_thresholds(args.thresholds)
+            _print_json(alerts_mod.evaluate_alerts(readings, thresholds, args.interval))
+            return 0
+        if args.command == "totals":
+            _print_json(totals_mod.daily_totals(store.load_readings(args.input)))
+            return 0
+        if args.command == "coverage":
+            _print_json(coverage.coverage_gaps(store.load_readings(args.input),
+                                               args.interval))
+            return 0
+        if args.command == "export":
+            exporter.export_csv(store.load_readings(args.input), args.out)
+            return 0
+        if args.command == "snapshot":
+            archive.snapshot(store.load_readings(args.input), args.dir,
+                             os.path.basename(args.input), args.interval)
+            return 0
+        if args.command == "verify":
+            return archive.verify(args.input, args.dir, args.interval)
+        if args.command == "pipeline":
+            result = pipeline_mod.run_pipeline(args.input, args.dir,
+                                               args.thresholds, args.interval)
+            _print_json(result)
+            return 0
+    except (OSError, model.ReadingError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    return 2
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '%s\n' '--- report ---'; cat pipelinesense/report.py; printf '%s\n' '--- totals ---'; cat pipelinesense/totals.py; printf '%s\n' '--- coverage ---'; cat pipelinesense/coverage.py; printf '%s\n' '--- README ---'; cat README.md; printf '%s\n' '--- pyproject ---'; cat pyproject.toml
+[?2004l--- report ---
+"""Aggregated report document."""
+from . import aggregate as agg
+
+
+def build_report(readings, interval="1h"):
+    daily = agg.aggregate(readings, "1d")
+    hourly = agg.aggregate(readings, interval)
+    return {
+        "summary": [agg.bucket_to_dict(b) for b in daily],
+        "hourly": [agg.bucket_to_dict(b) for b in hourly],
+    }
+--- totals ---
+"""Per-sensor daily totals with a running cumulative sum."""
+from . import aggregate as agg
+
+
+def daily_totals(readings):
+    agg.aggregate(readings, "1d")
+    rows = []
+    index = {}
+    for r in readings:
+        day = r.timestamp.date().isoformat()
+        key = (r.sensor, day)
+        if key not in index:
+            row = {"sensor": r.sensor, "day": day, "samples": 0,
+                   "daily_sum": 0.0, "cumulative": 0.0}
+            index[key] = row
+            rows.append(row)
+        index[key]["samples"] += 1
+        index[key]["daily_sum"] += r.value
+    cumulative = {}
+    for row in rows:
+        cumulative[row["sensor"]] = cumulative.get(row["sensor"], 0.0) + row["daily_sum"]
+        row["cumulative"] = cumulative[row["sensor"]]
+    return rows
+--- coverage ---
+"""Bucket coverage report."""
+from datetime import datetime, timedelta
+
+from . import aggregate as agg
+from . import timeutil
+
+
+def coverage_gaps(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    grouped = {}
+    for bucket in agg.aggregate(readings, interval):
+        grouped.setdefault(bucket.sensor, []).append(bucket)
+    reports = []
+    for sensor in sorted(grouped):
+        buckets = grouped[sensor]
+        first = datetime.fromisoformat(buckets[0].start)
+        last = datetime.fromisoformat(buckets[-1].start)
+        present = {b.start for b in buckets}
+        missing = []
+        cursor = first
+        while cursor <= last:
+            if cursor.isoformat() not in present:
+                missing.append(cursor.isoformat())
+            cursor = cursor + timedelta(seconds=seconds)
+        reports.append({"sensor": sensor,
+                        "first": first.isoformat(),
+                        "last": last.isoformat(),
+                        "expected": len(present) + len(missing),
+                        "present": len(present),
+                        "missing": missing})
+    return reports
+--- README ---
+# Pipelinesense
+
+A small, dependency-free toolkit for batch telemetry pipelines. It reads JSON
+files of sensor readings and produces aggregate reports, threshold alerts,
+daily totals, coverage reports, CSV exports and archive snapshots.
+
+## Usage
+
+Run from the repository root:
+
+    python3 -m pipelinesense report --input data/day1.json
+    python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json
+    python3 -m pipelinesense totals --input data/day1.json
+    python3 -m pipelinesense coverage --input data/day1.json --interval 15m
+    python3 -m pipelinesense export --input data/day1.json --out readings.csv
+    python3 -m pipelinesense snapshot --input data/day1.json --dir /tmp/archive
+    python3 -m pipelinesense verify --input data/day1.json --dir /tmp/archive
+    python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json
+
+## Input format
+
+A reading file is a JSON list of objects:
+
+    {"sensor": "temp-1", "timestamp": "2024-05-01T09:52:03", "value": 34.2}
+
+Readings are stored in arrival order: sensors are interleaved and files may
+end with late-arriving samples, so never assume a reading file is sorted.
+--- pyproject ---
+[project]
+name = "pipelinesense"
+version = "0.4.1"
+description = "Small telemetry reading pipeline toolkit"
+requires-python = ">=3.10"
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ sed -n '1,220p' pipelinesense/archive.py
+[?2004l"""Archive snapshots and consistency verification."""
+import json
+import os
+import sys
+
+from . import aggregate as agg
+from . import model
+from . import store
+
+
+def snapshot(readings, out_dir, source_name, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    store.dump_readings(readings, os.path.join(out_dir, "raw.json"))
+    buckets = agg.aggregate(readings, interval)
+    with open(os.path.join(out_dir, "aggregates.json"), "w", encoding="utf-8") as fh:
+        json.dump([agg.bucket_to_dict(b) for b in buckets], fh, indent=2)
+        fh.write("\n")
+    meta = {"source": source_name, "interval": interval,
+            "readings": len(readings)}
+    with open(os.path.join(out_dir, "meta.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+        fh.write("\n")
+
+
+def verify(input_path, out_dir, interval="1h"):
+    problems = []
+    fresh = store.load_readings(input_path)
+    try:
+        archived = store.load_readings(os.path.join(out_dir, "raw.json"))
+    except OSError:
+        print("error: raw.json missing from archive", file=sys.stderr)
+        return 1
+    if [model.to_dict(r) for r in archived] != [model.to_dict(r) for r in fresh]:
+        problems.append("raw section does not match source")
+    with open(os.path.join(out_dir, "aggregates.json"), "r", encoding="utf-8") as fh:
+        archived_buckets = json.load(fh)
+    expected_buckets = [agg.bucket_to_dict(b) for b in agg.aggregate(fresh, interval)]
+    if archived_buckets != expected_buckets:
+        problems.append("aggregate section does not match recomputation")
+    if problems:
+        for problem in problems:
+            print("error: %s" % problem, file=sys.stderr)
+        return 1
+    print("OK: archive matches source")
+    return 0
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ sed -n '1,240p' pipelinesense/pipeline.py
+[?2004l"""End-to-end pipeline over a single input file."""
+import json
+import os
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _write_json(path, doc):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+        fh.write("\n")
+
+
+def run_pipeline(input_path, out_dir, thresholds_path, interval="1h"):
+    os.makedirs(out_dir, exist_ok=True)
+    readings = store.load_readings(input_path)
+    thresholds = store.load_thresholds(thresholds_path) if thresholds_path else {}
+
+    _write_json(os.path.join(out_dir, "report.json"),
+                report.build_report(readings, interval))
+    _write_json(os.path.join(out_dir, "alerts.json"),
+                alerts_mod.evaluate_alerts(readings, thresholds, interval))
+    _write_json(os.path.join(out_dir, "totals.json"),
+                totals_mod.daily_totals(readings))
+    _write_json(os.path.join(out_dir, "coverage.json"),
+                coverage.coverage_gaps(readings, interval))
+    exporter.export_csv(readings, os.path.join(out_dir, "readings.csv"))
+    archive.snapshot(readings, out_dir, os.path.basename(input_path), interval)
+    return {"readings": len(readings)}
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ sed -n '1,220p' pipelinesense/store.py; printf '\n--- exporter ---\n'; sed -n '1,160p' pipelinesense/exporter.py
+[?2004l"""Reading and threshold file access."""
+import json
+
+from . import model
+
+
+def load_readings(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, list):
+        raise model.ReadingError("input file must contain a JSON list of readings")
+    return [model.from_dict(item) for item in payload]
+
+
+def dump_readings(readings, path):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump([model.to_dict(r) for r in readings], fh, indent=2)
+        fh.write("\n")
+
+
+def load_thresholds(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if not isinstance(payload, dict):
+        raise model.ReadingError("thresholds file must contain a JSON object")
+    return {str(key): float(value) for key, value in payload.items()}
+
+--- exporter ---
+"""CSV export of raw readings."""
+
+
+def export_csv(readings, path):
+    lines = ["sensor,timestamp,value"]
+    for r in readings:
+        lines.append("%s,%s,%s" % (r.sensor, r.timestamp.isoformat(),
+                                    format_value(r.value)))
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def format_value(value):
+    return str(value)
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ sed -n '1,260p' pipelinesense/cli.py
+[?2004l"""Command line interface for the pipelinesense toolkit."""
+import argparse
+import json
+import os
+import sys
+
+from . import alerts as alerts_mod
+from . import archive
+from . import coverage
+from . import exporter
+from . import model
+from . import pipeline as pipeline_mod
+from . import report
+from . import store
+from . import totals as totals_mod
+
+
+def _print_json(doc):
+    print(json.dumps(doc, indent=2))
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="pipelinesense",
+        description="Batch telemetry pipeline toolkit for sensor reading files")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("report", help="aggregate report document")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("alerts", help="threshold alerts")
+    p.add_argument("--input", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("totals", help="daily totals with cumulative sums")
+    p.add_argument("--input", required=True)
+
+    p = sub.add_parser("coverage", help="bucket coverage report")
+    p.add_argument("--input", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("export", help="CSV export of the raw readings")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+
+    p = sub.add_parser("snapshot", help="archive raw and aggregated data")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("verify", help="check an archive against its source")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--interval", default="1h")
+
+    p = sub.add_parser("pipeline", help="run every stage over one input")
+    p.add_argument("--input", required=True)
+    p.add_argument("--dir", required=True)
+    p.add_argument("--thresholds", default="data/thresholds.json")
+    p.add_argument("--interval", default="1h")
+
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "report":
+            readings = store.load_readings(args.input)
+            _print_json(report.build_report(readings, args.interval))
+            return 0
+        if args.command == "alerts":
+            readings = store.load_readings(args.input)
+            thresholds = store.load_thresholds(args.thresholds)
+            _print_json(alerts_mod.evaluate_alerts(readings, thresholds, args.interval))
+            return 0
+        if args.command == "totals":
+            _print_json(totals_mod.daily_totals(store.load_readings(args.input)))
+            return 0
+        if args.command == "coverage":
+            _print_json(coverage.coverage_gaps(store.load_readings(args.input),
+                                               args.interval))
+            return 0
+        if args.command == "export":
+            exporter.export_csv(store.load_readings(args.input), args.out)
+            return 0
+        if args.command == "snapshot":
+            archive.snapshot(store.load_readings(args.input), args.dir,
+                             os.path.basename(args.input), args.interval)
+            return 0
+        if args.command == "verify":
+            return archive.verify(args.input, args.dir, args.interval)
+        if args.command == "pipeline":
+            result = pipeline_mod.run_pipeline(args.input, args.dir,
+                                               args.thresholds, args.interval)
+            _print_json(result)
+            return 0
+    except (OSError, model.ReadingError, ValueError) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
+    return 2
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> from pathlib import Path
+[?2004l[?2004h> path = Path('pipelinesense/aggregate.py')
+[?2004l[?2004h> text = path.read_text()
+[?2004l[?2004h> old = '''def aggregate(readings, interval="1h"):
+[?2004l[?2004h>     seconds = timeutil.interval_seconds(interval)
+[?2004l[?2004h>     for r in readings:
+[?2004l[?2004h>         r.timestamp = timeutil.bucket_start(r.timestamp, seconds)
+[?2004l[?2004h>     readings.sort(key=lambda r: (r.sensor, r.timestamp))
+[?2004l[?2004h>     grouped = {}
+[?2004l[?2004h>     for r in readings:
+[?2004l[?2004h>         grouped.setdefault((r.sensor, r.timestamp), []).append(r.value)
+[?2004l[?2004h>     buckets = []
+[?2004l[?2004h>     for (sensor, start), values in grouped.items():
+[?2004l[?2004h>         buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+[?2004l[?2004h>                               count=len(values), minimum=min(values),
+[?2004l[?2004h>                               maximum=max(values),
+[?2004l[?2004h>                               mean=sum(values) / len(values)))
+[?2004l[?2004h>     buckets.sort(key=lambda b: (b.sensor, b.start))
+[?2004l[?2004h>     return buckets
+[?2004l[?2004h> '''
+[?2004l[?2004h> new = '''def aggregate(readings, interval="1h"):
+[?2004l[?2004h>     seconds = timeutil.interval_seconds(interval)
+[?2004l[?2004h>     grouped = {}
+[?2004l[?2004h>     for r in readings:
+[?2004l[?2004h>         start = timeutil.bucket_start(r.timestamp, seconds)
+[?2004l[?2004h>         grouped.setdefault((r.sensor, start), []).append(r.value)
+[?2004l[?2004h>     buckets = []
+[?2004l[?2004h>     for (sensor, start), values in grouped.items():
+[?2004l[?2004h>         buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+[?2004l[?2004h>                               count=len(values), minimum=min(values),
+[?2004l[?2004h>                               maximum=max(values),
+[?2004l[?2004h>                               mean=sum(values) / len(values)))
+[?2004l[?2004h>     buckets.sort(key=lambda b: (b.sensor, b.start))
+[?2004l[?2004h>     return buckets
+[?2004l[?2004h> '''
+[?2004l[?2004h> if old not in text:
+[?2004l[?2004h>     raise SystemExit('aggregate source did not match expected text')
+[?2004l[?2004h> path.write_text(text.replace(old, new))
+[?2004l[?2004h> 
+[?2004l[?2004h> path = Path('pipelinesense/totals.py')
+[?2004l[?2004h> text = path.read_text()
+[?2004l[?2004h> start = text.index('def daily_totals')
+[?2004l[?2004h> new_function = '''def daily_totals(readings):
+[?2004l[?2004h>     grouped = {}
+[?2004l[?2004h>     for r in readings:
+[?2004l[?2004h>         day = r.timestamp.date().isoformat()
+[?2004l[?2004h>         grouped.setdefault((r.sensor, day), []).append(r.value)
+[?2004l[?2004h> 
+[?2004l[?2004h>     rows = []
+[?2004l[?2004h>     cumulative = {}
+[?2004l[?2004h>     for sensor, day in sorted(grouped):
+[?2004l[?2004h>         values = grouped[(sensor, day)]
+[?2004l[?2004h>         daily_sum = sum(values)
+[?2004l[?2004h>         cumulative[sensor] = cumulative.get(sensor, 0.0) + daily_sum
+[?2004l[?2004h>         rows.append({"sensor": sensor, "day": day,
+[?2004l[?2004h>                      "samples": len(values), "daily_sum": daily_sum,
+[?2004l[?2004h>                      "cumulative": cumulative[sensor]})
+[?2004l[?2004h>     return rows
+[?2004l[?2004h> '''
+[?2004l[?2004h> path.write_text(text[:start] + new_function)
+[?2004l[?2004h> PY
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ 
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ git diff -- pipelinesense/aggregate.py pipelinesense/totals.py 2>/dev/null || true
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m py_compile pipelinesense/*.py
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ rm -rf /tmp/ps-pipeline /tmp/ps-standalone && mkdir -p /tmp/ps-standalone && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/ps-pipeline --thresholds data/thresholds.json && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/ps-pipeline
+[?2004l{
+  "readings": 38
+}
+OK: archive matches source
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m pipelinesense report --input data/day1.json > /tmp/ps-standalone/report.json && python3 -m pipelinesense alerts --input data/day1.json --thresholds data/thresholds.json > /tmp/ps-standalone/alerts.json && python3 -m pipelinesense totals --input data/day1.json > /tmp/ps-standalone/totals.json && python3 -m pipelinesense coverage --input data/day1.json > /tmp/ps-standalone/coverage.json && python3 -m pipelinesense export --input data/day1.json --out /tmp/ps-standalone/readings.csv && python3 -m pipelinesense snapshot --input data/day1.json --dir /tmp/ps-standalone
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ for f in report.json alerts.json totals.json coverage.json readings.csv raw.json aggregates.json meta.json; do if cmp -s "/tmp/ps-pipeline/$f" "/tmp/ps-standalone/$f"; then echo "same: $f"; else echo "DIFF: $f"; fi; done; python3 -m pipelinesense verify --input data/day1.json --dir /tmp/ps-standalone
+[?2004lsame: report.json
+same: alerts.json
+same: totals.json
+same: coverage.json
+same: readings.csv
+same: raw.json
+same: aggregates.json
+same: meta.json
+OK: archive matches source
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> import json
+[?2004l[?2004h> for path in ['/tmp/ps-pipeline/alerts.json', '/tmp/ps-pipeline/totals.json']:
+[?2004l[?2004h>     doc = json.load(open(path))
+[?2004l[?2004h>     print('\n---', path, '---')
+[?2004l[?2004h>     print(json.dumps(doc[:4] if isinstance(doc, list) else doc, indent=2))
+[?2004l[?2004h> PY
+[?2004l
+--- /tmp/ps-pipeline/alerts.json ---
+[
+  {
+    "sensor": "temp-1",
+    "bucket_start": "2024-05-01T05:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T05:09:47",
+    "value": 32.9
+  },
+  {
+    "sensor": "temp-1",
+    "bucket_start": "2024-05-01T09:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T09:52:03",
+    "value": 34.2
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T05:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T05:32:12",
+    "value": 30.8
+  },
+  {
+    "sensor": "temp-2",
+    "bucket_start": "2024-05-01T06:00:00",
+    "threshold": 30.0,
+    "triggered_at": "2024-05-01T06:55:21",
+    "value": 32.7
+  }
+]
+
+--- /tmp/ps-pipeline/totals.json ---
+[
+  {
+    "sensor": "hum-1",
+    "day": "2024-05-01",
+    "samples": 10,
+    "daily_sum": 462.7,
+    "cumulative": 462.7
+  },
+  {
+    "sensor": "temp-1",
+    "day": "2024-05-01",
+    "samples": 14,
+    "daily_sum": 262.3,
+    "cumulative": 262.3
+  },
+  {
+    "sensor": "temp-2",
+    "day": "2024-04-30",
+    "samples": 1,
+    "daily_sum": 8.9,
+    "cumulative": 8.9
+  },
+  {
+    "sensor": "temp-2",
+    "day": "2024-05-01",
+    "samples": 13,
+    "daily_sum": 258.5,
+    "cumulative": 267.4
+  }
+]
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '[]' > /tmp/ps-empty.json && rm -rf /tmp/ps-empty-pipeline /tmp/ps-empty-standalone && mkdir /tmp/ps-empty-standalone && python3 -m pipelinesense pipeline --input /tmp/ps-empty.json --dir /tmp/ps-empty-pipeline --thresholds data/thresholds.json && python3 -m pipelinesense report --input /tmp/ps-empty.json > /tmp/ps-empty-standalone/report.json && python3 -m pipelinesense alerts --input /tmp/ps-empty.json > /tmp/ps-empty-standalone/alerts.json && python3 -m pipelinesense totals --input /tmp/ps-empty.json > /tmp/ps-empty-standalone/totals.json && python3 -m pipelinesense coverage --input /tmp/ps-empty.json > /tmp/ps-empty-standalone/coverage.json && python3 -m pipelinesense export --input /tmp/ps-empty.json --out /tmp/ps-empty-standalone/readings.csv && python3 -m pipelinesense snapshot --input /tmp/ps-empty.json --dir /tmp/ps-empty-standalone && for f in report.json alerts.json totals.json coverage.json readings.csv raw.json aggregates.json meta.json; do cmp -s "/tmp/ps-empty-pipeline/$f" "/tmp/ps-empty-standalone/$f" || { echo "DIFF: $f"; exit 1; }; done && echo 'empty parity OK'
+[?2004l{
+  "readings": 0
+}
+empty parity OK
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ cat > /tmp/ps-unsorted.json <<'JSON'
+[?2004l[?2004h> [
+[?2004l[?2004h>   {"sensor": "b", "timestamp": "2024-05-02T00:10:00", "value": 2.0},
+[?2004l[?2004h>   {"sensor": "a", "timestamp": "2024-05-01T01:10:00", "value": 1.5},
+[?2004l[?2004h>   {"sensor": "b", "timestamp": "2024-05-01T23:50:00", "value": 3.0},
+[?2004l[?2004h>   {"sensor": "a", "timestamp": "2024-05-02T00:00:00", "value": 4.0}
+[?2004l[?2004h> ]
+[?2004l[?2004h> JSON
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m pipelinesense totals --input /tmp/ps-unsorted.json
+[?2004l[
+  {
+    "sensor": "a",
+    "day": "2024-05-01",
+    "samples": 1,
+    "daily_sum": 1.5,
+    "cumulative": 1.5
+  },
+  {
+    "sensor": "a",
+    "day": "2024-05-02",
+    "samples": 1,
+    "daily_sum": 4.0,
+    "cumulative": 5.5
+  },
+  {
+    "sensor": "b",
+    "day": "2024-05-01",
+    "samples": 1,
+    "daily_sum": 3.0,
+    "cumulative": 3.0
+  },
+  {
+    "sensor": "b",
+    "day": "2024-05-02",
+    "samples": 1,
+    "daily_sum": 2.0,
+    "cumulative": 5.0
+  }
+]
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> from pipelinesense import store, report, alerts, totals, coverage, archive
+[?2004l[?2004h> p = '/tmp/ps-unsorted.json'
+[?2004l[?2004h> readings = store.load_readings(p)
+[?2004l[?2004h> original = [(r.sensor, r.timestamp.isoformat(), r.value) for r in readings]
+[?2004l[?2004h> report.build_report(readings)
+[?2004l[?2004h> alerts.evaluate_alerts(readings, {}, '15m')
+[?2004l[?2004h> totals.daily_totals(readings)
+[?2004l[?2004h> coverage.coverage_gaps(readings, '15m')
+[?2004l[?2004h> assert [(r.sensor, r.timestamp.isoformat(), r.value) for r in readings] == original
+[?2004l[?2004h> assert list(readings) == readings
+[?2004l[?2004h> print('analysis does not mutate reading list or objects')
+[?2004l[?2004h> PY
+[?2004lanalysis does not mutate reading list or objects
+python3 -m pipelinesense totals --input /tmp/does-not-exist.json >/tmp/invalid.out 2>/tmp/invalid.err; rc=$?; printf 'exit=%s stderr=' "$rc"; cat /tmp/invalid.err
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m pipelinesense totals --input /tmp/does-not-exist.json >/tmp/invalid.out 2>/tmp/invalid.err; rc=$?; printf 'exit=%s stderr=' "$rc"; cat /tmp/invalid.err
+[?2004lexit=2 stderr=error: [Errno 2] No such file or directory: '/tmp/does-not-exist.json'
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ printf '%s\n' '--- aggregate.py ---'; cat pipelinesense/aggregate.py; printf '%s\n' '--- totals.py ---'; cat pipelinesense/totals.py
+[?2004l--- aggregate.py ---
+"""Fixed-interval bucket aggregation over readings."""
+from dataclasses import dataclass
+
+from . import timeutil
+
+
+@dataclass
+class Bucket:
+    sensor: str
+    start: str
+    count: int
+    minimum: float
+    maximum: float
+    mean: float
+
+
+def aggregate(readings, interval="1h"):
+    seconds = timeutil.interval_seconds(interval)
+    grouped = {}
+    for r in readings:
+        start = timeutil.bucket_start(r.timestamp, seconds)
+        grouped.setdefault((r.sensor, start), []).append(r.value)
+    buckets = []
+    for (sensor, start), values in grouped.items():
+        buckets.append(Bucket(sensor=sensor, start=start.isoformat(),
+                              count=len(values), minimum=min(values),
+                              maximum=max(values),
+                              mean=sum(values) / len(values)))
+    buckets.sort(key=lambda b: (b.sensor, b.start))
+    return buckets
+
+
+def bucket_to_dict(bucket):
+    return {"sensor": bucket.sensor, "start": bucket.start,
+            "count": bucket.count, "min": bucket.minimum,
+            "max": bucket.maximum, "mean": bucket.mean}
+--- totals.py ---
+"""Per-sensor daily totals with a running cumulative sum."""
+from . import aggregate as agg
+
+
+def daily_totals(readings):
+    grouped = {}
+    for r in readings:
+        day = r.timestamp.date().isoformat()
+        grouped.setdefault((r.sensor, day), []).append(r.value)
+
+    rows = []
+    cumulative = {}
+    for sensor, day in sorted(grouped):
+        values = grouped[(sensor, day)]
+        daily_sum = sum(values)
+        cumulative[sensor] = cumulative.get(sensor, 0.0) + daily_sum
+        rows.append({"sensor": sensor, "day": day,
+                     "samples": len(values), "daily_sum": daily_sum,
+                     "cumulative": cumulative[sensor]})
+    return rows
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> from pathlib import Path
+[?2004l[?2004h> path = Path('pipelinesense/totals.py')
+[?2004l[?2004h> text = path.read_text()
+[?2004l[?2004h> text = text.replace('from . import aggregate as agg\n\n\n', '')
+[?2004l[?2004h> path.write_text(text)
+[?2004l[?2004h> PY
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m py_compile pipelinesense/*.py
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ rm -rf /tmp/out && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out --thresholds data/thresholds.json && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/out
+[?2004l{
+  "readings": 38
+}
+OK: archive matches source
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ rm -rf /tmp/out-repeat && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out-repeat --thresholds data/thresholds.json >/dev/null && diff -ru /tmp/out /tmp/out-repeat && echo 'deterministic output OK'
+[?2004ldeterministic output OK
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 - <<'PY'
+[?2004l[?2004h> from pathlib import Path
+[?2004l[?2004h> path = Path('pipelinesense/totals.py')
+[?2004l[?2004h> text = path.read_text()
+[?2004l[?2004h> text = text.replace('''        grouped.setdefault((r.sensor, day), []).append(r.value)
+[?2004l[?2004h> ''', '''        grouped.setdefault((r.sensor, day), []).append(
+[?2004l[?2004h>             (r.timestamp, r.value))
+[?2004l[?2004h> ''')
+[?2004l[?2004h> text = text.replace('''        values = grouped[(sensor, day)]
+[?2004l[?2004h>         daily_sum = sum(values)
+[?2004l[?2004h> ''', '''        values = [value for _, value in sorted(
+[?2004l[?2004h>             grouped[(sensor, day)], key=lambda item: item[0])]
+[?2004l[?2004h>         daily_sum = sum(values)
+[?2004l[?2004h> ''')
+[?2004l[?2004h> path.write_text(text)
+[?2004l[?2004h> PY
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m py_compile pipelinesense/*.py
+[?2004l[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ rm -rf /tmp/out-final && python3 -m pipelinesense pipeline --input data/day1.json --dir /tmp/out-final --thresholds data/thresholds.json >/dev/null && for f in report.json alerts.json totals.json coverage.json readings.csv raw.json aggregates.json meta.json; do cmp -s "/tmp/out/$f" "/tmp/out-final/$f" || { echo "DIFF: $f"; exit 1; }; done && echo 'artifact parity OK' && python3 -m pipelinesense verify --input data/day1.json --dir /tmp/out-final
+[?2004lartifact parity OK
+OK: archive matches source
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ python3 -m pipelinesense totals --input /tmp/ps-unsorted.json && printf '%s\n' '--- totals.py ---' && cat pipelinesense/totals.py
+[?2004l[
+  {
+    "sensor": "a",
+    "day": "2024-05-01",
+    "samples": 1,
+    "daily_sum": 1.5,
+    "cumulative": 1.5
+  },
+  {
+    "sensor": "a",
+    "day": "2024-05-02",
+    "samples": 1,
+    "daily_sum": 4.0,
+    "cumulative": 5.5
+  },
+  {
+    "sensor": "b",
+    "day": "2024-05-01",
+    "samples": 1,
+    "daily_sum": 3.0,
+    "cumulative": 3.0
+  },
+  {
+    "sensor": "b",
+    "day": "2024-05-02",
+    "samples": 1,
+    "daily_sum": 2.0,
+    "cumulative": 5.0
+  }
+]
+--- totals.py ---
+"""Per-sensor daily totals with a running cumulative sum."""
+def daily_totals(readings):
+    grouped = {}
+    for r in readings:
+        day = r.timestamp.date().isoformat()
+        grouped.setdefault((r.sensor, day), []).append(
+            (r.timestamp, r.value))
+
+    rows = []
+    cumulative = {}
+    for sensor, day in sorted(grouped):
+        values = [value for _, value in sorted(
+            grouped[(sensor, day)], key=lambda item: item[0])]
+        daily_sum = sum(values)
+        cumulative[sensor] = cumulative.get(sensor, 0.0) + daily_sum
+        rows.append({"sensor": sensor, "day": day,
+                     "samples": len(values), "daily_sum": daily_sum,
+                     "cumulative": cumulative[sensor]})
+    return rows
+[?2004h[01;32magent@75b2a031766a[00m:[01;34m/app[00m$ 

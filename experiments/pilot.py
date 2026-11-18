@@ -134,11 +134,27 @@ STRATEGIES = {
         "Correctness is checked on the same large input and on small edge cases.",
     ],
 }
+# s5: p3 showed flash verifies its own work and recovers from its own
+# mistakes within the hour (h7: two 40-60 step runs that broke and then fixed
+# the code, still passed). What it cannot self-check is a long list of small,
+# precisely stated rules: missing one subtle rule still passes its own tests.
+# The rule count is a dial for difficulty.
+STRATEGIES["s5-many-rules"] = [
+    "Task type: implementation. The agent implements one component (a stub that raises 'not implemented') "
+    "from a specification of 14 to 18 numbered rules. Each rule is short and precise; several rules "
+    "interact (precedence, ordering, normalization, tie-breaking, boundary values, error cases).",
+    "Every rule is stated in the instruction exactly once, with a small example where it helps. Nothing the "
+    "tests check may be missing from the rules.",
+    "The tests generate many inputs at verify time from a fixed seed, designed to exercise every rule and "
+    "rule interaction, and compare the output with a reference model that lives only in the tests. Group "
+    "the tests by rule so a failure names the rule that was missed.",
+]
 STRATEGY_ENVIRONMENTS = {
     "s1-interface": ["pipeline", "go", "c"],
     "s2-behavioral": ["http", "sqlite", "go"],
     "s3-spec-implementation": ["pipeline", "c", "shell"],
     "s4-performance": ["pipeline", "java", "go"],
+    "s5-many-rules": ["pipeline", "go", "shell"],
 }
 
 
@@ -152,6 +168,10 @@ STRATEGY_DIFFICULTY = {
         **LEVELS["hard"],
         "notes": ["The bottleneck must be found by measuring; it is not obvious from reading one function",
                   "The faster approach must keep the output exactly identical, including ordering and edge cases"]},
+    "s5-many-rules": {
+        **LEVELS["hard"], "constraints": "14-18 (the numbered rules)", "subgoals": 1,
+        "notes": ["Difficulty comes only from the number and interaction of precisely stated rules",
+                  "No planted bug and no hidden requirement: a careful engineer who follows every rule passes"]},
 }
 
 
@@ -160,7 +180,7 @@ def strategy_specs() -> list[tuple[str, dict]]:
     for strategy, envs in STRATEGY_ENVIRONMENTS.items():
         for env in envs:
             tax = dict(ENVIRONMENTS[env])
-            if strategy == "s3-spec-implementation":
+            if strategy in ("s3-spec-implementation", "s5-many-rules"):
                 tax["task_type"] = "Implementation"
             elif strategy == "s4-performance":
                 tax["task_type"], tax["core_capability"] = "Optimization", "Performance"
@@ -254,7 +274,77 @@ def hard_brief_specs() -> list[tuple[str, dict]]:
     return specs
 
 
-SPEC_SETS = {"grid": grid_specs, "strategies": strategy_specs, "hard": hard_brief_specs}
+# Pilot p4: briefs built from docs/TASK_DIFFICULTY.md. Each raises several
+# of B (search), C (constraint coupling), H (horizon), U (unfamiliarity) and
+# V (low self-verifiability) at once, with every requirement stated.
+FRONTIER_COMMON = HARD_COMMON + [
+    "The agent has a shell and an hour; difficulty must survive that. If a quick script or solver would "
+    "trivialize the task, raise the coupling between requirements instead of the size.",
+    "The agent's own obvious checks should pass for a plausible but wrong solution: the tests probe the "
+    "interactions and edge cases the instruction states, not only the main path.",
+]
+FRONTIER_BRIEFS = {
+    "f1-behavior-preserving": ("pipeline", "Debugging", [
+        "Scenario: a utility module that many other modules in the repository depend on has a defect or "
+        "needs a stated behavior change. The fix must not change any other observable behavior of the "
+        "system.",
+        "The tests include a large regression suite generated from the original system's behavior across "
+        "all the dependent modules (stored only in the tests), plus tests for the stated change.",
+    ]),
+    "f2-custom-interpreter": ("go", "Implementation", [
+        "Scenario: implement the evaluator for a small custom rule or expression language the instruction "
+        "fully specifies: scoping, operator precedence, type coercions, short-circuiting and exact error "
+        "messages. Its semantics deliberately differ from any common language in a few stated ways.",
+        "The tests generate many programs from a fixed seed and compare results with a reference evaluator "
+        "that lives only in the tests.",
+    ]),
+    "f3-optimal-scheduling": ("pipeline", "Implementation", [
+        "Scenario: produce optimal schedules for a set of instances (jobs with durations, precedence, shared "
+        "resources, time windows). The objective and every constraint are stated. Instances are sized so a "
+        "greedy approach is wrong and naive brute force is too slow; a correct dynamic-programming or "
+        "branch-and-bound approach finishes quickly.",
+        "The tests check feasibility of every schedule and that its cost equals the known optimum stored "
+        "only in the tests, including on instances generated at verify time from a fixed seed.",
+    ]),
+    "f4-ledger-replay": ("sqlite", "Implementation", [
+        "Scenario: replay a long stream of financial events into final account balances: postings, "
+        "reversals of earlier postings, corrections that arrive out of order, duplicate deliveries that "
+        "carry the same idempotency key, multi-currency entries with a stated conversion table, and a "
+        "stated rounding rule applied at a stated point.",
+        "The tests generate event streams from a fixed seed and compare every balance exactly with a "
+        "reference replay that lives only in the tests.",
+    ]),
+    "f5-incident-diagnosis": ("shell", "Investigation", [
+        "Scenario: an incident affected some requests in a system of several services. The agent gets the "
+        "services' logs (with clock skew between hosts, interleaved retries, and plenty of unrelated noise) "
+        "and their configuration files, but no access to the running system.",
+        "The agent must write a report file in a stated format naming the root cause from a stated list of "
+        "categories and the exact set of affected request IDs. The tests compare against the ground truth "
+        "that lives only in the tests.",
+    ]),
+    "f6-chained-migration": ("sqlite", "Migration", [
+        "Scenario: migrate an application's data and code from schema v1 to v3. v2 exists and the stated "
+        "upgrade path goes through it. Each step can break stated invariants (referential integrity, "
+        "derived totals, uniqueness under new normalization rules), and the application code must work "
+        "against v3.",
+        "The tests run the application's stated commands against the migrated database and check every "
+        "invariant on data generated from a fixed seed.",
+    ]),
+}
+
+
+def frontier_specs() -> list[tuple[str, dict]]:
+    specs = []
+    for brief, (env, task_type, lines) in FRONTIER_BRIEFS.items():
+        tax = {**ENVIRONMENTS[env], "task_type": task_type, "skill_interaction": "Multiple interacting constraints"}
+        difficulty = {**LEVELS["hard"], "notes": ["Difficulty comes from coupled decisions that must all be "
+                                                  "right, not from size or obscurity"]}
+        specs.append((brief, {"taxonomy": tax, "difficulty": difficulty, "design": lines + FRONTIER_COMMON}))
+    return specs
+
+
+SPEC_SETS = {"grid": grid_specs, "strategies": strategy_specs, "hard": hard_brief_specs,
+             "frontier": frontier_specs}
 
 
 class BudgetExceeded(Exception):

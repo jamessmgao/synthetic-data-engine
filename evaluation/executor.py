@@ -298,14 +298,11 @@ class Executor:
                 cancel.set()
 
 
-def no_open_rollouts(backend: Backend, batch_id: str | None = None) -> Callable[[], bool]:
+def no_open_rollouts(backend: Backend) -> Callable[[], bool]:
     """``idle`` callback: true once no rollout job is READY or LEASED."""
     def idle() -> bool:
         return backend.store.conn.execute(
-            "SELECT COUNT(*) AS n FROM jobs j JOIN tasks t ON t.id = j.task_id"
-            " WHERE j.type = 'rollout' AND j.status IN ('READY', 'LEASED')"
-            " AND (? IS NULL OR t.batch_id = ?)",
-            (batch_id, batch_id),
+            "SELECT COUNT(*) AS n FROM jobs WHERE type = 'rollout' AND status IN ('READY', 'LEASED')"
         ).fetchone()["n"] == 0
     return idle
 

@@ -9,7 +9,7 @@ The whole pipeline, end to end, as separate processes on a real backend:
 
 Each service hands off to the next stage in its own settle transaction; the
 Trace Parser accepts, revises or rejects. Only GLM-5.1 (drafting and the failure
-review) and Harbor are replaced (tests/e2e/fakes.py). The batch below hits
+review) and Harbor are replaced (tests/e2e/fakes.py). The tasks below hit
 every path a task can take; each test checks the exact set of jobs the
 pipeline created, every task's verdict, what was published, the API's report,
 and that no paid unit of work (model call or trial) ever ran to completion twice.
@@ -62,7 +62,7 @@ def expected_job_ids(scenario: dict) -> set[str]:
     apart from the analyze pings (one per settled run; see check_outcome)."""
     ids = set()
     for suffix, sc in scenario.items():
-        t = f"b-e2e-{suffix}"
+        t = f"e2e-{suffix}"
         for v in (1, 2, 3):
             ids.add(job_id(t, v, "create" if v == 1 else "revise"))
             if sc.get("generate") == "fail":
@@ -89,13 +89,12 @@ def expected_job_ids(scenario: dict) -> set[str]:
 
 
 def check_outcome(p, scenario=SCENARIO, expected=EXPECTED):
-    """The batch finished exactly as scripted, with no work lost or duplicated."""
-    batch = p.api("GET", "/v1/batches/b-e2e")
-    got = {t["id"].rsplit("-", 1)[1]: t for t in batch["tasks"]}
+    """Every task finished exactly as scripted, with no work lost or duplicated."""
+    got = {t["id"].rsplit("-", 1)[1]: t for t in p.api("GET", "/v1/tasks")}
     for suffix, (status, reason, accepted_version, version) in expected.items():
         t = got[suffix]
         assert (t["status"], t["reason"], t["current_version"]) == (status, reason, version), suffix
-        verdict = p.api("GET", f"/v1/tasks/b-e2e-{suffix}")
+        verdict = p.api("GET", f"/v1/tasks/e2e-{suffix}")
         assert verdict["task"]["accepted_version"] == accepted_version, suffix
 
     # Exactly the scripted jobs: nothing missing, nothing duplicated, all settled.
@@ -145,7 +144,7 @@ def check_outcome(p, scenario=SCENARIO, expected=EXPECTED):
     for name in accepted:
         suffix = name.removeprefix("fake-")
         text = (p.accepted / name / "verdict.md").read_text()
-        assert text.startswith(f"# Verdict: b-e2e-{suffix}\n")
+        assert text.startswith(f"# Verdict: e2e-{suffix}\n")
         assert f"ACCEPTED: v{expected[suffix][2]} passed" in text
         assert (p.accepted / name / "scenario.json").exists()  # the bundle itself
 
@@ -153,10 +152,10 @@ def check_outcome(p, scenario=SCENARIO, expected=EXPECTED):
 # --- a calm run -------------------------------------------------------------------
 
 
-def test_batch_runs_every_path_to_the_scripted_verdict(make_pipeline):
+def test_tasks_run_every_path_to_the_scripted_verdict(make_pipeline):
     p = make_pipeline(SCENARIO)
     submitted = p.submit()
-    assert submitted["task_ids"] == [f"b-e2e-{s}" for s in SCENARIO] and submitted["created"]
+    assert submitted == [{"task_id": f"e2e-{s}", "created": True} for s in SCENARIO]
     p.wait(p.start())
     check_outcome(p)
 
@@ -164,7 +163,7 @@ def test_batch_runs_every_path_to_the_scripted_verdict(make_pipeline):
     for kind in ("generate", "trial"):
         assert all(e == {"start": 1, "finish": 1} for e in p.events(kind).values())
 
-    report = p.api("GET", "/v1/batches/b-e2e/report")
+    report = p.api("GET", "/v1/report", params={"task_id": p.task_ids})
     assert {k: report[k] for k in EXPECTED_REPORT} == EXPECTED_REPORT
     n_generate = sum(1 for j in p.jobs() if j["type"] in ("create", "revise"))
     n_trials = sum(1 for j in p.jobs() if j["type"] == "rollout")
@@ -180,7 +179,7 @@ def test_verdicts_explain_every_step(make_pipeline):
     p.submit()
     p.wait(p.start())
 
-    revised = p.api("GET", "/v1/tasks/b-e2e-t01")
+    revised = p.api("GET", "/v1/tasks/e2e-t01")
     assert revised["decision"] == "ACCEPTED: v2 passed 2/5 valid rollouts (band 1–3)"
     v1, v2 = revised["versions"]
     assert (v1["origin"], v1["state"], v1["pass_count"]) == ("initial", "OUT_OF_BAND", 5)
@@ -191,28 +190,29 @@ def test_verdicts_explain_every_step(make_pipeline):
     # The too-hard task got easier operators, each tried once, and the evidence
     # handed to the model is the Trace Parser's review of each failed run, which
     # quotes the failing test from the verifier output (fetched from S3 on the cluster).
-    exhausted = p.backend.store.task_jobs("b-e2e-t02")
+    exhausted = p.backend.store.task_jobs("e2e-t02")
     revisions = [j["input"] for j in exhausted if j["type"] == "revise" and j["input"]["origin"] == "revision"]
     assert [r["operator"] for r in revisions] == ["localize_diagnosis", "reduce_unrelated_constraints"]
     assert revisions[0]["result"] == "0 of 5 runs passed."
     assert "test_crash_recovery - AssertionError: slot 1 lost a job" in revisions[0]["evidence"]
-    failure = next(r for r in p.api("GET", "/v1/tasks/b-e2e-t02")["rollouts"] if r["version"] == 1)["failure"]
+    failure = next(r for r in p.api("GET", "/v1/tasks/e2e-t02")["rollouts"] if r["version"] == 1)["failure"]
     assert failure["attribution"] == "model" and failure["cited_evidence"] == ["E1"]
 
     # The retried timeout is on the record, and not counted.
-    retried = p.api("GET", "/v1/tasks/b-e2e-t03")
+    retried = p.api("GET", "/v1/tasks/e2e-t03")
     slot2 = [(r["retry"], r["outcome"], r["error"]) for r in retried["rollouts"] if r["slot"] == 2]
     assert slot2 == [(0, "INVALID", "AgentTimeoutError: fake timeout"), (1, "VALID_PASS", None)]
     assert retried["versions"][0]["pass_count"] == 2
 
 
-def test_resubmitting_a_finished_batch_changes_nothing(make_pipeline):
+def test_resubmitting_finished_tasks_changes_nothing(make_pipeline):
     p = make_pipeline({"t01": SCENARIO["t01"]})
     p.submit()
     p.wait(p.start())
     before = sorted((j["id"], j["status"]) for j in p.jobs())
-    assert p.submit()["created"] is False
-    r = p.client.post("/v1/batches", json={"count": 2, "batch_id": "b-e2e"}, headers={"X-Api-Key": "e2e-key"})
+    assert [r["created"] for r in p.submit()] == [False]
+    r = p.client.post("/v1/tasks", json={"task_id": "e2e-t01", "prompt": "a different task"},
+                      headers={"X-Api-Key": "e2e-key"})
     assert r.status_code == 409
     p.wait(p.start())  # a second run finds nothing to do and exits
     assert sorted((j["id"], j["status"]) for j in p.jobs()) == before
@@ -221,13 +221,13 @@ def test_resubmitting_a_finished_batch_changes_nothing(make_pipeline):
 # --- kill, restart, two copies --------------------------------------------------------
 
 
-def test_kill_dash_nine_mid_batch_then_restart(make_pipeline):
+def test_kill_dash_nine_mid_run_then_restart(make_pipeline):
     p = make_pipeline(SCENARIO)
     p.submit()
     total = len(expected_job_ids(SCENARIO))
     first = p.start(step_s=0.15)
     p.wait_until(lambda: p.settled_count() >= total // 4)
-    p.kill(first)                        # mid-batch: leases held, runs half done
+    p.kill(first)                        # mid-run: leases held, runs half done
     second = p.start(step_s=0.15)        # restart on the same machine
     p.wait_until(lambda: p.settled_count() >= total * 2 // 3)
     p.kill(second)                       # and again
@@ -287,7 +287,7 @@ def _healthy(http) -> bool:
         return False
 
 
-def test_operator_drives_a_batch_over_http(make_pipeline):
+def test_operator_drives_tasks_over_http(make_pipeline):
     """`python -m api` as its own process: submit, watch and report over HTTP."""
     import httpx
 
@@ -297,18 +297,19 @@ def test_operator_drives_a_batch_over_http(make_pipeline):
     auth = {"X-Api-Key": "e2e-key"}
     with httpx.Client(base_url=url, timeout=5) as http:
         p.wait_until(lambda: _healthy(http), timeout=30)
-        assert http.get("/v1/batches").status_code == 401
-        r = http.post("/v1/batches", json={"count": 3, "batch_id": "b-e2e"}, headers=auth)
-        assert r.status_code == 202, r.text
+        assert http.get("/v1/tasks").status_code == 401
+        for t in p.task_ids:
+            r = http.post("/v1/tasks", json={"task_id": t}, headers=auth)
+            assert r.status_code == 202, r.text
 
         stack = p.start()
         p.wait_until(lambda: all(t["status"] in ("ACCEPTED", "REJECTED")
-                                 for t in http.get("/v1/batches/b-e2e", headers=auth).json()["tasks"]))
+                                 for t in http.get("/v1/tasks", headers=auth).json()))
         p.wait(stack)
-        report = http.get("/v1/batches/b-e2e/report", headers=auth).json()
+        report = http.get("/v1/report", params={"task_id": p.task_ids}, headers=auth).json()
         assert (report["accepted_total"], report["rejected"]) == (2, {"invalid": 1})
-        assert http.get("/v1/batches", headers=auth).json()[0]["accepted"] == 2
-        verdict = http.get("/v1/tasks/b-e2e-t02", headers=auth).json()
+        assert len(http.get("/v1/tasks", params={"status": "ACCEPTED"}, headers=auth).json()) == 2
+        verdict = http.get("/v1/tasks/e2e-t02", headers=auth).json()
         assert verdict["decision"].startswith("ACCEPTED: v2 passed 2/5")
     server.terminate()
     server.wait()
@@ -325,21 +326,21 @@ def test_poison_job_is_dead_lettered_not_retried_forever(make_pipeline):
     crashes = p.run_until_final()
     assert crashes == 3  # shared.contracts.models.MAX_JOB_ATTEMPTS
 
-    poison = p.backend.store.job(job_id("b-e2e-t01", 1, "create"))
+    poison = p.backend.store.job(job_id("e2e-t01", 1, "create"))
     assert (poison["status"], poison["attempts"]) == ("DEAD", 3)
     assert poison["error"].startswith("dead-lettered")
-    t1, t2 = (p.backend.store.task(f"b-e2e-{s}") for s in ("t01", "t02"))
+    t1, t2 = (p.backend.store.task(f"e2e-{s}") for s in ("t01", "t02"))
     assert (t1["status"], t1["reason"], t1["stage"]) == ("REJECTED", "infra_unresolved", "UNRESOLVED")
     assert (t2["status"], t2["accepted_version"]) == ("ACCEPTED", 1)
-    assert all(j["attempts"] <= 2 for j in p.backend.store.task_jobs("b-e2e-t02"))
+    assert all(j["attempts"] <= 2 for j in p.backend.store.task_jobs("e2e-t02"))
 
 
 cluster_only = pytest.mark.parametrize("make_pipeline", ["cluster"], indirect=True)
 
 
 @cluster_only
-def test_redis_losing_its_queues_mid_batch(make_pipeline):
-    """Redis is only a cache of job ids; Postgres is the truth. Flush it mid-batch
+def test_redis_losing_its_queues_mid_run(make_pipeline):
+    """Redis is only a cache of job ids; Postgres is the truth. Flush it mid-run
     and the reconciler re-adds every claimable job."""
     import redis
 
@@ -366,8 +367,8 @@ def test_s3_holds_the_durable_copy(make_pipeline):
     s3 = boto3.client("s3", endpoint_url=p.env["S3_ENDPOINT_URL"])
     keys = {o["Key"] for page in s3.get_paginator("list_objects_v2").paginate(Bucket=p.env["S3_BUCKET"])
             for o in page.get("Contents", [])}
-    sha = p.backend.store.task("b-e2e-t01")["bundle_sha256"]
+    sha = p.backend.store.task("e2e-t01")["bundle_sha256"]
     assert f"bundles/{sha}/.complete" in keys and f"bundles/{sha}/scenario.json" in keys
     assert "accepted/fake-t01/verdict.md" in keys and "accepted/fake-t01/scenario.json" in keys
     for slot in range(1, 6):
-        assert any(k.startswith(f"traces/{rollout_job_id('b-e2e-t01', 1, slot, 0)}/") for k in keys)
+        assert any(k.startswith(f"traces/{rollout_job_id('e2e-t01', 1, slot, 0)}/") for k in keys)

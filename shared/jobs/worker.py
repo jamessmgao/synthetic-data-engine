@@ -87,7 +87,6 @@ def serve(
     concurrency: int = 1,
     docker_slots: int | None = None,
     stop: threading.Event | None = None,
-    batch_id: str | None = None,
 ) -> None:
     """Run `concurrency` claim loops until `stop` is set."""
     stop = stop or threading.Event()
@@ -97,7 +96,7 @@ def serve(
 
     def loop(owner: str) -> None:
         while not stop.is_set():
-            job = jq.claim(types, owner, LEASE_TTL_S, docker_slots, batch_id=batch_id)
+            job = jq.claim(types, owner, LEASE_TTL_S, docker_slots)
             if job is None:
                 stop.wait(POLL_S)
                 continue
@@ -181,7 +180,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Generation Service or Build + Validate.")
     parser.add_argument("role", choices=["generation", "generate", "validate"])
     parser.add_argument("--concurrency", type=int, default=None)
-    parser.add_argument("--batch", default=None, help="only claim this batch's jobs")
     parser.add_argument("--with-reconciler", action="store_true",
                         help="also run the reconciler in this process (worker-control)")
     args = parser.parse_args()
@@ -197,10 +195,10 @@ def main() -> None:
 
     if args.role in ("generation", "generate"):
         serve_generation(backend, generate_fn(backend), concurrency=args.concurrency or 2,
-                         stop=stop, batch_id=args.batch)
+                         stop=stop)
     else:
         serve_validate(backend, validate_fn(backend), concurrency=args.concurrency or DOCKER_SLOTS,
-                       docker_slots=DOCKER_SLOTS, stop=stop, batch_id=args.batch)
+                       docker_slots=DOCKER_SLOTS, stop=stop)
 
 
 if __name__ == "__main__":

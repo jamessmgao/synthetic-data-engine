@@ -1,0 +1,139 @@
+{
+ "id": "h3-protocol-server",
+ "spec": {
+  "taxonomy": {
+   "domain": "Networking",
+   "task_type": "Implementation",
+   "core_capability": "Resource management under concurrent requests",
+   "failure_mode": "Timeout",
+   "environment": "Python HTTP service",
+   "skill_interaction": "Multiple interacting constraints"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": []
+  },
+  "design": [
+   "Scenario: implement a TCP key-value server for a small length-prefixed binary protocol that a provided specification document describes: pipelined requests, requests split across arbitrary packet boundaries, per-key TTL expiry, and exact error responses.",
+   "The tests use a client that fragments writes at random boundaries, opens concurrent connections, and checks every response byte for byte.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p3-h3-protocol-server-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.299509,
+   "rounds": 2,
+   "completion_tokens": 66479,
+   "draft_sec": 667.7,
+   "round_errors": [
+    "- draft: solution_files must not contain ['solve.sh']\n- draft: that file has its own field or is written by the pipeline"
+   ],
+   "bundle_sha256": "e371637cb2d14a76558d39f981bc0cf5ea6e2bb2be59a32cb49b9c5d42720485",
+   "name": "tinykv-streaming-server"
+  },
+  {
+   "job_id": "p3-h3-protocol-server-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 254.1,
+   "tests_passing_on_nop": [
+    "test_non_expired_key_still_accessible",
+    "test_unknown_opcode_returns_error",
+    "test_empty_key_returns_error"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h3-protocol-server/rollout1-r0/e371637cb2d14a76558d39f981bc0cf5__KwUoUGS",
+   "cost_usd": 0.029000736000000003,
+   "input_tokens": 459216,
+   "output_tokens": 20426,
+   "steps": 25,
+   "duration_sec": 310.1,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h3-protocol-server/rollout2-r0/e371637cb2d14a76558d39f981bc0cf5__c2eA2GQ",
+   "cost_usd": 0.016747409999999997,
+   "input_tokens": 72215,
+   "output_tokens": 22098,
+   "steps": 9,
+   "duration_sec": 270.6,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h3-protocol-server/rollout3-r0/e371637cb2d14a76558d39f981bc0cf5__7GGtiLY",
+   "cost_usd": 0.010165962,
+   "input_tokens": 103157,
+   "output_tokens": 8619,
+   "steps": 11,
+   "duration_sec": 184.2,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p3-h3-protocol-server/rollout4-r0/e371637cb2d14a76558d39f981bc0cf5__FsMWWJL",
+   "cost_usd": 0.023491044,
+   "input_tokens": 138720,
+   "output_tokens": 27046,
+   "steps": 12,
+   "duration_sec": 239.1,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794959980.165269,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/e371637cb2d14a76558d39f981bc0cf5ea6e2bb2be59a32cb49b9c5d42720485",
+ "name": "tinykv-streaming-server",
+ "passes": 4,
+ "fails": 0,
+ "finished": 1794962481.085279,
+ "wall_sec": 2500.9,
+ "cost_usd": {
+  "authoring": 0.2995,
+  "rollouts": 0.0794,
+  "total": 0.3789
+ }
+}

@@ -11,3 +11,23 @@
 [15:56:28] s3-spec-implementation-pipeline: drafting (initial)
 [15:56:28] s3-spec-implementation-c: drafting (initial)
 [15:56:28] s4-performance-pipeline: drafting (initial)
+[16:56:19] pilot p2: 9 candidates (strategies), budget $80.0, 1+1 docker slots, 8 concurrent drafts
+[16:56:19] s2-behavioral-http: drafting (initial)
+[16:56:19] s3-spec-implementation-c: drafting (initial)
+[16:56:19] s2-behavioral-sqlite: drafting (initial)
+[16:56:19] s5-many-rules-go: drafting (initial)
+[16:56:19] s3-spec-implementation-pipeline: drafting (initial)
+[16:56:19] s3-spec-implementation-shell: drafting (initial)
+[16:56:19] s2-behavioral-go: drafting (initial)
+[16:56:19] s5-many-rules-shell: drafting (initial)
+[16:56:19] s5-many-rules-pipeline: drafting (initial)
+[17:18:42] s3-spec-implementation-pipeline: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:20:12] s3-spec-implementation-pipeline: rollout1 VALID_PASS (1P/0F)
+[17:20:15] s3-spec-implementation-c: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:22:07] s3-spec-implementation-pipeline: rollout2 VALID_PASS (2P/0F)
+[17:22:10] s2-behavioral-sqlite: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:23:59] s3-spec-implementation-pipeline: rollout3 VALID_PASS (3P/0F)
+[17:25:10] s2-behavioral-http: gates {'structural': True, 'lint': True, 'oracle1': True, 'oracle2': True, 'nop': True}
+[17:25:41] s3-spec-implementation-pipeline: rollout4 VALID_PASS (4P/0F)
+[17:25:41] s3-spec-implementation-pipeline: VERDICT too_easy (4P/0F)
+[17:27:38] s3-spec-implementation-c: rollout1 VALID_PASS (1P/0F)

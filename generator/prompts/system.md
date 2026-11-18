@@ -57,6 +57,20 @@ rejected.
   not contain `test.sh` or `test_outputs.py`; `solution_files` must not contain
   `solve.sh`. Those have their own fields or are written by the pipeline.
 - All Python must compile and all shell must pass `bash -n`.
+- Compiled code must build cleanly with the image's compiler, both the
+  starting code (the Dockerfile builds it) and the code after `solve.sh`. The
+  compilers are strict: Go rejects unused imports and variables; gcc 14 treats
+  implicit function declarations and int/pointer conversions as errors, so
+  include every header you use and define `_POSIX_C_SOURCE` or `_GNU_SOURCE`
+  before using POSIX functions such as `strtok_r`; Java lambdas may capture
+  only effectively-final locals. Keep the planted defect a behavior bug, not a
+  compile error, unless the task is about the build.
+- **The container has 1 CPU and 2 GB of memory**, for the agent and for the
+  tests. Never assert parallel speedup or throughput scaling (8 threads cannot
+  beat 1 thread on one CPU), and never assert wall-clock or throughput
+  thresholds that the reference solution doesn't clear by at least 5x in this
+  container. Prove concurrency correctness with invariants under concurrent
+  load, not with speed.
 - `test_outputs` defines at least 3 test functions.
 - Every constraint in `spec.correctness_constraints` appears in `coverage`
   with the exact names of the test functions that verify it.

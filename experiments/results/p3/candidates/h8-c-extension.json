@@ -1,0 +1,122 @@
+{
+ "id": "h8-c-extension",
+ "spec": {
+  "taxonomy": {
+   "domain": "Systems programming",
+   "task_type": "Debugging",
+   "core_capability": "Memory and resource management",
+   "failure_mode": "Crash",
+   "environment": "Python package with a C extension",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": []
+  },
+  "design": [
+   "Scenario: a Python package with a C extension module crashes or silently corrupts results only for certain inputs (a reference-counting or bounds error). gdb and Python's faulthandler are installed.",
+   "The agent must fix the C code without changing the package's Python API. The tests build the extension and run many generated inputs, including the triggering ones.",
+   "A strong engineer should need 1-3 hours. The difficulty must come from the engineering, never from obscure trivia, unstated requirements, or the work taking longer than an hour of agent time.",
+   "State every requirement the tests check in the instruction, in terms of the external interface."
+  ]
+ },
+ "steps": [
+  {
+   "job_id": "p3-h8-c-extension-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.469693,
+   "rounds": 2,
+   "completion_tokens": 107688,
+   "draft_sec": 1102.5,
+   "round_errors": [
+    "- draft: tests/test_outputs.py has a Python syntax error at line 46: unterminated f-string literal (detected at line 46)"
+   ],
+   "bundle_sha256": "56696cc59c61e74ba836a980eaf2a9956439c74c0bd03ab05e193cf2fe704950",
+   "name": "pyxor-c-ext-debug"
+  },
+  {
+   "job_id": "p3-h8-c-extension-v1-validate0",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward None).\nHarbor exception: RuntimeError: Docker compose command failed for environment pyxor-c-ext-debug. Command: docker compose --project-name 56696cc59c61e74ba836a980eaf2a995__ep4pvwg__env --project-directory /Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/56696cc59c61e74ba836a980eaf2a9956439c74c0bd03ab05e193cf2fe704950/environment -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpoqn4dpvs/56696cc59c61e74ba836a980eaf2a995__EP4PvwG__env-docker-compose-resources.json -f /Users/jamesgao/.local/share/uv/tools/harbor/lib/python3.13/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmppsf8dts9/docker-compose-environment.json -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpn04xsx1f/docker-compose-mounts.json build. Return code: 1. Stdout:  Image 56696cc59c61e74ba836a980eaf2a995__ep4pvwg__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 900B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 761B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#3 DONE 0.0s\n\n#4 [internal] load .dockerignore\n#4 transferring context: 2B done\n#4 DONE 0.0s\n\n#5 [1/6] FROM docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#5 resolve docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df 0.0s done\n#5 CACHED\n\n#6 [internal] load build context\n#6 transferring context: 16.90kB 0.0s done\n#6 DONE 0.0s\n\n#7 [2/6] RUN apt-get update &&     apt-get install -y --no-install-recommends     gcc     gdb     && rm -rf /var/lib/apt/lists/*\n#7 0.317 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]\n#7 0.353 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]\n#7 0.359 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]\n#7 0.412 Get:4 http://deb.debian.org/debian bookworm/main arm64 Packages [8689 kB]\n#7 5.666 Get:5 http://deb.debian.org/debian bookworm-updates/main arm64 Packages [6936 B]\n#7 5.670 Get:6 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages [375 kB]\n#7 6.634 Fetched 9312 kB in 6s (1466 kB/s)\n#7 6.634 Reading package lists...\n#7 8.006 Reading package lists...\n#7 8.942 Building dependency tree...\n#7 9.105 Reading state information...\n#7 9.463 The following additional packages will be installed:\n#7 9.463   binutils binutils-aarch64-linux-gnu binutils-common cpp cpp-12 gcc-12\n#7 9.463   libasan8 libatomic1 libbabeltrace1 libbinutils libboost-regex1.74.0\n#7 9.463   libbrotli1 libcc1-0 libctf-nobfd0 libctf0 libcurl3-gnutls\n#7 9.463   libdebuginfod-common libdebuginfod1 libdw1 libelf1 libexpat1 libgcc-12-dev\n#7 9.463   libglib2.0-0 libgomp1 libgprofng0 l",
+   "sec": 99.3,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p3-h8-c-extension-v1-repair1",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.132345,
+   "rounds": 1,
+   "completion_tokens": 27452,
+   "draft_sec": 280.3,
+   "round_errors": [],
+   "bundle_sha256": "efd491212d0aa11d93b21dcc2a998918f9097501ea87d81430184b4cb1b67cf0",
+   "name": "pyxor-c-ext-debug"
+  },
+  {
+   "job_id": "p3-h8-c-extension-v1-validate1",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward None).\nHarbor exception: RuntimeError: Docker compose command failed for environment pyxor-c-ext-debug. Command: docker compose --project-name efd491212d0aa11d93b21dcc2a998918__b8mfisd__env --project-directory /Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/efd491212d0aa11d93b21dcc2a998918f9097501ea87d81430184b4cb1b67cf0/environment -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpjmb23vm5/efd491212d0aa11d93b21dcc2a998918__B8MfiSD__env-docker-compose-resources.json -f /Users/jamesgao/.local/share/uv/tools/harbor/lib/python3.13/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpce3h3ssq/docker-compose-environment.json -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpefconc21/docker-compose-mounts.json build. Return code: 1. Stdout:  Image efd491212d0aa11d93b21dcc2a998918__b8mfisd__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 900B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 778B 0.0s done\n#2 DONE 0.1s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#3 DONE 0.0s\n\n#4 [internal] load .dockerignore\n#4 transferring context: 2B done\n#4 DONE 0.0s\n\n#5 [1/6] FROM docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#5 resolve docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df done\n#5 DONE 0.0s\n\n#6 [internal] load build context\n#6 transferring context: 16.90kB done\n#6 DONE 0.0s\n\n#7 [2/6] RUN apt-get update &&     apt-get install -y --no-install-recommends     gcc     gdb     && rm -rf /var/lib/apt/lists/*\n#7 CACHED\n\n#8 [3/6] WORKDIR /app\n#8 CACHED\n\n#9 [4/6] COPY pyxor/ /app/pyxor/\n#9 CACHED\n\n#10 [5/6] RUN pip install --no-cache-dir setuptools==72.1.0 &&     cd /app/pyxor && python3 setup.py build_ext --inplace\n#10 4.045 Collecting setuptools==72.1.0\n#10 4.201   Downloading setuptools-72.1.0-py3-none-any.whl.metadata (6.6 kB)\n#10 4.240 Downloading setuptools-72.1.0-py3-none-any.whl (2.3 MB)\n#10 4.431    \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 2.3/2.3 MB 18.2 MB/s eta 0:00:00\n#10 4.469 Installing collected packages: setuptools\n#10 5.388 Successfully installed setuptools-72.1.0\n#10 5.389 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n#10 5.610 \n#10 5.610 [notice] A new release of pip is available: 25.0.1 -> 26.3\n#10 5.610 [notice] To update, run: pip install --upgrade pip\n#10 5.923 running build_ext\n#10",
+   "sec": 14.3,
+   "tests_passing_on_nop": null
+  },
+  {
+   "job_id": "p3-h8-c-extension-v1-repair2",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.219509,
+   "rounds": 1,
+   "completion_tokens": 48266,
+   "draft_sec": 493.8,
+   "round_errors": [],
+   "bundle_sha256": "b3618c3d194de037f5357f1ec0b524023e32f668a0ad1eacca94646aa7fccd5d",
+   "name": "pyxor-c-ext-debug"
+  },
+  {
+   "job_id": "p3-h8-c-extension-v1-validate2",
+   "type": "validate",
+   "outcome": "FAILED",
+   "failed_gate": "oracle1",
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": false
+   },
+   "feedback": "The reference solution did not pass (oracle1: reward None).\nHarbor exception: RuntimeError: Docker compose command failed for environment pyxor-c-ext-debug. Command: docker compose --project-name b3618c3d194de037f5357f1ec0b52402__aytujri__env --project-directory /Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/b3618c3d194de037f5357f1ec0b524023e32f668a0ad1eacca94646aa7fccd5d/environment -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpthm0w1r8/b3618c3d194de037f5357f1ec0b52402__AytUJRi__env-docker-compose-resources.json -f /Users/jamesgao/.local/share/uv/tools/harbor/lib/python3.13/site-packages/harbor/environments/docker/docker-compose-build.yaml -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmpc43_f400/docker-compose-environment.json -f /private/var/folders/93/dsst_yfn2g9dr3kg7ysxv7lm0000gn/T/tmp9gyg4a00/docker-compose-mounts.json build. Return code: 1. Stdout:  Image b3618c3d194de037f5357f1ec0b52402__aytujri__env-main Building \n#1 [internal] load local bake definitions\n#1 reading from stdin 900B done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile\n#2 transferring dockerfile: 735B done\n#2 DONE 0.0s\n\n#3 [internal] load metadata for docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#3 DONE 0.0s\n\n#4 [internal] load .dockerignore\n#4 transferring context: 2B done\n#4 DONE 0.0s\n\n#5 [1/6] FROM docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df\n#5 resolve docker.io/library/python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df 0.0s done\n#5 CACHED\n\n#6 [internal] load build context\n#6 transferring context: 17.17kB done\n#6 DONE 0.0s\n\n#7 [2/6] RUN apt-get update &&     apt-get install -y --no-install-recommends     build-essential     gdb     && rm -rf /var/lib/apt/lists/*\n#7 0.473 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]\n#7 0.497 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]\n#7 0.512 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]\n#7 0.546 Get:4 http://deb.debian.org/debian bookworm/main arm64 Packages [8689 kB]\n#7 2.778 Get:5 http://deb.debian.org/debian bookworm-updates/main arm64 Packages [6936 B]\n#7 2.781 Get:6 http://deb.debian.org/debian-security bookworm-security/main arm64 Packages [375 kB]\n#7 3.581 Fetched 9312 kB in 3s (2968 kB/s)\n#7 3.581 Reading package lists...\n#7 4.085 Reading package lists...\n#7 4.525 Building dependency tree...\n#7 4.622 Reading state information...\n#7 4.767 The following additional packages will be installed:\n#7 4.767   binutils binutils-aarch64-linux-gnu binutils-common bzip2 cpp cpp-12\n#7 4.767   dpkg-dev g++ g++-12 gcc gcc-12 libasan8 libatomic1 libbabeltrace1\n#7 4.767   libbinutils libboost-regex1.74.0 libbrotli1 libc-dev-bin libc6-dev libcc1-0\n#7 4.767   libcrypt-dev libctf-nobfd0 libctf0 libcurl3-gnutls libdebuginfod-common\n#7 4.767   libdebuginfod1 l",
+   "sec": 43.5,
+   "tests_passing_on_nop": null
+  }
+ ],
+ "rollouts": [],
+ "verdict": "invalid",
+ "started": 1794959980.166037,
+ "finished": 1794963133.8139782,
+ "wall_sec": 3153.6,
+ "cost_usd": {
+  "authoring": 0.8215,
+  "rollouts": 0,
+  "total": 0.8215
+ }
+}

@@ -35,7 +35,6 @@ from shared.contracts.models import (
 SCHEMA = [
     """CREATE TABLE IF NOT EXISTS tasks (
         id               TEXT PRIMARY KEY,
-        batch_id         TEXT NOT NULL,
         slot             TEXT NOT NULL DEFAULT '{}',
         status           TEXT NOT NULL,
         reason           TEXT,
@@ -47,7 +46,6 @@ SCHEMA = [
         created_at       TEXT NOT NULL,
         updated_at       TEXT NOT NULL
     )""",
-    "CREATE INDEX IF NOT EXISTS tasks_batch ON tasks (batch_id)",
     """CREATE TABLE IF NOT EXISTS jobs (
         id            TEXT PRIMARY KEY,
         task_id       TEXT NOT NULL REFERENCES tasks (id),
@@ -162,7 +160,7 @@ def row_dict(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def job_id(task_id: str, version: int, kind: str, n: int = 0) -> str:
-    """Deterministic job ids, e.g. `b1-t03-v2-repair1`. Also the Harbor job name.
+    """Deterministic job ids, e.g. `t-20261118-1a2b3c4d-v2-repair1`. Also the Harbor job name.
 
     `create` starts v1; `revise` starts a later version (a revision); `repair<n>`
     (also type revise) fixes a version whose gates failed; `validate-r<n>` checks
@@ -228,7 +226,6 @@ def claim(
     *,
     lease_s: float = LEASE_TTL_S,
     docker_slots: int | None = None,
-    batch_id: str | None = None,
     only_id: str | None = None,
     process: str | None = None,
     host: str | None = None,
@@ -262,9 +259,6 @@ def claim(
                            AND lease_until >= ?{on_host}) < ?)"""
         extra += [*map(str, DOCKER_JOB_TYPES), *map(str, DOCKER_JOB_TYPES), now,
                   *([len(host), host] if host else []), docker_slots]
-    if batch_id:
-        filters += " AND task_id IN (SELECT id FROM tasks WHERE batch_id = ?)"
-        extra.append(batch_id)
     if only_id:
         filters += " AND id = ?"
         extra.append(only_id)
@@ -334,6 +328,11 @@ class SqlStore:
             if "isolated" not in have:
                 conn.execute("ALTER TABLE jobs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0")
             _split_generate_jobs(conn)
+            # Tasks are created one at a time; the batch concept was removed.
+            task_cols = {d[0] for d in conn.execute("SELECT * FROM tasks LIMIT 0").description}
+            if "batch_id" in task_cols:
+                conn.execute("DROP INDEX IF EXISTS tasks_batch")
+                conn.execute("ALTER TABLE tasks DROP COLUMN batch_id")
 
     @property
     def conn(self) -> _SqliteConn | _PostgresConn:
@@ -357,11 +356,23 @@ class SqlStore:
         row = self.conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return row_dict(row) if row else None
 
-    def batch_tasks(self, batch_id: str) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM tasks WHERE batch_id = ? ORDER BY id", (batch_id,)
-        ).fetchall()
-        return [row_dict(r) for r in rows]
+    def tasks(self, ids: list[str] | None = None, status: str | None = None,
+              since: str | None = None) -> list[dict[str, Any]]:
+        """Tasks in creation order, optionally narrowed to ids, a status, or those created at/after `since`."""
+        where, params = [], []
+        if ids is not None:
+            if not ids:
+                return []
+            where.append(f"id IN ({','.join('?' * len(ids))})")
+            params += ids
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        if since:
+            where.append("created_at >= ?")
+            params.append(since)
+        sql = "SELECT * FROM tasks" + (" WHERE " + " AND ".join(where) if where else "")
+        return [row_dict(r) for r in self.conn.execute(sql + " ORDER BY created_at, id", params).fetchall()]
 
     def task_jobs(self, task_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -373,21 +384,10 @@ class SqlStore:
         row = self.conn.execute("SELECT * FROM jobs WHERE id = ?", (id,)).fetchone()
         return row_dict(row) if row else None
 
-    def batch_cost(self, batch_id: str) -> float:
-        row = self.conn.execute(
-            """SELECT COALESCE(SUM(j.cost_usd), 0) AS cost
-                 FROM jobs j JOIN tasks t ON t.id = j.task_id WHERE t.batch_id = ?""",
-            (batch_id,),
-        ).fetchone()
-        return float(row["cost"])
-
-    def open_job_counts(self, batch_id: str | None = None) -> dict[str, int]:
+    def open_job_counts(self) -> dict[str, int]:
         """Unfinished jobs: READY, LEASED with a live lease, LEASED with an expired one."""
         now = time.time()
         where, params = "", [now, now]
-        if batch_id:
-            where = "AND task_id IN (SELECT id FROM tasks WHERE batch_id = ?)"
-            params.append(batch_id)
         row = self.conn.execute(
             f"""SELECT COUNT(*) FILTER (WHERE status = 'READY') AS ready,
                        COUNT(*) FILTER (WHERE status = 'LEASED' AND lease_until >= ?) AS leased,

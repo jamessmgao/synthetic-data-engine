@@ -1,4 +1,4 @@
-"""Two copies at once, and kill -9 mid-batch then restart (real processes)."""
+"""Two copies at once, and kill -9 mid-run then restart (real processes)."""
 
 import os
 import signal
