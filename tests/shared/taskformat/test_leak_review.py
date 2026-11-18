@@ -63,7 +63,7 @@ class Model:
                         "leak-judge": {"match": judge, "why": "the prediction names the mechanism and place"}}
         self.seen: dict[str, str] = {}
 
-    def __call__(self, messages, response_format, llm_dir=None, cache_key=None):
+    def __call__(self, messages, response_format, llm_dir=None, cache_key=None, **_):
         self.seen[cache_key] = messages[1]["content"]
         return llm.Completion(content=json.dumps(self.replies[cache_key]), finish_reason="stop", model="fake",
                               prompt_tokens=1, completion_tokens=1, reasoning_tokens=0, gateway_cost_usd=None,

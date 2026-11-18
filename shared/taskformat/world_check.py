@@ -81,6 +81,14 @@ _SCRATCH = ("/tmp/", "/var/", "/root/.cache/", "/run/", "/proc/", "/dev/", "/wor
 RUN_LIMITS = ["--cpus", "1", "--memory", "2g"]
 
 
+def docker_bin() -> str:
+    """The real Docker CLI. In the authoring image `docker` is the agent's restricted
+    wrapper (authoring/bin/docker) and the real CLI is SDE_DOCKER_REAL; the pipeline's own
+    checks label everything they start and use it directly. Elsewhere: `docker`."""
+    real = os.environ.get("SDE_DOCKER_REAL", "/opt/sde/libexec/docker.real")
+    return real if os.path.exists(real) else "docker"
+
+
 def docker_label() -> list[str]:
     """Inside an authoring run, everything built or started is labeled with the job
     (SDE_DOCKER_LABEL=sde.job=<job_id>), so the harness can remove it afterwards."""
@@ -91,7 +99,7 @@ def docker_label() -> list[str]:
 def _docker(args: list[str], timeout: float) -> tuple[int, str]:
     """Run a docker command; (exit code, combined output tail). -1 on timeout."""
     try:
-        p = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run([docker_bin(), *args], capture_output=True, text=True, timeout=timeout)
         return p.returncode, (p.stdout + p.stderr)[-OUTPUT_CHARS:]
     except subprocess.TimeoutExpired as e:
         out = ((e.stdout or b"") + (e.stderr or b"")) if isinstance(e.stdout, bytes) else (e.stdout or "")

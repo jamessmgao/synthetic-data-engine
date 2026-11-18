@@ -48,7 +48,13 @@ COPY generator/ /opt/sde/generator/
 COPY validator/ /opt/sde/validator/
 COPY authoring/ /opt/sde/authoring/
 RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/local/bin/ \
- && cp -r /opt/sde/authoring/scaffold /opt/sde/scaffold
+ && cp -r /opt/sde/authoring/scaffold /opt/sde/scaffold \
+ && mkdir -p /opt/sde/libexec && mv /usr/bin/docker /opt/sde/libexec/docker.real \
+ && ln -s /opt/sde/authoring/bin/docker /usr/bin/docker
+# The agent's `docker` (/usr/local/bin and /usr/bin) is authoring/bin/docker: the host
+# daemon, restricted to this trial's labeled objects (an agent once ran
+# `docker kill $(docker ps -q)` and killed every container on the machine).
+# sde-world / sde-task use the real CLI, /opt/sde/libexec/docker.real.
 # /opt/sde/scaffold: stdlib-only helpers a world vendors (scheduler, faults, repro harness).
 # A real directory, not a symlink: `find /opt/sde/scaffold` without -L lists nothing in a link.
 

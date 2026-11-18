@@ -1,0 +1,25 @@
+# The authoring image loader: a native sidecar inserted right after dind (index 1), because
+# init containers start in list order and it needs dind's daemon. (As a strategic merge it
+# landed first, and the pod deadlocked: the loader waited for dind, dind for the loader.)
+# The worker starts once the image is loaded (the startupProbe).
+- op: add
+  path: /spec/template/spec/initContainers/1
+  value:
+    name: authoring-image
+    image: docker:27.3.1-dind
+    restartPolicy: Always
+    env: [{name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}]
+    envFrom: [{configMapRef: {name: sde-config}}]
+    command:
+      - sh
+      - -c
+      - |
+        docker load -q -i /opt/sde/images/sde-authoring.tar || exit 1
+        trap 'exit 0' TERM; sleep infinity & wait
+    startupProbe:
+      exec: {command: ["sh", "-c", "docker image inspect \"$SDE_AUTHORING_IMAGE\" >/dev/null"]}
+      periodSeconds: 5
+      failureThreshold: 120
+    volumeMounts:
+      - {name: dind-sock, mountPath: /var/run/dind}
+      - {name: images, mountPath: /opt/sde/images, readOnly: true}

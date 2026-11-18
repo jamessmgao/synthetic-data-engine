@@ -399,15 +399,79 @@ shortens the leases for this (`SDE_LEASE_TTL_S=45`, `SDE_HEARTBEAT_S=15`,
 also shortens the mock waits (`SDE_MOCK_ROLLOUT_S=15`, `SDE_MOCK_LLM_S=0.5`), so a run takes a
 few minutes, mostly image builds.
 
-**Measured:** _(the end-to-end run's result, including the executor replica timeline, goes here.)_
+**Measured** (2026-11-18, on the AWS K3s cluster, §8.6, with the test overlay `aws`: 8 EC2
+instances, in-cluster data stores, mock mode). Two runs of `make aws-k8s-test`, releases
+`63863db` and `ae2dd90`:
 
-### 8.5 Why AWS stays on compose
+| Check | Run 1 | Run 2 |
+|---|---|---|
+| Preflight: 5 Deployments + 3 StatefulSets ready, mock on | ✅ | ✅ |
+| Executor pod force-deleted while holding a LEASED rollout | ✅ | ✅ |
+| `postgres-0` restarted with tasks open; tasks survived | ✅ | ✅ |
+| Both tasks decided | ✅ 311 s, both ACCEPTED | ✅ 297 s, both ACCEPTED |
+| No rollout slot scored twice; 5 scored slots per version | ✅ | ✅ |
+| The killed rollout re-claimed and settled once (`lease_token` 1 → 2, attempts 2) | ✅ | ✅ |
+| No job left LEASED or READY | ✅ | ✅ |
+| Leak check in the dind sidecars | ❌ test bug (below) | ❌ test bug (below) |
+| KEDA scale-up summary | not reached | not reached |
 
-On this account, K3s wouldn't raise throughput:
-- the runners are a fixed 16 vCPU (the Free-plan quota), and the work is CPU-bound;
-- RDS micro caps the number of processes (§4.4).
+The leak check failed both times with "0 pods with a dind sidecar", a bug in the test, not
+the cluster:
+- **Run 1:** it looked for `dind` in `containers`, but dind is a native sidecar, listed in
+  `initContainers` (fixed in `ae2dd90`).
+- **Run 2:** it selected pods by `app.kubernetes.io/part-of`, which only the Deployments
+  carry, not their pod templates (fixed in `f39e214`: it selects by
+  `app.kubernetes.io/name`).
 
-Compose already provides what Kubernetes would add here: leases and fencing, crash
-isolation, guards, claim pacing and restarts. It's load-tested ([LOAD_TEST.md](LOAD_TEST.md)).
-K3s on AWS pays off only after an account upgrade, when there's spare capacity for
-autoscaling to use ([K8S_PLAN.md](K8S_PLAN.md) §1, §9).
+The fixed leak check and the KEDA summary haven't run yet.
+
+**Production check** (`aws-prod-mock`, §8.6): RDS, ElastiCache and S3, with no model
+calls. Run on 2026-11-18, release `37ca6ae`:
+- deploy 209 s;
+- a pod reaches S3 through the instance role (`assumed-role/sde-pipeline-runner/…`);
+- all 6 generation pods loaded the authoring image (`3/3`);
+- `shared.jobs.smoke` ok on RDS + ElastiCache + S3.
+
+The injected fixture task `prodmock-001` went through validate, 5 rollouts and analysis to
+**ACCEPTED / BAND_OK** in 4.5 min:
+- validate OK;
+- rollouts 2 VALID_PASS / 3 VALID_FAIL / 0 INVALID;
+- $0.00.
+
+That first deploy found two bugs in aws-prod, both fixed in `37ca6ae`:
+- no image tag (ErrImageNeverPull);
+- the authoring-image loader ordered before dind (a deadlock).
+
+### 8.5 Local vs AWS
+
+The local k3d cluster (§8.1-8.4) proved the manifests and the dind sidecar. Testing then
+moved to AWS (§8.6), because the Mac is reserved for task generation. K3s doesn't raise
+throughput on this account: the EC2 instances are a fixed 16 vCPU (the Free-plan quota), the
+work is CPU-bound, and RDS micro caps the processes (§4.4).
+
+What K3s adds on AWS is **isolation**. An authoring agent reaches only its own generation
+pod's dind. Tonight an agent ran `docker kill $(docker ps -q)` on the Mac and killed every
+container on the machine. On compose, the same command would kill everything on an
+instance; on K3s it kills only that pod's trials (one authoring session per pod in
+aws-prod). dind is privileged, so this contains accidents, not a determined escape.
+
+### 8.6 K3s on the AWS EC2 instances (`scripts/k8s_aws.py`)
+
+The same manifests run on the 8 EC2 instances as one K3s cluster: a server
+(`aws_ops.runners()[0]`) and 7 agents, installed over SSM. There are no new AWS resources
+beyond one security-group rule (instance to instance, `2976f6d`).
+
+| Command | Does |
+|---|---|
+| `make aws-k8s-up` | stops compose on every instance; installs K3s v1.35.5 (pod CIDR `10.52.0.0/16`, service CIDR `10.53.0.0/16`: the VPC is `10.42.0.0/16`, K3s's default pod range, and the overlap kept agents NotReady); builds `sde-pipeline:local` on every instance and imports it, with a crictl check; installs KEDA v2.16.1. The join token is SSM SecureString `/sde/k3s_token` |
+| `make aws-k8s-deploy OVERLAY=aws\|aws-prod\|aws-prod-mock` | ships the release, rebuilds and imports, applies the overlay, waits for the rollouts. For the production overlays it also creates Secret `sde-secrets` from SSM (values never in command text), builds the authoring image on every instance (saved to `/opt/sde/images/sde-authoring.tar`, loaded into each generation pod's dind), and checks IMDS from a pod |
+| `make aws-k8s-status` / `aws-k8s-logs SVC=…` | nodes, pods, services / logs |
+| `make aws-k8s-test ARGS=…` / `aws-k8s-test-log` | the chaos test on the server, as systemd unit `sde-k8s-test` (an SSM timeout kills a nohup'd process) |
+| `make aws-k8s-public` | the API's public HTTPS link: a Cloudflare quick tunnel (`public-tunnel` Deployment, dials out, no inbound ports). Anyone with the URL reaches the API; everything but `/healthz` needs the `SDE_API_KEY` token. The URL changes when the pod restarts |
+| `make aws-k8s-down` | uninstalls K3s; then `make aws-deploy` restores compose |
+
+| Overlay | Data | Models | Notes |
+|---|---|---|---|
+| `aws` | in-cluster Postgres / Redis / RustFS on the server | mock | the chaos test's overlay; short leases |
+| `aws-prod` | RDS, ElastiCache, S3 (via the instance role) | real | agent authoring; 6 generation pods × 1 session, validate ×2, executor 1-4 via KEDA; the public tunnel |
+| `aws-prod-mock` | as aws-prod | mock, and `SDE_AGENT_SLOTS=0` on generation (mock mode doesn't cover authoring trials) | a production check with no model calls |

@@ -48,7 +48,10 @@ $family_brief
 Root in a Linux container, in `/work`; Python 3.12, Go, gcc/make, JDK 21, sqlite3, a Postgres
 client, git. Docker through the host socket: build and run the world in its own containers;
 never `docker run -v` (paths here are not host paths): build with a context and move files
-with `docker cp`. Label what you start by hand with `--label "$$SDE_DOCKER_LABEL"`. The world
+with `docker cp`. Label what you start by hand with `--label "$$SDE_DOCKER_LABEL"`. Clean up only
+your own containers (`docker ps --filter label=$$SDE_DOCKER_LABEL`): never kill, stop or remove
+containers you didn't start (the daemon is shared). If the terminal is stuck, press C-c once and
+wait; never kill all containers. The world
 later runs as a non-root `agent` user with 1 CPU / 2 GB; install packages only in the
 Dockerfile. Any timing bound in tests needs a 5x margin (1 CPU). Pitfalls: every `COPY`
 source must exist in `environment/`; when you replace or rename a module, delete the old file

@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""The authoring agent's `docker`: the real CLI, restricted to this trial's own objects.
+
+The agent reaches the HOST's Docker daemon through the socket, so a careless
+`docker kill $(docker ps -q)` kills every container on the machine (local-agent-b2:
+it took down the whole pipeline). This wrapper sits first on PATH and as
+/usr/bin/docker; the real binary is /opt/sde/libexec/docker.real (SDE_DOCKER_REAL).
+The trial's label is SDE_DOCKER_LABEL (`sde.job=<job id>`).
+
+- `ps` / `container ls`: only the trial's containers (`--filter label=...` added).
+- `run` / `create` / `build` / `network create` / `volume create`: the label is added.
+- Commands that act on existing objects (kill, stop, rm, restart, exec, cp, logs,
+  inspect, rmi, network rm, ...): every target must carry the trial's label, else
+  refused (exit 1). A non-container target of `inspect` (an image) is allowed.
+- Refused outright: every `prune`, `system` changes, `-H` / `--host` / `--context`,
+  DOCKER_HOST / DOCKER_CONTEXT, and `compose` commands that stop or remove anything
+  not labeled.
+Read-only commands that touch nothing of others (version, info, images, pull, ...) pass.
+Residual risk: the socket itself is still reachable (curl --unix-socket); a
+label-scoped socket proxy is the stronger fix.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+REAL = os.environ.get("SDE_DOCKER_REAL", "/opt/sde/libexec/docker.real")
+LABEL = os.environ.get("SDE_DOCKER_LABEL", "").strip()  # "sde.job=<job id>"
+
+# Options that take a value, per command (others are flags). update: every option does.
+VALUE_FLAGS = {
+    "exec": {"-u", "--user", "-w", "--workdir", "-e", "--env", "--env-file", "--detach-keys"},
+    "logs": {"-n", "--tail", "--since", "--until"},
+    "kill": {"-s", "--signal"},
+    "stop": {"-t", "--time", "-s", "--signal"},
+    "restart": {"-t", "--time", "-s", "--signal"},
+    "start": {"--detach-keys"},
+    "attach": {"--detach-keys"},
+    "inspect": {"-f", "--format", "--type"},
+    "export": {"-o", "--output"},
+    "commit": {"-a", "--author", "-c", "--change", "-m", "--message"},
+    "rmi": set(), "rm": set(), "pause": set(), "unpause": set(), "wait": set(), "top": set(),
+    "port": set(), "diff": set(), "cp": set(), "rename": set(), "network rm": set(), "volume rm": set(),
+}
+FIRST_ONLY = {"exec", "attach", "top", "port", "rename", "commit"}  # the rest of the args are not targets
+TARGETED = set(VALUE_FLAGS) | {"update"}
+# `docker container <x>` / `docker image <x>` spellings of the same commands.
+ALIASES = {("container", "ls"): "ps", ("container", "list"): "ps", ("container", "ps"): "ps",
+           ("container", "run"): "run", ("container", "create"): "create", ("image", "build"): "build",
+           ("buildx", "build"): "build", ("builder", "build"): "build", ("image", "rm"): "rmi",
+           ("image", "remove"): "rmi", ("container", "rm"): "rm", ("container", "remove"): "rm"}
+for verb in ("kill", "stop", "restart", "pause", "unpause", "exec", "cp", "logs", "inspect", "update",
+             "start", "attach", "wait", "top", "port", "rename", "commit", "diff", "export"):
+    ALIASES[("container", verb)] = verb
+GLOBAL_VALUE_OPTS = {"--config", "-l", "--log-level", "--tlscacert", "--tlscert", "--tlskey"}
+FORBIDDEN_GLOBAL = {"-H", "--host", "-c", "--context"}
+
+
+def refuse(msg: str) -> None:
+    print(f"docker (authoring sandbox): refused: {msg}\n"
+          "Only this trial's own containers, images, networks and volumes "
+          f"(label {LABEL or 'sde.job=<job>'}) can be listed, stopped or removed. List yours with "
+          f"`docker ps --filter label={LABEL or 'sde.job=<job>'}`. If the terminal is stuck, press C-c "
+          "once and wait; never kill all containers.", file=sys.stderr)
+    sys.exit(1)
+
+
+def real(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([REAL, *args], capture_output=True, text=True)
+
+
+def label_of(target: str, kind: str = "") -> tuple[bool, str | None]:
+    """(exists as this kind, its sde.job label value) via the real CLI."""
+    key, _, _ = LABEL.partition("=")
+    cmd = ["inspect", *(["--type", kind] if kind else []), "-f",
+           "{{json .Config.Labels}}" if kind in ("", "container") else "{{json .Labels}}", target]
+    if kind == "image":
+        cmd[-2] = "{{json .Config.Labels}}"
+    p = real(cmd)
+    if p.returncode != 0:
+        return False, None
+    try:
+        labels = json.loads(p.stdout.strip() or "null") or {}
+    except json.JSONDecodeError:
+        labels = {}
+    return True, labels.get(key)
+
+
+def owned(target: str, kind: str = "container") -> bool:
+    value = LABEL.partition("=")[2]
+    exists, got = label_of(target, kind)
+    return exists and got == value
+
+
+def split(cmd: str, args: list[str]) -> tuple[list[str], list[str]]:
+    """(options, positionals) of a command's own args."""
+    values = VALUE_FLAGS.get(cmd)
+    opts, pos, i = [], [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            pos += args[i + 1:]
+            break
+        if a.startswith("-") and a != "-":
+            opts.append(a)
+            takes = (values is None) if "=" not in a else False  # update: every option takes a value
+            if values is not None and a in values:
+                takes = True
+            if takes and i + 1 < len(args):
+                opts.append(args[i + 1])
+                i += 1
+        else:
+            pos.append(a)
+            if cmd in FIRST_ONLY:
+                pos += ["\0rest"]  # stop: what follows is a command or a name, not a target
+                break
+        i += 1
+    return opts, [p for p in pos if p != "\0rest"]
+
+
+def host_access(args: list[str]) -> str | None:
+    """A run / create option that reaches the host: a bind mount of a host path, privileged
+    mode, or the host's PID / IPC / network namespace. None if there is none."""
+    for k, a in enumerate(args):
+        nxt = args[k + 1] if k + 1 < len(args) else ""
+        if a == "--privileged":
+            return "--privileged"
+        for opt in ("--pid", "--ipc", "--network", "--net", "--userns"):
+            if a == f"{opt}=host" or (a == opt and nxt == "host"):
+                return f"{opt} host"
+        for opt in ("-v", "--volume"):
+            value = a[len(opt) + 1:] if a.startswith(opt + "=") else (nxt if a == opt else None)
+            if value is not None and value[:1] in ("/", "~", "."):
+                return f"a host bind mount ({opt} {value})"
+        if a == "--mount" and "type=bind" in nxt or a.startswith("--mount=") and "type=bind" in a:
+            return "a bind --mount"
+    return None
+
+
+def main(argv: list[str]) -> None:
+    if os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"):
+        refuse("DOCKER_HOST / DOCKER_CONTEXT may not be set here")
+    # Global options before the command.
+    i, glob = 0, []
+    while i < len(argv) and argv[i].startswith("-"):
+        a = argv[i]
+        if a.split("=")[0] in FORBIDDEN_GLOBAL:
+            refuse(f"{a} (another daemon or context)")
+        glob.append(a)
+        if a in GLOBAL_VALUE_OPTS and i + 1 < len(argv):
+            glob.append(argv[i + 1])
+            i += 1
+        i += 1
+    rest = argv[i:]
+    if not rest:
+        os.execv(REAL, [REAL, *argv])
+    cmd, args = rest[0], rest[1:]
+    if args and (cmd, args[0]) in ALIASES:
+        cmd, args = ALIASES[(cmd, args[0])], args[1:]
+    elif cmd in ("network", "volume") and args and args[0] in ("rm", "remove"):
+        cmd, args = f"{cmd} rm", args[1:]
+
+    if "prune" in rest[:3]:
+        refuse(f"`docker {' '.join(rest[:2])}` (prune removes other jobs' objects)")
+    if cmd == "system" and args[:1] != ["df"] and args[:1] != ["info"] and args[:1] != ["events"]:
+        refuse(f"`docker system {' '.join(args[:1])}`")
+    if not LABEL:
+        if cmd in TARGETED or cmd in ("ps", "compose"):
+            refuse("SDE_DOCKER_LABEL is not set, so ownership can't be checked")
+        os.execv(REAL, [REAL, *argv])
+
+    if cmd == "ps":
+        out = [*glob, "ps", "--filter", f"label={LABEL}", *args]
+    elif cmd in ("run", "create", "build"):
+        if cmd != "build" and (why := host_access(args)):
+            refuse(f"`docker {cmd}` with {why} (it reaches the host, not just this trial)")
+        labelled = any(a in ("--label", "-l") or a.startswith("--label=") for a in args) and LABEL in " ".join(args)
+        out = [*glob, cmd, *([] if labelled else ["--label", LABEL]), *args]
+    elif cmd in ("network", "volume") and args[:1] == ["create"]:
+        out = [*glob, cmd, "create", "--label", LABEL, *args[1:]]
+    elif cmd in TARGETED:
+        _, pos = split(cmd, args)
+        if cmd == "cp":
+            pos = [p.split(":", 1)[0] for p in pos if ":" in p]
+        kind = {"rmi": "image", "network rm": "network", "volume rm": "volume"}.get(cmd, "container")
+        for target in pos:
+            if cmd == "inspect":
+                is_container, _ = label_of(target, "container")
+                if not is_container:
+                    continue  # an image, network, ...: reading it touches nothing
+            if not owned(target, kind):
+                refuse(f"`docker {cmd}` on {target!r}: not one of this trial's {kind}s")
+        out = [*glob, *cmd.split(), *args]
+    elif cmd == "compose" and any(a in ("down", "kill", "rm", "stop", "restart", "pause") for a in args):
+        # Only if every container of the project is ours.
+        sub = next(k for k, a in enumerate(args) if a in ("down", "kill", "rm", "stop", "restart", "pause"))
+        ids = real([*glob, "compose", *args[:sub], "ps", "-sde"]).stdout.split()
+        bad = [c for c in ids if not owned(c)]
+        if bad:
+            refuse(f"`docker compose {args[sub]}` would touch containers this trial didn't start: {bad[:5]}")
+        out = [*glob, "compose", *args]
+    else:
+        out = argv
+    os.execv(REAL, [REAL, *out])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

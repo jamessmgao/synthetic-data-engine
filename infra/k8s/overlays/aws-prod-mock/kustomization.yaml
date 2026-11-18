@@ -1,0 +1,33 @@
+# The production overlay (aws-prod: RDS, ElastiCache, S3 via the instance role, the Secret
+# from SSM, the authoring image in the generation pods' dind) with NO model calls: a check
+# that every production part works before real runs.
+#   - SDE_MOCK_LLM=1 from the first pod: llm.complete is mocked, rollouts run Harbor's
+#     oracle / nop agents.
+#   - SDE_AGENT_SLOTS=0 on generation: mock mode doesn't cover authoring trials (they would
+#     call the real model), so generation pods start, load the authoring image, and claim
+#     no world / create / revise job.
+# Deploy: python scripts/k8s_aws.py deploy HEAD --overlay aws-prod-mock
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sde
+resources:
+  - ../aws-prod
+configMapGenerator:
+  - name: sde-config
+    behavior: merge
+    literals:
+      - SDE_MOCK_LLM=1
+patches:
+  # A strategic merge: env entries merge by name, so this replaces aws-prod's "1".
+  - target: {kind: Deployment, name: generation}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: generation}
+      spec:
+        template:
+          spec:
+            containers:
+              - name: app
+                env:
+                  - {name: SDE_AGENT_SLOTS, value: "0"}

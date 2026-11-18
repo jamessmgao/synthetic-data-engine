@@ -144,7 +144,9 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
     assert text.index("# Checklist") < text.index("# The draft")
     assert "## What makes the task good" not in text and "Mistakes earlier drafts made" not in text
     assert len(text) / 4 < 3500  # ≈ tokens
-    assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]  # every template slot filled
+    assert set(re.findall(r"\$\w+", text)) == {"$SDE_DOCKER_LABEL"}  # every template slot filled
+    assert "never kill, stop or remove\ncontainers you didn't start" in text or \
+        "never kill, stop or remove containers you didn't start" in text.replace("\n", " ")
     assert "{base_images}" not in text and "This is a revision" not in text
     # system.md's one-shot output contract does not apply: there is no response schema here.
     assert "Return exactly one JSON object that matches the provided schema" not in text
@@ -324,7 +326,7 @@ def fake_llm(monkeypatch, verdict="clean", leaks=(), cost=0.03):
 
     calls = []
 
-    def complete(messages, response_format, llm_dir=None, cache_key=None):
+    def complete(messages, response_format, llm_dir=None, cache_key=None, **_):
         calls.append({"llm_dir": llm_dir, "user": messages[1]["content"], "key": cache_key})
         content = {"leak-blind": {"predicted_fix": "unclear", "predicted_failure": "unclear"},
                    "leak-judge": {"match": "none", "why": "-"}}.get(cache_key, {"verdict": verdict,

@@ -449,8 +449,9 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
         record_path.write_text(json.dumps(record, indent=1) + "\n")
 
     review = record["review"]
-    if review.get("verdict") == "unparseable":
+    if review.get("verdict") == "unparseable":  # a record from before inconclusive existed
         raise RuntimeError("leak review returned unparseable JSON")
+    inconclusive = list(record.get("inconclusive") or [])
     haystack = _normalized(instruction)
     confirmed = [x for x in review.get("leaks", []) if x.get("quote") and _normalized(x["quote"]) in haystack]
     unverified = [x for x in review.get("leaks", []) if x not in confirmed]
@@ -462,9 +463,18 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
               "direct": len(direct), "strong_hints": len(hints), "blind": blind, "blind_leak": blind_leak,
               "had_world": "THE WORLD" in hidden, "calls": record.get("calls", []),
               "request_sha256": record.get("request_sha256"), "cost_usd": record["cost_usd"],
-              "adopted": record.get("adopted", False)}
+              "adopted": record.get("adopted", False), "inconclusive": inconclusive,
+              "blind_inconclusive": "blind" in inconclusive}
     review_leak = bool(direct) or len(hints) >= 2
     if not review_leak and not blind_leak:
+        if inconclusive and config.LEAK_INCONCLUSIVE == "fail":
+            return Gate("leak", False, detail, (
+                f"The leak review was inconclusive ({', '.join(inconclusive)}: no parseable answer after a retry, "
+                "or every attempt timed out), and SDE_LEAK_INCONCLUSIVE=fail. Nothing in the instruction was "
+                "found to leak; the review needs to be run again."))
+        if inconclusive:
+            print(f"leak review inconclusive ({', '.join(inconclusive)}) for {bundle_dir}: passed "
+                  "(SDE_LEAK_INCONCLUSIVE=warn); see detail.inconclusive", file=sys.stderr, flush=True)
         return Gate("leak", True, detail)
     parts = []
     if review_leak:
@@ -489,37 +499,70 @@ LEAK_RECORD_VERSION = 2
 def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:
     """The three calls: the semantic review, the blind prediction, its judgement. Each is
     recorded (llm/) with its cost."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     from shared.llm import llm  # shared/llm/llm.py
 
-    calls, cost = [], 0.0
+    calls: list[dict] = []
+    lock = threading.Lock()
 
-    def call(system: str, user: str, fmt: dict, key: str) -> dict:
-        nonlocal cost
-        completion = llm.complete([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                                  fmt, llm_dir=review_dir / "llm", cache_key=key)
+    def once(system: str, user: str, fmt: dict, key: str) -> dict | None:
+        """One call (timeout + retries); its parsed JSON, or None if unparseable or timed out."""
+        try:
+            completion = llm.complete([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                                      fmt, llm_dir=review_dir / "llm", cache_key=key,
+                                      timeout=config.LEAK_CALL_TIMEOUT_S,
+                                      timeout_retries=config.LEAK_CALL_TIMEOUT_RETRIES)
+        except llm.CallTimeout as e:
+            with lock:
+                calls.append({"call": key, "request_sha256": None, "cost_usd": 0.0, "error": str(e)})
+            return None
         spent = 0.0 if completion.cached else completion.cost_usd
-        cost += spent
-        calls.append({"call": key, "request_sha256": completion.request_sha256, "cost_usd": spent})
+        with lock:
+            calls.append({"call": key, "request_sha256": completion.request_sha256, "cost_usd": spent})
         try:
             return json.loads(completion.content)
         except json.JSONDecodeError:
-            return {"unparseable": True}
+            return None
 
-    review = call(LEAK_SYSTEM, f"{hidden}\n\nINSTRUCTION SHOWN TO THE AGENT\n\n{instruction}", LEAK_FORMAT,
-                  "leak-review")
-    if review.get("unparseable"):
-        review = {"leaks": [], "verdict": "unparseable"}
+    def call(system: str, user: str, fmt: dict, key: str, required: str) -> dict | None:
+        """The answer, retried once (a new cache key) when unparseable or missing `required`."""
+        for attempt in (key, f"{key}-retry1"):
+            answer = once(system, user, fmt, attempt)
+            if answer is not None and required in answer:
+                return answer
+        return None
+
+    review_user = f"{hidden}\n\nINSTRUCTION SHOWN TO THE AGENT\n\n{instruction}"
+    inconclusive: list[str] = []
+    with ThreadPoolExecutor(max_workers=2) as pool:  # the review and the blind prediction are independent
+        review_f = pool.submit(call, LEAK_SYSTEM, review_user, LEAK_FORMAT, "leak-review", "verdict")
+        prediction_f = (pool.submit(call, BLIND_SYSTEM, f"INSTRUCTION\n\n{instruction}", BLIND_FORMAT, "leak-blind",
+                                    "predicted_fix") if config.LEAK_BLIND else None)
+        review, prediction = review_f.result(), prediction_f.result() if prediction_f else None
+    if review is None:
+        inconclusive.append("review")
+        review = {"leaks": [], "verdict": "inconclusive"}
     if not config.LEAK_BLIND:
-        return {"version": LEAK_RECORD_VERSION, "review": review, "blind": {"skipped": "SDE_LEAK_BLIND=0"},
-                "calls": calls, "request_sha256": calls[0]["request_sha256"], "cost_usd": round(cost, 6),
-                "adopted": False}
-    prediction = call(BLIND_SYSTEM, f"INSTRUCTION\n\n{instruction}", BLIND_FORMAT, "leak-blind")
-    judge = call(JUDGE_SYSTEM, f"{hidden}\n\nPREDICTION FROM THE INSTRUCTION ALONE\n\n"
-                               f"Fix: {prediction.get('predicted_fix', '')}\n"
-                               f"Failure: {prediction.get('predicted_failure', '')}", JUDGE_FORMAT, "leak-judge")
-    return {"version": LEAK_RECORD_VERSION, "review": review, "blind": {"prediction": prediction, "judge": judge},
-            "calls": calls, "request_sha256": calls[0]["request_sha256"], "cost_usd": round(cost, 6),
-            "adopted": False}
+        blind = {"skipped": "SDE_LEAK_BLIND=0"}
+    elif prediction is None:
+        inconclusive.append("blind")
+        blind = {"prediction": None, "judge": None, "inconclusive": True}
+    else:
+        judge = call(JUDGE_SYSTEM, f"{hidden}\n\nPREDICTION FROM THE INSTRUCTION ALONE\n\n"
+                                   f"Fix: {prediction.get('predicted_fix', '')}\n"
+                                   f"Failure: {prediction.get('predicted_failure', '')}", JUDGE_FORMAT,
+                     "leak-judge", "match")
+        if judge is None:
+            inconclusive.append("blind")
+        blind = {"prediction": prediction, "judge": judge, **({"inconclusive": True} if judge is None else {})}
+    order = {"leak-review": 0, "leak-review-retry1": 1, "leak-blind": 2, "leak-blind-retry1": 3,
+             "leak-judge": 4, "leak-judge-retry1": 5}
+    calls.sort(key=lambda c: order.get(c["call"], 9))
+    return {"version": LEAK_RECORD_VERSION, "review": review, "blind": blind, "inconclusive": inconclusive,
+            "calls": calls, "request_sha256": next((c["request_sha256"] for c in calls if c["request_sha256"]), None),
+            "cost_usd": round(sum(c["cost_usd"] for c in calls), 6), "adopted": False}
 
 
 def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:

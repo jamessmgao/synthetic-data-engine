@@ -61,6 +61,39 @@ HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the norma
 # outage, so a transient error never makes another worker re-run (and re-pay) one.
 AGENT_LEASE_TTL_S = float(os.environ.get("SDE_AGENT_LEASE_TTL_S", "1800"))
 
+# Jobs this process is running: job id -> (queue, lease token, job row, on_lost). A
+# shutdown hands them straight back (release_in_flight) instead of leaving their leases to
+# lapse: a stopped or killed worker otherwise stranded an agent job for its whole lease
+# (SDE_AGENT_LEASE_TTL_S, 30 min) plus the suspect wait, and every forced restart cost the
+# job one of its MAX_JOB_ATTEMPTS (round 2: a restart and a kill-all).
+_in_flight: dict[str, tuple[JobQueue, int, dict[str, Any], "OnStart | None"]] = {}
+_in_flight_lock = threading.Lock()
+
+
+def release_in_flight(reason: str = "released at worker shutdown") -> list[str]:
+    """Give every job this process is running back to the queue at once (READY, no
+    backoff), then stop its work (`on_lost`, e.g. the authoring trial). Their late settles
+    are refused by the fence (the job is no longer LEASED to this token), and the next
+    owner adopts a finished trial instead of paying again. Returns the released job ids."""
+    with _in_flight_lock:
+        jobs = list(_in_flight.items())
+    released = []
+    for job_id, (jq, token, job, on_lost) in jobs:
+        try:
+            if jq.release(job_id, token, error=reason, delay_sec=0.0):
+                released.append(job_id)
+        except Exception:
+            log.exception("%s: release at shutdown failed (it will be reclaimed when its lease lapses)", job_id)
+            continue
+        if on_lost is not None:
+            try:
+                on_lost(job)
+            except Exception:
+                log.exception("%s: stopping the released job failed", job_id)
+    if released:
+        log.warning("released at shutdown: %s", ", ".join(released))
+    return released
+
 
 def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | None = None,
             on_start: OnStart | None = None, lease_sec: float = LEASE_TTL_S,
@@ -98,6 +131,8 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | Non
                 return
 
     threading.Thread(target=beat, name=f"heartbeat-{job_id}", daemon=True).start()
+    with _in_flight_lock:
+        _in_flight[job_id] = (jq, token, job, on_lost)
     try:
         if on_start is not None:
             on_start(job)
@@ -109,6 +144,8 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | Non
         return False
     finally:
         done.set()
+        with _in_flight_lock:
+            _in_flight.pop(job_id, None)
     # Settle even when the lease is lost: it is fenced, so it changes nothing then,
     # except that a job closed by a cancel still records what it spent.
     if not jq.settle(job_id, token, fields, then=handoff) or lost.is_set():
@@ -404,8 +441,15 @@ def main() -> None:
     backend = from_env()
     log.info("backends: %s", describe(backend))
     stop = threading.Event()
+
+    def shutdown(*_) -> None:
+        # Stop claiming, and hand the running jobs back now: the container is SIGKILLed
+        # seconds later, and a job left LEASED would wait out its whole lease.
+        stop.set()
+        release_in_flight()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda *_: stop.set())
+        signal.signal(sig, shutdown)
     if args.with_reconciler:
         reconciler.start_thread(backend)
 

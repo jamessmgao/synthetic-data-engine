@@ -70,8 +70,12 @@ def _labels() -> list[str]:
 
 
 def _docker(args: list[str], timeout: float = STEP_TIMEOUT_SEC) -> tuple[int, str]:
+    # The real CLI (world_check.docker_bin): `docker` in the image is the agent's
+    # restricted wrapper; sde-task labels everything it starts.
+    from shared.taskformat.world_check import docker_bin
+
     try:
-        p = subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run([docker_bin(), *args], capture_output=True, text=True, timeout=timeout)
         return p.returncode, (p.stdout + p.stderr)
     except subprocess.TimeoutExpired:
         return -1, f"docker {args[0]} timed out after {timeout}s"

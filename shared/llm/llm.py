@@ -80,13 +80,17 @@ def _write_record(path: Path, record: dict) -> None:
     os.replace(tmp, path)
 
 
-def _client() -> OpenAI:
+class CallTimeout(Exception):
+    """A call ran past its `timeout` (no data for that long, or past it in total)."""
+
+
+def _client(timeout: float | None = None) -> OpenAI:
     if not config.OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not set (see .env)")
     return OpenAI(
         base_url=config.OPENROUTER_API_BASE,
         api_key=config.OPENROUTER_API_KEY,
-        timeout=config.GENERATOR_TIMEOUT_SEC,
+        timeout=timeout or config.GENERATOR_TIMEOUT_SEC,
         max_retries=0,  # retried below, so every attempt is visible in the record
     )
 
@@ -97,12 +101,17 @@ def cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
 
 
 def complete(messages: list[dict], response_format: dict, *, llm_dir: str | Path | None = None,
-             cache_key: str = "") -> Completion:
+             cache_key: str = "", timeout: float | None = None, timeout_retries: int = 0) -> Completion:
     """One completion from config.MODEL, served from the cache when possible.
 
     ``cache_key`` should identify the logical call (e.g. the job id plus the
     round), so two different jobs with identical prompts still get separate
     responses, while a retry of the same job reuses its own.
+
+    ``timeout`` (seconds) bounds one attempt, both the wait for data and its total
+    time (a streamed call is otherwise only bounded between chunks); an attempt past it
+    is abandoned and retried up to ``timeout_retries`` times, then CallTimeout is
+    raised. None: config.GENERATOR_TIMEOUT_SEC between chunks, no total bound.
     """
     from shared.llm import mock
 
@@ -121,16 +130,29 @@ def complete(messages: list[dict], response_format: dict, *, llm_dir: str | Path
             record = json.loads(candidate.read_text())
             return Completion(**{**record["completion"], "cached": True})
 
-    completion = _stream(messages, response_format)
+    attempt = 0
+    while True:
+        try:
+            completion = (_stream(messages, response_format, timeout=timeout) if timeout
+                          else _stream(messages, response_format))
+            break
+        except (CallTimeout, openai.APITimeoutError) as e:
+            if not timeout or attempt >= timeout_retries:
+                raise CallTimeout(f"no complete answer within {timeout}s, {attempt + 1} attempt(s)") from e
+            attempt += 1
+            print(f"  call {cache_key or '?'} timed out after {timeout:g}s; retry {attempt} of {timeout_retries}",
+                  file=sys.stderr, flush=True)
     completion.request_sha256 = sha
     if path:
         _write_record(path, {"cache_key": cache_key, "request": request, "completion": completion.to_dict()})
     return completion
 
 
-def _stream(messages: list[dict], response_format: dict) -> Completion:
-    """One streamed completion, retried on transport errors."""
-    client = _client()
+def _stream(messages: list[dict], response_format: dict, timeout: float | None = None) -> Completion:
+    """One streamed completion, retried on transport errors. With `timeout`, the attempt
+    raises CallTimeout once it has run that long in total, or the client times out
+    waiting for data (openai.APITimeoutError); those are not retried here."""
+    client = _client(timeout)
     retries = 0
     while True:
         start = time.monotonic()
@@ -150,6 +172,9 @@ def _stream(messages: list[dict], response_format: dict) -> Completion:
             reasoning_chars = 0
             next_report = start + PROGRESS_EVERY_SEC
             for chunk in stream:
+                if timeout and time.monotonic() - start > timeout:
+                    stream.close()
+                    raise CallTimeout(f"still streaming after {timeout:g}s")
                 model = chunk.model or model
                 if chunk.choices:
                     delta = chunk.choices[0].delta
@@ -165,8 +190,8 @@ def _stream(messages: list[dict], response_format: dict) -> Completion:
                     next_report += PROGRESS_EVERY_SEC
             break
         except openai.APIError as e:
-            if not _retryable(e):
-                raise
+            if not _retryable(e) or (timeout and isinstance(e, openai.APITimeoutError)):
+                raise  # a timeout with `timeout` set is the caller's to retry (complete)
             retries += 1
             if retries > config.GENERATOR_MAX_TRANSPORT_RETRIES:
                 raise

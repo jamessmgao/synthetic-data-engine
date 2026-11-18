@@ -33,7 +33,8 @@ K3S_VERSION = "v1.35.5+k3s1"
 KEDA_URL = "https://github.com/kedacore/keda/releases/download/v2.16.1/keda-2.16.1.yaml"
 TOKEN_PARAM = "/sde/k3s_token"
 IMAGE = "sde-pipeline:local"
-OVERLAYS = ("aws", "aws-prod")
+# aws-prod-mock: production stores and glue, but mock models and no authoring claims.
+OVERLAYS = ("aws", "aws-prod", "aws-prod-mock")
 NS = "sde"
 KUBECTL = "k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
 K = f"{KUBECTL} -n {NS}"
@@ -222,7 +223,7 @@ def prod_secret_cmds() -> list[str]:
 def cmd_deploy(ref: str = "HEAD", overlay: str = "aws") -> None:
     if overlay not in OVERLAYS:
         sys.exit(f"--overlay must be one of {', '.join(OVERLAYS)}")
-    prod = overlay == "aws-prod"
+    prod = overlay.startswith("aws-prod")
     path = f"infra/k8s/overlays/{overlay}"
     release = ship(ref)
     build_and_import(release)
@@ -230,8 +231,9 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws") -> None:
     if prod:
         tag = authoring_image(release)
         # The overlay merges this into sde-config (agreed with K1); the file is gitignored.
+        # aws-prod's configMapGenerator reads it, also when aws-prod-mock builds on aws-prod.
         pre += [f"test -d {path} || {{ echo 'no {path} in this release' >&2; exit 1; }}",
-                f"echo SDE_AUTHORING_IMAGE={tag} > {path}/authoring.env",
+                f"echo SDE_AUTHORING_IMAGE={tag} > infra/k8s/overlays/aws-prod/authoring.env",
                 *prod_secret_cmds()]
     print(f"deploying {path}…", flush=True)
     print(remote(runners()[0], [
@@ -263,6 +265,13 @@ def cmd_status() -> None:
 def cmd_logs(svc: str = "executor") -> None:
     print(remote(runners()[0], [f"{K} logs -l app.kubernetes.io/name={shlex.quote(svc)}"
                                 " --all-containers --prefix --tail=100"], timeout_s=120))
+
+
+def cmd_public() -> None:
+    """The public HTTPS link of the API (the aws-prod overlays' Cloudflare quick tunnel)."""
+    out = remote(runners()[0], [f"{K} logs deploy/public-tunnel --tail=200 2>&1"
+                                " | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"], timeout_s=120)
+    print(out.strip() or "no tunnel URL yet (is deploy/public-tunnel running?)")
 
 
 def cmd_test(*args: str) -> None:
@@ -299,7 +308,7 @@ def cmd_down() -> None:
 
 
 COMMANDS = {"up": cmd_up, "deploy": cmd_deploy, "status": cmd_status, "logs": cmd_logs,
-            "test": cmd_test, "test-log": cmd_test_log, "down": cmd_down}
+            "test": cmd_test, "test-log": cmd_test_log, "public": cmd_public, "down": cmd_down}
 
 
 def main() -> None:
@@ -308,7 +317,7 @@ def main() -> None:
     if "--overlay" in args:
         i = args.index("--overlay")
         if i + 1 >= len(args):
-            sys.exit("--overlay takes aws or aws-prod")
+            sys.exit(f"--overlay takes one of {', '.join(OVERLAYS)}")
         overlay = args[i + 1]
         del args[i:i + 2]
     if not args or args[0] not in COMMANDS:

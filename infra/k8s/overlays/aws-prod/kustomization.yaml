@@ -13,6 +13,11 @@ kind: Kustomization
 namespace: sde
 resources:
   - ../../base
+  - public-tunnel.yaml
+images:
+  # Built and imported on every instance by scripts/k8s_aws.py, never pulled (the test
+  # overlays get this tag from overlays/local; this one builds on the base directly).
+  - {name: sde-pipeline, newName: sde-pipeline, newTag: local}
 configMapGenerator:
   # Replaces the base's deploy/local.env (a dev file): code defaults for everything else.
   - name: sde-config
@@ -26,7 +31,7 @@ configMapGenerator:
       - SDE_WORK_DIR=/opt/sde/work
       - AWS_DEFAULT_REGION=us-east-2
 replicas:
-  - {name: generation, count: 4}
+  - {name: generation, count: 6}  # one authoring session per pod: a stray docker kill hits only its own job
   - {name: validate, count: 2}
   # executor: KEDA, 1-4 (base/keda.yaml).
 patches:
@@ -60,3 +65,5 @@ patches:
     patch: |-
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "4"}}
   - path: generation.yaml
+  - path: authoring-image.yaml
+    target: {kind: Deployment, name: generation}

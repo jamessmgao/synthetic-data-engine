@@ -7,6 +7,7 @@ from tests.shared.conftest import add_task
 
 from shared.storage.sql import insert_job, job_id
 from shared.contracts.models import JobType
+from shared.jobs import worker
 from shared.jobs.worker import run_one, serve
 
 

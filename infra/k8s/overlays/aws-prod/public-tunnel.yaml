@@ -1,0 +1,30 @@
+# A public HTTPS link to the API, free: a Cloudflare "quick tunnel" (as in expert-capture's
+# overlays/aws/public-tunnel.yaml). The pod dials out to Cloudflare (no inbound ports, like
+# SSM) and gets a random https://….trycloudflare.com URL; `scripts/k8s_aws.py public` prints
+# it. Anyone with the URL reaches the API (everything but /healthz needs the SDE_API_KEY
+# bearer token; the user accepted that). The URL changes whenever this pod restarts, and
+# Cloudflare gives no uptime guarantee; the cluster runs whether or not the tunnel is up.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: public-tunnel
+  labels: {app.kubernetes.io/name: public-tunnel}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: public-tunnel}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: public-tunnel}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/control-plane: "true"}
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.7
+          args: ["tunnel", "--no-autoupdate", "--url", "http://api:8000"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false

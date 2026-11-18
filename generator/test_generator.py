@@ -721,10 +721,28 @@ def leak_bundle(tmp_path: Path, instruction: str) -> Path:
     return b
 
 
+class LeakModel(FakeModel):
+    """The leak gate's three calls, answered by their system prompt (the review and the
+    blind prediction run concurrently, so their order is not fixed)."""
+
+    def __init__(self, review: dict, judge: str):
+        super().__init__()
+        self.by_system = {"review": json.dumps(review),
+                          "blind": json.dumps({"predicted_fix": "unclear", "predicted_failure": "unclear"}),
+                          "judge": json.dumps({"match": judge, "why": "-"})}
+
+    def __call__(self, messages, response_format, timeout=None):
+        from validator import gates
+
+        system = messages[0]["content"]
+        kind = {gates.LEAK_SYSTEM: "review", gates.BLIND_SYSTEM: "blind", gates.JUDGE_SYSTEM: "judge"}[system]
+        self.responses = [self.by_system[kind]]
+        return super().__call__(messages, response_format)
+
+
 def fake_review(monkeypatch, review: dict, judge: str = "none") -> FakeModel:
     """The leak gate's three calls: the review, the blind prediction, its judgement."""
-    fake = FakeModel(json.dumps(review), json.dumps({"predicted_fix": "unclear", "predicted_failure": "unclear"}),
-                     json.dumps({"match": judge, "why": "-"}))
+    fake = LeakModel(review, judge)
     monkeypatch.setattr(llm, "_stream", fake)
     return fake
 

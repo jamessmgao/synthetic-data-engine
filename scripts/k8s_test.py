@@ -183,8 +183,12 @@ def main() -> None:
     check(not left, f"no job left LEASED or READY {left or ''}")
 
     step("no leaked containers in the dind sidecars")
-    pods = json.loads(kubectl("get", "pods", "-l", "app.kubernetes.io/part-of=sde-pipeline", "-o", "json"))["items"]
-    runners = [r for r in pods if any(c["name"] == args.dind_container for c in r["spec"]["containers"])]
+    # Pod templates carry app.kubernetes.io/name, not part-of (that's on the Deployments only).
+    pods = json.loads(kubectl("get", "pods", "-l", "app.kubernetes.io/name in (validate,executor,generation)",
+                              "-o", "json"))["items"]
+    # dind is a native sidecar (an initContainer with restartPolicy Always), not a container.
+    runners = [r for r in pods if any(c["name"] == args.dind_container
+                                      for c in r["spec"].get("containers", []) + r["spec"].get("initContainers", []))]
     check(bool(runners), f"{len(runners)} pods with a {args.dind_container} sidecar")
     for r in runners:
         name = r["metadata"]["name"]

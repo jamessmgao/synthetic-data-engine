@@ -121,6 +121,8 @@ aws-k8s-status:
 	$(K8S_AWS) status
 aws-k8s-logs:    ## make aws-k8s-logs SVC=api|control|validate|executor|generation|postgres|redis|s3
 	$(K8S_AWS) logs $(or $(SVC),executor)
+aws-k8s-public:  ## the API's public HTTPS link (Cloudflare quick tunnel; aws-prod overlays)
+	$(K8S_AWS) public
 aws-k8s-test:    ## make aws-k8s-test [ARGS="--tasks 2"]: scripts/k8s_test.py on the server (systemd unit)
 	$(K8S_AWS) test $(ARGS)
 aws-k8s-test-log:

@@ -101,6 +101,15 @@ MAX_REPAIRS = 2  # gate-failure repairs per version (PRD §6.1)
 LEAK_REVIEW = os.environ.get("SDE_LEAK_REVIEW", "1") != "0"
 # The leak gate's second check (a blind fix prediction + its judgement: two more calls).
 LEAK_BLIND = os.environ.get("SDE_LEAK_BLIND", "1") != "0"
+# One leak-review call's limit (data wait and total), retried up to LEAK_CALL_TIMEOUT_RETRIES
+# times: local-agent-b2's t04 review took ~14 min on one stalled call.
+LEAK_CALL_TIMEOUT_S = float(os.environ.get("SDE_LEAK_CALL_TIMEOUT_S", "180"))
+LEAK_CALL_TIMEOUT_RETRIES = 2
+# A review or judge answer still unparseable after one retry: `warn` passes the gate with
+# detail.inconclusive set (surfaced, not silent); `fail` fails it.
+LEAK_INCONCLUSIVE = os.environ.get("SDE_LEAK_INCONCLUSIVE", "warn").strip() or "warn"
+if LEAK_INCONCLUSIVE not in ("warn", "fail"):
+    raise ValueError(f"SDE_LEAK_INCONCLUSIVE must be warn or fail, not {LEAK_INCONCLUSIVE!r}")
 
 # Data-provenance canary. Harbor strips leading canary comment lines from
 # instruction.md before showing it to an agent (see harbor/.../task/task.py).

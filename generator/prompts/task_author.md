@@ -10,7 +10,10 @@ You are authoring one Terminal-Bench task from a world that is already built and
 5. `sde-task check /logs/artifacts/draft.json`, then `sde-task run /logs/artifacts/draft.json --as all`; both must exit 0 before you finish (a draft that fails them is sent back). If one fails and you're short of time, fix the single failing check or role rather than finishing.
 
 You work as root in `/work`; Docker is available through the host's socket (label what you
-start by hand with `--label "$SDE_DOCKER_LABEL"`). The world is in `/input/world/` (read-only):
+start by hand with `--label "$SDE_DOCKER_LABEL"`; clean up only your own containers, `docker ps
+--filter label=$SDE_DOCKER_LABEL`, and never kill, stop or remove containers you didn't start: the
+daemon is shared. If the terminal is stuck, press C-c once and wait; never kill all containers).
+The world is in `/input/world/` (read-only):
 `world.json` (invariants, counterexample, `plausible_wrong_fix`), `environment/` (the system,
 with the defect), `repro/repro.sh` (exit 1 on the world, 0 once fixed), `world_fix/fix.sh`.
 
