@@ -13,8 +13,10 @@ What the services write and these read (PRD §5.1):
   - analyze (Trace Parser): `result.action` and its review cost.
 """
 
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
 from statistics import median
 from typing import Any
 
@@ -22,6 +24,7 @@ from evaluation.calibration import eval_config, in_band
 from evaluation.verdict import decision_text, pass_pattern, version_input
 from shared.storage import budget
 from shared.jobs import tasks as task_state
+from shared.storage.artifacts import LocalArtifactStore
 from shared.storage.sql import SqlStore, row_dict
 from shared.contracts.models import (
     GENERATION_TYPES,
@@ -207,7 +210,7 @@ def get_task(store: SqlStore, task_id: str) -> dict:
     return {
         "task": {k: task[k] for k in (
             "id", "name", "slot", "status", "reason", "current_version", "stage",
-            "accepted_version", "created_at", "updated_at",
+            "accepted_version", "batch_id", "created_at", "updated_at",
         )},
         "versions": [_version_view(task, v, jobs, n_runs) for v in range(1, task["current_version"] + 1)],
         "rollouts": [
@@ -217,10 +220,81 @@ def get_task(store: SqlStore, task_id: str) -> dict:
             )}
             for j in rollouts
         ],
+        "jobs": [_job_view(j) for j in jobs],
         "decision": decision_text(task, jobs),
         "reason": task["reason"],
         "cost_usd": _sum_cost(jobs),
     }
+
+
+def _job_view(job: dict) -> dict:
+    """One job row without its large blobs: what ran, where, for how long, and how it ended."""
+    return {
+        **{k: job[k] for k in (
+            "id", "task_id", "type", "version", "slot", "retry", "status", "outcome", "attempts",
+            "lease_owner", "bundle_sha256", "error", "trace_uri", "cost_usd",
+            "created_at", "started_at", "finished_at",
+        )},
+        "origin": (job["input"] or {}).get("origin"),
+    }
+
+
+def queue(store: SqlStore) -> dict:
+    """Job counts by type and status, and every job that is running now (LEASED), oldest first."""
+    counts: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in store.conn.execute("SELECT type, status, COUNT(*) AS n FROM jobs GROUP BY type, status").fetchall():
+        counts[r["type"]][r["status"]] = int(r["n"])
+    running = store.conn.execute(
+        "SELECT * FROM jobs WHERE status = ? ORDER BY started_at, id", (JobStatus.LEASED,)
+    ).fetchall()
+    return {"counts": counts, "running": [_job_view(row_dict(r)) for r in running]}
+
+
+# --- artifacts: the files behind a result (read-only) -------------------------
+
+ARTIFACT_KINDS = ("bundles", "worlds", "traces")
+_ARTIFACT_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
+MAX_LISTED_FILES = 5000
+MAX_FILE_BYTES = 1_000_000
+
+
+def _artifact_root(artifacts: LocalArtifactStore, kind: str, key: str) -> Path:
+    """The local dir of a bundle or world (by sha) or a job's trace (by job id),
+    fetched from S3 first when the store has one."""
+    if kind not in ARTIFACT_KINDS or not _ARTIFACT_KEY.match(key):
+        raise NotFound(f"no artifact {kind}/{key}")
+    if kind == "traces":
+        root = artifacts.trace_dir(key) if artifacts.fetch_trace(key) else None
+    else:
+        root = artifacts.tree_path(kind, key)
+    if root is None or not root.is_dir():
+        raise NotFound(f"no artifact {kind}/{key}")
+    return root
+
+
+def artifact_files(artifacts: LocalArtifactStore, kind: str, key: str) -> dict:
+    """Every file of one artifact: relative path and size, sorted (at most MAX_LISTED_FILES)."""
+    root = _artifact_root(artifacts, kind, key)
+    files = sorted(p for p in root.rglob("*") if p.is_file() and p.name != ".complete")
+    return {
+        "kind": kind, "key": key, "total": len(files),
+        "files": [{"path": p.relative_to(root).as_posix(), "size": p.stat().st_size}
+                  for p in files[:MAX_LISTED_FILES]],
+    }
+
+
+def artifact_file(artifacts: LocalArtifactStore, kind: str, key: str, path: str) -> dict:
+    """One file's text (its first MAX_FILE_BYTES); binary files report only their size."""
+    root = _artifact_root(artifacts, kind, key).resolve()
+    target = (root / path).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        raise NotFound(f"no file {path!r} in {kind}/{key}")
+    size = target.stat().st_size
+    with target.open("rb") as f:
+        head = f.read(MAX_FILE_BYTES)
+    binary = b"\0" in head[:8192]
+    return {"path": path, "size": size, "binary": binary, "truncated": size > MAX_FILE_BYTES,
+            "text": None if binary else head.decode("utf-8", errors="replace")}
 
 
 def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None = None) -> dict:

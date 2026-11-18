@@ -129,3 +129,15 @@ aws-k8s-test-log:
 	$(K8S_AWS) test-log
 aws-k8s-down:    ## uninstall K3s on every runner (then `make aws-deploy` restores compose)
 	$(K8S_AWS) down
+
+# --- the dashboard (web/): status and results of every task -------------------------------
+.PHONY: ui ui-aws
+
+ui:              ## the dashboard on http://localhost:3100, reading web/.env.local (SDE_URL, SDE_API_KEY)
+	cd web && npm install --no-audit --no-fund && npm run dev
+ui-aws:          ## point the dashboard at the AWS cluster (tunnel URL + SSM key into web/.env.local), then run it
+	@url=$$($(K8S_AWS) public | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1); \
+	key=$$(aws ssm get-parameter --region us-east-2 --name /sde/api_key --with-decryption --query Parameter.Value --output text); \
+	test -n "$$url" -a -n "$$key" || { echo "no tunnel URL or API key"; exit 1; }; \
+	printf 'SDE_URL=%s\nAQ_API_KEY=%s\n' "$$url" "$$key" > web/.env.local; echo "web/.env.local -> $$url"
+	$(MAKE) ui

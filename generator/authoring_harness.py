@@ -156,12 +156,51 @@ def _usable(trial_dir: Path, result: dict) -> bool:
     return out.is_dir() and any(out.iterdir())
 
 
+# A trial that ended because its job was taken away (the task cancelled): never adopted.
+CANCELLED_EXCEPTIONS = {"CancelledError", "Cancelled", "KeyboardInterrupt"}
+
+
+def _output(job_id: str) -> str | None:
+    """The file a finished authoring trial of this job writes under /logs/artifacts/: the
+    world for a world job (world, retry, repair, mutation), the draft for a create, revise
+    or repair. None for an id of neither shape (then any real artifact counts)."""
+    if "-world" in job_id:
+        return "world/world.json"
+    if any(k in job_id for k in ("-create", "-revise", "-repair")):
+        return "draft.json"
+    return None
+
+
+def _adoptable(trial_dir: Path, result: dict, output: str | None) -> bool:
+    """Whether a trial found before running may stand in for running one: it didn't end
+    because it was cancelled, and it wrote the job's output. Stricter than `_usable` (which
+    reads the trial just run): artifacts_dir() falls back to the trial's artifacts/ root,
+    which always holds Harbor's manifest.json, so a cancelled, empty trial looked usable and
+    was adopted on the job's re-run (the revivals of iteration 0-1 tasks)."""
+    if ((result.get("exception_info") or {}).get("exception_type") or "") in CANCELLED_EXCEPTIONS:
+        return False
+    out = artifacts_dir(trial_dir)
+    if output is not None:
+        return (out / output).is_file()
+    return out.is_dir() and any(p.is_file() and p.name != "manifest.json" for p in out.rglob("*"))
+
+
 def _finished_trial(job_dir: Path) -> tuple[Path | None, dict | None]:
-    """A usable trial Harbor wrote under job_dir (see `_usable`), if any. Several can come
-    back from S3 after retries; prefer one that worked."""
+    """The trial just run under job_dir, if usable (see `_usable`). Several can come back
+    from S3 after retries; prefer one that worked."""
     for trial in sorted(p.parent for p in job_dir.glob("*/result.json")):
         result = json.loads((trial / "result.json").read_text())
         if _usable(trial, result):
+            return trial, result
+    return None, None
+
+
+def _adoptable_trial(job_dir: Path, output: str | None) -> tuple[Path | None, dict | None]:
+    """A trial already under job_dir (a re-run job, or one fetched back from S3) that may
+    stand in for running one (see `_adoptable`), if any."""
+    for trial in sorted(p.parent for p in job_dir.glob("*/result.json")):
+        result = json.loads((trial / "result.json").read_text())
+        if _adoptable(trial, result, output):
             return trial, result
     return None, None
 
@@ -227,13 +266,17 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
     size = instruction_size(instruction)
     trace = Path(work_dir or config.WORK_DIR) / "traces" / job_id
     job_dir = trace / JOB_NAME
-    trial_dir, result = _finished_trial(job_dir)
+    trial_dir, result = _adoptable_trial(job_dir, _output(job_id))
     if result is not None:
         return {**summarize(trial_dir, result, adopted=True), "instruction_size": size}
     if job_dir.exists():
         # Keep it for the audit: a run that died before its result.json is "abandoned", one
-        # that finished with an infra error and nothing to show is "infra-failed".
-        kind = "infra-failed" if any(job_dir.glob("*/result.json")) else "abandoned"
+        # stopped because its job was taken away "cancelled", one that finished with an infra
+        # error or without its output "infra-failed".
+        results = [json.loads(p.read_text()) for p in job_dir.glob("*/result.json")]
+        kind = ("cancelled" if any(((r.get("exception_info") or {}).get("exception_type") or "")
+                                   in CANCELLED_EXCEPTIONS for r in results)
+                else "infra-failed" if results else "abandoned")
         n = 1
         while job_dir.with_name(f"{JOB_NAME}.{kind}-{n}").exists():
             n += 1

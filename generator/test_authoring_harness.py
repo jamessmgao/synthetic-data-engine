@@ -133,6 +133,67 @@ def test_a_finished_trial_is_adopted_not_rerun(tmp_path, monkeypatch):
     assert len(runs) == 1 and again["adopted"] and again["artifacts_dir"] == first["artifacts_dir"]
 
 
+def cancelled_trial(tmp_path, job_id):
+    """What a cancelled authoring trial leaves (the revival of a cancelled task re-runs its
+    job and found this): result.json with a CancelledError and only Harbor's manifest under
+    artifacts/, whose /logs/artifacts copy was never written."""
+    trial = tmp_path / "traces" / job_id / ah.JOB_NAME / "authoring__cancelled"
+    (trial / "artifacts").mkdir(parents=True)
+    (trial / "artifacts" / "manifest.json").write_text(json.dumps(
+        [{"source": "/logs/artifacts", "destination": "artifacts/logs/artifacts", "status": "failed"}]))
+    (trial / "result.json").write_text(json.dumps({
+        "agent_result": {"n_input_tokens": 1000, "n_output_tokens": 10},
+        "exception_info": {"exception_type": "CancelledError", "exception_message": ""}}))
+    return trial
+
+
+@pytest.mark.parametrize("job_id, output", [("t-v2-create", "draft.json"), ("t-v3-world", "world/world.json")])
+def test_a_cancelled_trial_with_only_the_manifest_is_rerun_not_adopted(tmp_path, monkeypatch, job_id, output):
+    cancelled_trial(tmp_path, job_id)
+    calls = []
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls, artifacts=(output,)))
+    out = ah.run_authoring_trial(job_id, "x", {}, tmp_path)
+    assert len([c for c in calls if "cmd" in c]) == 1 and not out["adopted"]
+    assert (Path(out["artifacts_dir"]) / output).is_file()
+    assert (tmp_path / "traces" / job_id / f"{ah.JOB_NAME}.cancelled-1" / "authoring__cancelled").is_dir()
+
+
+def test_a_cancelled_trial_is_not_adopted_even_with_its_output():
+    """A trial stopped because its job was taken away is never adopted: the job is being
+    run again on purpose (the task revived), whatever the old trial left."""
+    assert not ah._adoptable(Path("/nonexistent"), {"exception_info": {"exception_type": "CancelledError"}},
+                             "draft.json")
+
+
+def test_a_finished_create_with_its_draft_is_adopted(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls, artifacts=("draft.json",)))
+    first = ah.run_authoring_trial("t-v1-create", "x", {}, tmp_path)
+    again = ah.run_authoring_trial("t-v1-create", "x", {}, tmp_path)
+    assert len([c for c in calls if "cmd" in c]) == 1 and again["adopted"]
+    assert again["artifacts_dir"] == first["artifacts_dir"]
+
+
+def test_a_finished_trial_without_the_jobs_output_is_rerun_not_adopted(tmp_path, monkeypatch):
+    """A world job's earlier trial that wrote no world/world.json (only a draft, say) is not
+    the world: run it again rather than adopt an empty result."""
+    calls = []
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls, artifacts=("notes.txt",)))
+    ah.run_authoring_trial("t-v1-world", "x", {}, tmp_path)
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls))
+    again = ah.run_authoring_trial("t-v1-world", "x", {}, tmp_path)
+    assert len([c for c in calls if "cmd" in c]) == 2 and not again["adopted"]
+    assert (tmp_path / "traces" / "t-v1-world" / f"{ah.JOB_NAME}.infra-failed-1").is_dir()
+
+
+def test_the_trial_just_run_is_read_even_without_its_output(tmp_path, monkeypatch):
+    """Only adoption is strict: a trial that just finished without a draft is still the
+    author's result (the create fails as the author's), not "Harbor wrote no trial result"."""
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor([], artifacts=("notes.txt",)))
+    out = ah.run_authoring_trial("t-v1-create", "x", {}, tmp_path)
+    assert out["artifacts_dir"] and out["exception_type"] is None and not out["adopted"]
+
+
 def test_every_trial_reports_its_instruction_size(tmp_path, monkeypatch):
     monkeypatch.setattr(ah.subprocess, "run", fake_harbor([]))
     text = "Build a world. " * 100

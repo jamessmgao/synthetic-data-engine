@@ -453,3 +453,44 @@ def test_batch_report_matches_the_task_report(client, worked_real_batch):
     per_batch = ("batch_id", "budget", "pipeline_budget")
     assert {k: v for k, v in r.items() if k not in per_batch} == {k: v for k, v in named.items() if k != "budget"}
     assert r["pipeline_budget"] == named["budget"]
+
+
+def test_task_verdict_lists_every_job(client, worked_batch):
+    jobs = client.get("/v1/tasks/t-01", headers=AUTH).json()["jobs"]
+    revise = next(j for j in jobs if j["type"] == "revise")
+    assert (revise["version"], revise["origin"], revise["bundle_sha256"]) == (2, "revision", "sha-v2")
+    assert "input" not in revise and "result" not in revise  # the large blobs stay out
+
+
+def test_queue_counts_jobs_and_lists_running_ones(client, backend):
+    create(client, task_id="t1")
+    add_job(backend, "t1", 1, "validate", job_id("t1", 1, "validate", 0), status="LEASED", lease_owner="w1")
+    q = client.get("/v1/queue", headers=AUTH).json()
+    assert q["counts"]["create"] == {"READY": 1} and q["counts"]["validate"] == {"LEASED": 1}
+    assert [(j["type"], j["lease_owner"]) for j in q["running"]] == [("validate", "w1")]
+
+
+def test_artifacts_list_and_read_files(client, backend):
+    bundle = backend.artifacts.bundle_path("abc123")
+    (bundle / "tests").mkdir(parents=True)
+    (bundle / "instruction.md").write_text("Fix the queue.")
+    (bundle / "tests" / "test_x.py").write_text("def test_x(): pass\n")
+    (bundle / "blob.bin").write_bytes(b"\0\1\2")
+    trace = backend.artifacts.trace_dir("t1-v1-rollout1-r0")
+    trace.mkdir(parents=True)
+    (trace / "result.json").write_text("{}")
+
+    listing = client.get("/v1/artifacts/bundles/abc123", headers=AUTH).json()
+    assert [f["path"] for f in listing["files"]] == ["blob.bin", "instruction.md", "tests/test_x.py"]
+    f = client.get("/v1/artifacts/bundles/abc123/file", params={"path": "instruction.md"}, headers=AUTH).json()
+    assert (f["text"], f["binary"], f["truncated"]) == ("Fix the queue.", False, False)
+    assert client.get("/v1/artifacts/bundles/abc123/file", params={"path": "blob.bin"},
+                      headers=AUTH).json()["binary"] is True
+    assert client.get("/v1/artifacts/traces/t1-v1-rollout1-r0", headers=AUTH).json()["total"] == 1
+
+    # Unknown artifacts and paths outside the artifact are 404, never a read.
+    for url, params in (("/v1/artifacts/bundles/nope", None), ("/v1/artifacts/llm/abc123", None),
+                        ("/v1/artifacts/bundles/abc123/file", {"path": "../../sde.db"}),
+                        ("/v1/artifacts/bundles/abc123/file", {"path": "missing.md"})):
+        assert client.get(url, params=params, headers=AUTH).status_code == 404
+    assert client.get("/v1/artifacts/bundles/abc123").status_code == 401

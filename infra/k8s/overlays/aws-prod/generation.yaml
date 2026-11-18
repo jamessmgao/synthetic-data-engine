@@ -8,10 +8,28 @@ spec:
   template:
     spec:
       containers:
+        # 2 authoring sessions per pod (20 on 10 pods; the user's call, 2026-11-18): sessions wait on the
+        # model, so nodes ran at 4-8% CPU and 5.4-6 GB free with 1 each. The docker wrapper's label scope
+        # keeps a stray kill inside its own job, and the DB pool stays per pod (RDS max 79).
         - name: app
           env:
-            - {name: SDE_AGENT_SLOTS, value: "1"}
-            - {name: SDE_DOCKER_SLOTS, value: "3"}
+            - {name: SDE_AGENT_SLOTS, value: "2"}
+            - {name: SDE_DOCKER_SLOTS, value: "4"}
+            # One role container at a time per session: 2 sessions x 2 parallel roles x 2 GB caps could
+            # ask 8 GB of a 5 GiB dind, and an OOM inside dind reads as a failed self-check, not infra.
+            - {name: SDE_TASK_PARALLEL, value: "1"}
+          # Measured ~370-450 MiB with one session; a runaway is stopped, not the node.
+          resources:
+            requests: {memory: 512Mi}
+            limits: {memory: 2Gi}
+      initContainers:
+        # The sandbox: both sessions' agent containers (55-130 MiB each now) and their self-check test
+        # containers (up to 2 at a time, ≤2 GiB each, mostly far less). Measured 190-460 MiB idle.
+        # dind is a native sidecar, so it lives in initContainers: under containers this merge made a
+        # second, image-less "dind", and the API rejected the whole Deployment (deploy of 082166f).
+        - name: dind
+          resources:
+            limits: {memory: 5Gi}  # the request (1Gi, cpu 500m) comes from overlays/aws/on-agents.yaml
       volumes:
         - name: images
           hostPath: {path: /opt/sde/images, type: Directory}

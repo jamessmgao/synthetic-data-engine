@@ -44,7 +44,7 @@ configMapGenerator:
       - SDE_ADOPT_AUTHOR_CHECKS=1
       - AWS_DEFAULT_REGION=us-east-2
 replicas:
-  - {name: generation, count: 10}  # one authoring session per pod: a stray docker kill hits only its own job
+  - {name: generation, count: 10}  # ≤10 pods (RDS connections); 2 authoring sessions each (generation.yaml)
   - {name: validate, count: 2}
   # executor: KEDA, 1-10 in production (the base's ScaledObject says 1-4; patched below).
 patches:
@@ -62,8 +62,10 @@ patches:
       kind: Service
       metadata: {name: any}
   # The aws overlay's placement and image pulls.
+  # Only the Deployments with an `app` container (public-tunnel has none: the patch added an
+  # image-less one there, and the API rejected public-tunnel on every deploy).
   - path: ../aws/no-pull.yaml
-    target: {kind: Deployment}
+    target: {kind: Deployment, name: "api|control|validate|executor|generation"}
   - path: ../aws/no-pull-bootstrap.yaml
     target: {kind: Job, name: bootstrap}
   - path: ../aws/on-server.yaml

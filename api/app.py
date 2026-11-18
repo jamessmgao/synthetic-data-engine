@@ -66,6 +66,21 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     def get_task(task_id: str):
         return service.get_task(store, task_id)
 
+    @v1.get("/queue")
+    def get_queue():
+        """Job counts by type and status, and the jobs running now."""
+        return service.queue(store)
+
+    @v1.get("/artifacts/{kind}/{key}")
+    def list_artifact(kind: str, key: str):
+        """The files of a bundle or world (by sha256) or of a job's trace (by job id)."""
+        return service.artifact_files(backend.artifacts, kind, key)
+
+    @v1.get("/artifacts/{kind}/{key}/file")
+    def read_artifact(kind: str, key: str, path: str):
+        """One file of an artifact, as text (the first 1 MB)."""
+        return service.artifact_file(backend.artifacts, kind, key, path)
+
     @v1.post("/tasks/{task_id}/cancel")
     def cancel_task(task_id: str, body: CancelRequest | None = None):
         """Stop a task: no further job of it is claimed and nothing it settles is handed
