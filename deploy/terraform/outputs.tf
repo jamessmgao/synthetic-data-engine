@@ -1,5 +1,6 @@
-output "runner_instance_id" {
-  value = aws_instance.runner.id
+output "runner_instance_ids" {
+  description = "runner[0] is the control runner (API, worker-control, reconciler)."
+  value       = aws_instance.runner[*].id
 }
 
 output "artifacts_bucket" {

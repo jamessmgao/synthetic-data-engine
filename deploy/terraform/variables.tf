@@ -23,9 +23,15 @@ variable "name" {
 }
 
 variable "runner_instance_type" {
-  description = "Runs the app containers and up to SDE_DOCKER_SLOTS task containers (1 CPU / 2 GB each)."
+  description = "The account is on the AWS Free plan, which allows only free-tier types; m7i-flex.large (2 vCPU / 8 GB) is the largest."
   type        = string
-  default     = "m6i.2xlarge"
+  default     = "m7i-flex.large"
+}
+
+variable "runner_count" {
+  description = "Runners share the queue; each adds docker_slots of capacity. runner[0] also hosts the API and worker-control. The account's vCPU quota (16) allows 8."
+  type        = number
+  default     = 4
 }
 
 variable "runner_disk_gb" {
@@ -35,9 +41,9 @@ variable "runner_disk_gb" {
 }
 
 variable "docker_slots" {
-  description = "Concurrent Harbor trials on the runner."
+  description = "Concurrent Harbor trials per runner. Task containers cap at 1 CPU / 2 GB but mostly idle waiting on the model, so both CPU (4x) and memory are oversubscribed; an OOM kill becomes an INVALID rollout and is retried. Lower it if `docker stats` shows memory pressure."
   type        = number
-  default     = 4
+  default     = 8
 }
 
 variable "compose_version" {

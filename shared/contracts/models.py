@@ -35,6 +35,7 @@ class JobType(StrEnum):
     GENERATE = "generate"
     VALIDATE = "validate"
     ROLLOUT = "rollout"
+    ANALYZE = "analyze"  # the Analysis service: accept / revise / reject (PRD §5)
     SMOKE = "smoke"  # `python -m shared.jobs.smoke` only; no worker claims it
 
 
@@ -56,8 +57,14 @@ class Outcome(StrEnum):
 TERMINAL_TASK_STATUSES = (TaskStatus.ACCEPTED, TaskStatus.REJECTED)
 SCORED_OUTCOMES = (Outcome.VALID_PASS, Outcome.VALID_FAIL)
 
-# Finish what's started: rollouts before validations before new drafts (PRD §6.11).
-PRIORITY = {JobType.ROLLOUT: 30, JobType.VALIDATE: 20, JobType.GENERATE: 10, JobType.SMOKE: 0}
+# Finish what's started: decisions, then rollouts, validations, new drafts (PRD §6.11).
+PRIORITY = {
+    JobType.ANALYZE: 40,
+    JobType.ROLLOUT: 30,
+    JobType.VALIDATE: 20,
+    JobType.GENERATE: 10,
+    JobType.SMOKE: 0,
+}
 # Job types that hold a Docker slot while leased.
 DOCKER_JOB_TYPES = (JobType.VALIDATE, JobType.ROLLOUT)
 DOCKER_SLOTS = int(os.environ.get("SDE_DOCKER_SLOTS", "4"))

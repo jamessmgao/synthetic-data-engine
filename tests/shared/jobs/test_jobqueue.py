@@ -56,6 +56,21 @@ def test_docker_slot_cap_spans_types_but_not_generate(backend, jq):
     assert jq.claim("rollout", "w3", docker_slots=2) is not None
 
 
+def test_docker_slots_are_per_machine(backend, jq, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT, n=5)
+    pid = jqmod.os.getpid()
+    for host, expect in (("runner-a", 2), ("runner-b", 2)):
+        monkeypatch.setattr(jqmod.socket, "gethostname", lambda h=host: h)
+        got = [jq.claim("rollout", f"{host}:{pid}:{i}", docker_slots=2) for i in range(3)]
+        assert sum(j is not None for j in got) == expect, host
+    # The fifth job waits for a free slot on some machine.
+    monkeypatch.setattr(jqmod.socket, "gethostname", lambda: "runner-c")
+    assert jq.claim("rollout", f"runner-c:{pid}:0", docker_slots=2) is not None
+
+
 def test_expired_lease_is_taken_over_and_old_owner_is_fenced(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
@@ -157,6 +172,24 @@ def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
     assert reconcile(backend)["dead_lettered"] == 0
 
 
+def test_dead_lettered_rollout_triggers_one_analysis(backend, jq):
+    t = add_task(backend)
+    [rid] = enqueue(backend, jq, t, JobType.ROLLOUT)
+    [gid] = enqueue(backend, jq, t, JobType.GENERATE)
+    for i in range(MAX_JOB_ATTEMPTS):
+        jq.queue.reconcile()
+        for kind in ("rollout", "generate"):
+            assert jq.claim(kind, f"w{i}", lease_sec=0.01) is not None
+        time.sleep(0.02)
+    assert reconcile(backend)["dead_lettered"] == 2
+    reconcile(backend)  # a second pass adds nothing
+    jobs = {j["id"]: j for j in backend.store.task_jobs(t)}
+    assert set(jobs) == {rid, gid, f"{rid}-analyze"}  # rollouts only
+    a = jobs[f"{rid}-analyze"]
+    assert (a["type"], a["status"], a["version"], a["input"]) == ("analyze", "READY", 1, {"trigger": rid})
+    assert jq.claim("analyze", "analyzer")["id"] == f"{rid}-analyze"
+
+
 def test_concurrent_claims_never_share_a_job(env, backend):
     t = add_task(backend)
     jq = JobQueue(backend)
@@ -198,7 +231,8 @@ def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):
         return
     t = add_task(backend)
     ids = enqueue(backend, jq, t, n=3)
-    jq.queue.r.flushdb()  # Redis lost everything
+    for key in jq.queue.r.scan_iter(f"{jq.queue.prefix}*"):  # Redis lost everything
+        jq.queue.r.delete(key)
     assert jq.claim("generate", "w1") is None
     assert jq.queue.reconcile() == 3
     got = {jq.claim("generate", "w1")["id"] for _ in range(3)}

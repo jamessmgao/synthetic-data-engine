@@ -71,7 +71,10 @@ rejected.
 - **The instruction is the whole contract.** It states the objective, the
   constraints, every path, command, interface and output format the tests
   rely on. A test that checks something the instruction does not state makes
-  a failure the task's fault, not the agent's.
+  a failure the task's fault, not the agent's. This includes every value the
+  tests or their helper scripts use: user names, passwords, hostnames, ports,
+  file names, and how the tests start or connect to the system. If the tests
+  log in as `git` with password `password`, the instruction must say so.
 - **It does not give the answer away.** Describe the symptoms and the required
   guarantees, not the root cause or the patch. Do not list "key files", the
   functions or helpers to use, the order of operations to check, or an

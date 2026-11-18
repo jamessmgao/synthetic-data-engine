@@ -32,29 +32,39 @@ if PG and REDIS:
     MATRIX.append(pytest.param({"db": PG, "redis": REDIS}, id="postgres+redis"))
 
 
-def _reset_postgres(url: str) -> None:
+def _admin(url: str):
     import psycopg
 
-    with psycopg.connect(url, autocommit=True) as c:
-        c.execute("DROP TABLE IF EXISTS jobs, tasks")
-
-
-def make_env(tmp_path: Path, cfg: dict[str, str]) -> dict[str, str]:
-    env = {"SDE_WORK_DIR": str(tmp_path / "work")}
-    if db := cfg.get("db"):
-        _reset_postgres(db)
-        env["DATABASE_URL"] = db
-    if redis_url := cfg.get("redis"):
-        import redis
-
-        redis.Redis.from_url(redis_url).flushdb()
-        env["REDIS_URL"] = redis_url
-    return env
+    return psycopg.connect(url, autocommit=True)
 
 
 @pytest.fixture(params=MATRIX)
 def env(request, tmp_path):
-    return make_env(tmp_path, request.param)
+    """Per-test backends: its own Postgres database and its own Redis key prefix,
+    so concurrent test runs against one compose stack can't interfere."""
+    cfg = request.param
+    run = uuid.uuid4().hex[:10]
+    env = {"SDE_WORK_DIR": str(tmp_path / "work")}
+    db_name = None
+    if base := cfg.get("db"):
+        db_name = f"sde_t_{run}"
+        with _admin(base) as c:
+            c.execute(f"CREATE DATABASE {db_name}")
+        env["DATABASE_URL"] = base.rsplit("/", 1)[0] + f"/{db_name}"
+    if redis_url := cfg.get("redis"):
+        env["REDIS_URL"] = redis_url
+        env["SDE_REDIS_PREFIX"] = f"aqtest:{run}:"
+    yield env
+    if redis_url:
+        import redis
+
+        r = redis.Redis.from_url(redis_url)
+        keys = list(r.scan_iter(f"aqtest:{run}:*"))
+        if keys:
+            r.delete(*keys)
+    if db_name:
+        with _admin(base) as c:
+            c.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
 
 
 @pytest.fixture

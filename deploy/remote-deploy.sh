@@ -2,10 +2,13 @@
 # Runs ON the runner (sent through SSM by deploy/aws_ops.py). Unpacks one release,
 # writes runtime.env from SSM Parameter Store, and brings the app up.
 #
-# Usage: remote-deploy.sh <git-sha> <artifacts-bucket> <region> <docker-slots>
+# Usage: remote-deploy.sh <git-sha> <artifacts-bucket> <region> <docker-slots> <role>
+#   role=control  api + worker-control (generation, Job Service, the one reconciler)
+#                 + worker-runner
+#   role=runner   worker-runner only (Docker jobs)
 set -euo pipefail
 
-sha=$1 bucket=$2 region=$3 slots=$4
+sha=$1 bucket=$2 region=$3 slots=$4 role=$5
 release=/opt/sde/releases/$sha
 
 until [ -f /opt/sde/.bootstrapped ]; do echo "waiting for first-boot setup"; sleep 5; done
@@ -45,12 +48,17 @@ umask 077
   cmd job_service SDE_JOB_SERVICE_CMD "python -m job_service run"
   cmd validator/gates.py SDE_VALIDATE_CMD "python -m validator.service validate"
   cmd evaluation/executor.py SDE_EXECUTOR_CMD "python -m evaluation.executor"
-  cmd api SDE_API_CMD "uvicorn api.app:app --host 0.0.0.0 --port 8000"
+  cmd api SDE_API_CMD "python -m api --host 0.0.0.0 --port 8000"
+  echo "SDE_API_KEY=$(param /sde/api_key)"
 } > /opt/sde/runtime.env.tmp
 mv /opt/sde/runtime.env.tmp /opt/sde/runtime.env
 
+services=""  # all of them
+[ "$role" = runner ] && services="worker-runner"
+
 cd "$release"
-docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --build --remove-orphans
+# shellcheck disable=SC2086  # $services is intentionally split (or empty)
+docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --build --remove-orphans $services
 docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml ps
 echo "components:"; grep '_CMD=' /opt/sde/runtime.env
-echo "deployed $sha"
+echo "deployed $sha as $role"

@@ -1,0 +1,13 @@
+[15:56:28] pilot p2: 12 candidates (strategies), budget $80.0, 1+1 docker slots, 8 concurrent drafts
+[15:56:28] s1-interface-go: drafting (initial)
+[15:56:28] s1-interface-pipeline: drafting (initial)
+[15:56:28] s1-interface-c: drafting (initial)
+[15:56:28] s2-behavioral-sqlite: drafting (initial)
+[15:56:28] s2-behavioral-go: drafting (initial)
+[15:56:28] s2-behavioral-http: drafting (initial)
+[15:56:28] s4-performance-go: drafting (initial)
+[15:56:28] s3-spec-implementation-shell: drafting (initial)
+[15:56:28] s4-performance-java: drafting (initial)
+[15:56:28] s3-spec-implementation-pipeline: drafting (initial)
+[15:56:28] s3-spec-implementation-c: drafting (initial)
+[15:56:28] s4-performance-pipeline: drafting (initial)

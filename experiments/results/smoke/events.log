@@ -1,0 +1,8 @@
+[14:52:50] pilot smoke: 1 candidates, budget $80.0, 4 docker slots, 8 concurrent drafts
+[14:53:51] ex-openssl-selfsigned-cert: rollout4 VALID_PASS (1P/0F)
+[14:54:34] ex-openssl-selfsigned-cert: rollout3 VALID_PASS (2P/0F)
+[14:54:44] ex-openssl-selfsigned-cert: rollout1 VALID_PASS (3P/0F)
+[14:54:53] ex-openssl-selfsigned-cert: rollout2 VALID_PASS (4P/0F)
+[14:55:29] ex-openssl-selfsigned-cert: rollout5 VALID_PASS (5P/0F)
+[14:55:29] ex-openssl-selfsigned-cert: VERDICT too_easy (5P/0F)
+[14:55:29] done: spent $0.02; {"ex-openssl-selfsigned-cert": "too_easy"}

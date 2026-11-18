@@ -1,0 +1,150 @@
+{
+ "id": "c-medium",
+ "spec": {
+  "taxonomy": {
+   "domain": "Systems programming",
+   "task_type": "Debugging",
+   "core_capability": "Memory and resource management",
+   "failure_mode": "Crash",
+   "environment": "C program built with make",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "medium",
+   "relevant_files": "10-20",
+   "constraints": 2,
+   "subgoals": 2,
+   "failure_scenarios": 1,
+   "notes": [
+    "Describe symptoms only; the agent must locate the cause itself",
+    "The correct fix touches two modules"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-c-medium-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.325827,
+   "rounds": 2,
+   "completion_tokens": 75046,
+   "draft_sec": 813.4,
+   "round_errors": [
+    "- draft: solution_files must not contain ['solve.sh']\n- draft: that file has its own field or is written by the pipeline"
+   ],
+   "bundle_sha256": "7d35bea295176b8dd3243c1dfcad2a83de66c7fbff1e32aa80cb59248c37432d",
+   "name": "queue-mgr-debug"
+  },
+  {
+   "job_id": "p1-c-medium-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 82.5,
+   "tests_passing_on_nop": [
+    "test_basic_enqueue_dequeue",
+    "test_save_load_roundtrip"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-medium/rollout1-r0/7d35bea295176b8dd3243c1dfcad2a83__4bpBDf9",
+   "cost_usd": 0.0066204179999999994,
+   "input_tokens": 87800,
+   "output_tokens": 4239,
+   "steps": 13,
+   "duration_sec": 94.0,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-medium/rollout2-r0/7d35bea295176b8dd3243c1dfcad2a83__2Tx37rR",
+   "cost_usd": 0.00229058,
+   "input_tokens": 15400,
+   "output_tokens": 2173,
+   "steps": 5,
+   "duration_sec": 56.2,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-medium/rollout3-r0/7d35bea295176b8dd3243c1dfcad2a83__M7P3eyh",
+   "cost_usd": 0.0018479265,
+   "input_tokens": 15086,
+   "output_tokens": 1824,
+   "steps": 5,
+   "duration_sec": 61.0,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-medium/rollout4-r0/7d35bea295176b8dd3243c1dfcad2a83__juc8pf9",
+   "cost_usd": 0.00321326,
+   "input_tokens": 24542,
+   "output_tokens": 3167,
+   "steps": 6,
+   "duration_sec": 68.7,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-medium/rollout5-r0/7d35bea295176b8dd3243c1dfcad2a83__rnFhmjp",
+   "cost_usd": 0.004292924,
+   "input_tokens": 44372,
+   "output_tokens": 3616,
+   "steps": 8,
+   "duration_sec": 77.5,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.718027,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/7d35bea295176b8dd3243c1dfcad2a83de66c7fbff1e32aa80cb59248c37432d",
+ "name": "queue-mgr-debug",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794959785.160461,
+ "wall_sec": 1446.4,
+ "cost_usd": {
+  "authoring": 0.3258,
+  "rollouts": 0.0183,
+  "total": 0.3441
+ }
+}

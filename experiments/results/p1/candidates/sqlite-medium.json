@@ -1,0 +1,148 @@
+{
+ "id": "sqlite-medium",
+ "spec": {
+  "taxonomy": {
+   "domain": "Databases",
+   "task_type": "Migration",
+   "core_capability": "Consistency",
+   "failure_mode": "Data corruption",
+   "environment": "Python application with SQLite",
+   "skill_interaction": "Multiple interacting constraints"
+  },
+  "difficulty": {
+   "level": "medium",
+   "relevant_files": "10-20",
+   "constraints": 2,
+   "subgoals": 2,
+   "failure_scenarios": 1,
+   "notes": [
+    "Describe symptoms only; the agent must locate the cause itself",
+    "The correct fix touches two modules"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-sqlite-medium-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.114026,
+   "rounds": 1,
+   "completion_tokens": 26628,
+   "draft_sec": 276.9,
+   "round_errors": [],
+   "bundle_sha256": "ce3acf23d8637ffab9218d6a2062bb5ac601e4562804f622143b3cc61de1d80e",
+   "name": "inventory-migration-fix"
+  },
+  {
+   "job_id": "p1-sqlite-medium-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 63.4,
+   "tests_passing_on_nop": [
+    "test_line_values_match_computation",
+    "test_empty_category_has_zero_total"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-sqlite-medium/rollout3-r0/ce3acf23d8637ffab9218d6a2062bb5a__HVmRzNd",
+   "cost_usd": 0.00497025,
+   "input_tokens": 42106,
+   "output_tokens": 4926,
+   "steps": 8,
+   "duration_sec": 72.7,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-sqlite-medium/rollout1-r0/ce3acf23d8637ffab9218d6a2062bb5a__Mx934LA",
+   "cost_usd": 0.0066693019999999985,
+   "input_tokens": 52327,
+   "output_tokens": 7301,
+   "steps": 8,
+   "duration_sec": 96.8,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-sqlite-medium/rollout2-r0/ce3acf23d8637ffab9218d6a2062bb5a__QyZiHLG",
+   "cost_usd": 0.00681014,
+   "input_tokens": 59728,
+   "output_tokens": 7727,
+   "steps": 10,
+   "duration_sec": 104.6,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-sqlite-medium/rollout4-r0/ce3acf23d8637ffab9218d6a2062bb5a__7Q9rfFX",
+   "cost_usd": 0.00448592,
+   "input_tokens": 36574,
+   "output_tokens": 4927,
+   "steps": 8,
+   "duration_sec": 99.4,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-sqlite-medium/rollout5-r0/ce3acf23d8637ffab9218d6a2062bb5a__cErnszx",
+   "cost_usd": 0.0044700600000000005,
+   "input_tokens": 28840,
+   "output_tokens": 5570,
+   "steps": 7,
+   "duration_sec": 82.2,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.718387,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/ce3acf23d8637ffab9218d6a2062bb5ac601e4562804f622143b3cc61de1d80e",
+ "name": "inventory-migration-fix",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794959419.1308868,
+ "wall_sec": 1080.4,
+ "cost_usd": {
+  "authoring": 0.114,
+  "rollouts": 0.0274,
+  "total": 0.1414
+ }
+}

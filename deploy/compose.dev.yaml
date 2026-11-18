@@ -74,10 +74,11 @@ services:
   api:
     profiles: [app]
     build: {context: .., dockerfile: deploy/Dockerfile, target: control}
-    command: ["sh", "-c", "${SDE_API_CMD:-uvicorn api.app:app --host 0.0.0.0 --port 8000}"]
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_API_CMD-python -m api --host 0.0.0.0 --port 8000}"]
     environment:
       <<: *backend-env
-      API_ADMIN_TOKEN: ${API_ADMIN_TOKEN:-dev-token}
+      SDE_API_KEY: ${SDE_API_KEY:-dev-token}
+      SDE_WORK_DIR: /tmp/sde-work # no work-dir mount here: a private cache for S3 reads
     ports: ["${SDE_API_PORT:-8000}:8000"]
     depends_on: *depends
     restart: unless-stopped

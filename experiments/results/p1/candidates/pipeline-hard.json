@@ -1,0 +1,150 @@
+{
+ "id": "pipeline-hard",
+ "spec": {
+  "taxonomy": {
+   "domain": "Data pipelines",
+   "task_type": "Debugging",
+   "core_capability": "Consistency of aggregated results",
+   "failure_mode": "Data corruption",
+   "environment": "Python service",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "hard",
+   "relevant_files": "15-30",
+   "constraints": 3,
+   "subgoals": 3,
+   "failure_scenarios": 2,
+   "notes": [
+    "Describe symptoms only; the agent must locate the cause itself",
+    "At least one constraint interacts with another: the obvious fix for one breaks another",
+    "The defect violates a domain-specific invariant of this system, not a textbook bug pattern",
+    "The relevant evidence (logs, data) must be found among realistic, irrelevant material"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-pipeline-hard-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.272104,
+   "rounds": 3,
+   "completion_tokens": 126364,
+   "draft_sec": 1290.3,
+   "round_errors": [
+    "truncated: response hit the output token limit",
+    "- draft: solution_files must not contain ['solve.sh']\n- draft: that file has its own field or is written by the pipeline"
+   ],
+   "bundle_sha256": "56b5ceff90cdff46dfe6e36e99bb794f7b3eeba452515578e1f0df9bd8113d5a",
+   "name": "event-duration-aggregator-consistency"
+  },
+  {
+   "job_id": "p1-pipeline-hard-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 78.4,
+   "tests_passing_on_nop": []
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-hard/rollout1-r0/56b5ceff90cdff46dfe6e36e99bb794f__XS5nRPz",
+   "cost_usd": 0.012599648,
+   "input_tokens": 112750,
+   "output_tokens": 11054,
+   "steps": 11,
+   "duration_sec": 110.3,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-hard/rollout3-r0/56b5ceff90cdff46dfe6e36e99bb794f__FZCeQkw",
+   "cost_usd": 0.01160257,
+   "input_tokens": 94661,
+   "output_tokens": 12509,
+   "steps": 10,
+   "duration_sec": 124.3,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-hard/rollout2-r0/56b5ceff90cdff46dfe6e36e99bb794f__qhSY7Aq",
+   "cost_usd": 0.012248859999999999,
+   "input_tokens": 113582,
+   "output_tokens": 12434,
+   "steps": 10,
+   "duration_sec": 133.9,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-hard/rollout4-r0/56b5ceff90cdff46dfe6e36e99bb794f__TNZAW4c",
+   "cost_usd": 0.015532642999999999,
+   "input_tokens": 148660,
+   "output_tokens": 13510,
+   "steps": 11,
+   "duration_sec": 153.8,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-hard/rollout5-r0/56b5ceff90cdff46dfe6e36e99bb794f__X3gvF2A",
+   "cost_usd": 0.013111610000000001,
+   "input_tokens": 97607,
+   "output_tokens": 14494,
+   "steps": 11,
+   "duration_sec": 151.9,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.716751,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/56b5ceff90cdff46dfe6e36e99bb794f7b3eeba452515578e1f0df9bd8113d5a",
+ "name": "event-duration-aggregator-consistency",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794959703.371126,
+ "wall_sec": 1364.7,
+ "cost_usd": {
+  "authoring": 0.2721,
+  "rollouts": 0.0651,
+  "total": 0.3372
+ }
+}

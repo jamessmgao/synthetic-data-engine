@@ -60,17 +60,17 @@ class DbQueue:
 class RedisQueue:
     """Single-node Redis sorted sets `sde:<type>`; members are job ids."""
 
-    PREFIX = "sde:"
     BATCH = 20  # ids to look at per type per poll
 
-    def __init__(self, store: SqlStore, url: str):
+    def __init__(self, store: SqlStore, url: str, prefix: str = "sde:"):
         import redis
 
         self.store = store
+        self.prefix = prefix  # several pipelines (or test runs) can share one Redis
         self.r = redis.Redis.from_url(url, decode_responses=True)
 
     def _key(self, type: str) -> str:
-        return f"{self.PREFIX}{type}"
+        return f"{self.prefix}{type}"
 
     def candidates(self, types: list[JobType]) -> list[str | None]:
         now = time.time()
@@ -117,5 +117,5 @@ class RedisQueue:
         return len(jobs)
 
 
-def make_queue(store: SqlStore, redis_url: str | None) -> Queue:
-    return RedisQueue(store, redis_url) if redis_url else DbQueue(store)
+def make_queue(store: SqlStore, redis_url: str | None, prefix: str = "sde:") -> Queue:
+    return RedisQueue(store, redis_url, prefix) if redis_url else DbQueue(store)

@@ -1,0 +1,149 @@
+{
+ "id": "pipeline-medium",
+ "spec": {
+  "taxonomy": {
+   "domain": "Data pipelines",
+   "task_type": "Debugging",
+   "core_capability": "Consistency of aggregated results",
+   "failure_mode": "Data corruption",
+   "environment": "Python service",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "medium",
+   "relevant_files": "10-20",
+   "constraints": 2,
+   "subgoals": 2,
+   "failure_scenarios": 1,
+   "notes": [
+    "Describe symptoms only; the agent must locate the cause itself",
+    "The correct fix touches two modules"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-pipeline-medium-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.082466,
+   "rounds": 2,
+   "completion_tokens": 84596,
+   "draft_sec": 911.9,
+   "round_errors": [
+    "truncated: response hit the output token limit"
+   ],
+   "bundle_sha256": "4a6786207272dfc61db9cfc1948eae810ee07dafcd501a514fd559ecaa76847e",
+   "name": "metrics-pipeline-bug"
+  },
+  {
+   "job_id": "p1-pipeline-medium-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 80.2,
+   "tests_passing_on_nop": [
+    "test_single_partition_single_file_baseline"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-medium/rollout2-r0/4a6786207272dfc61db9cfc1948eae81__Fb6g7d8",
+   "cost_usd": 0.0023300589,
+   "input_tokens": 19133,
+   "output_tokens": 2386,
+   "steps": 6,
+   "duration_sec": 53.5,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-medium/rollout3-r0/4a6786207272dfc61db9cfc1948eae81__H9WnQjY",
+   "cost_usd": 0.0029182808,
+   "input_tokens": 23909,
+   "output_tokens": 2511,
+   "steps": 6,
+   "duration_sec": 53.7,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-medium/rollout1-r0/4a6786207272dfc61db9cfc1948eae81__rxJXrUe",
+   "cost_usd": 0.006869966,
+   "input_tokens": 55134,
+   "output_tokens": 6549,
+   "steps": 9,
+   "duration_sec": 100.1,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-medium/rollout5-r0/4a6786207272dfc61db9cfc1948eae81__xut5Z8F",
+   "cost_usd": 0.0025860540000000004,
+   "input_tokens": 24439,
+   "output_tokens": 1981,
+   "steps": 7,
+   "duration_sec": 55.5,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-medium/rollout4-r0/4a6786207272dfc61db9cfc1948eae81__V45EZaC",
+   "cost_usd": 0.00310008,
+   "input_tokens": 19095,
+   "output_tokens": 3023,
+   "steps": 6,
+   "duration_sec": 62.7,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.7165408,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/4a6786207272dfc61db9cfc1948eae810ee07dafcd501a514fd559ecaa76847e",
+ "name": "metrics-pipeline-bug",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794959162.6267788,
+ "wall_sec": 823.9,
+ "cost_usd": {
+  "authoring": 0.0825,
+  "rollouts": 0.0178,
+  "total": 0.1003
+ }
+}

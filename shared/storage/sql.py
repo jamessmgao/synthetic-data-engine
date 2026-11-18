@@ -227,13 +227,16 @@ def claim(
     batch_id: str | None = None,
     only_id: str | None = None,
     process: str | None = None,
+    host: str | None = None,
 ) -> dict[str, Any] | None:
     """Lease the next claimable job of the given types (or exactly `only_id`).
 
     Claimable means: READY, or LEASED with an expired lease (its worker died);
     claimed fewer than MAX_JOB_ATTEMPTS times; due; and its task not yet decided.
     Docker job types are only claimed while fewer than `docker_slots` live leases
-    hold one (None = no cap). Returns the leased row, `lease_token` included.
+    hold one (None = no cap). With `host` (the owner prefix of one machine), the cap
+    counts only that machine's leases, so each runner gets its own slots; without
+    it, the cap is global. Returns the leased row, `lease_token` included.
 
     Crash isolation: a job whose lease expired is a suspect, because its process
     died while running it (or while running a sibling). Given `process`, the owner
@@ -248,11 +251,13 @@ def claim(
     d_marks = ",".join("?" * len(DOCKER_JOB_TYPES))
     filters, extra = "", []
     if docker_slots is not None:
+        on_host = " AND substr(lease_owner, 1, ?) = ?" if host else ""
         filters += f""" AND (type NOT IN ({d_marks}) OR (
                         SELECT COUNT(*) FROM jobs
                          WHERE type IN ({d_marks}) AND status = 'LEASED'
-                           AND lease_until >= ?) < ?)"""
-        extra += [*map(str, DOCKER_JOB_TYPES), *map(str, DOCKER_JOB_TYPES), now, docker_slots]
+                           AND lease_until >= ?{on_host}) < ?)"""
+        extra += [*map(str, DOCKER_JOB_TYPES), *map(str, DOCKER_JOB_TYPES), now,
+                  *([len(host), host] if host else []), docker_slots]
     if batch_id:
         filters += " AND task_id IN (SELECT id FROM tasks WHERE batch_id = ?)"
         extra.append(batch_id)

@@ -130,11 +130,15 @@ def _pin_base_images(source: str) -> str:
 def _agent_user_block(draft: TaskDraft) -> str:
     paths = sorted({dockerfile_workdir(draft.dockerfile), *draft.agent_writable_paths})
     joined = " ".join(paths)
+    # The agent's shell is a login shell, and /etc/profile resets PATH for
+    # non-root users, dropping toolchain dirs the image set with ENV PATH
+    # (e.g. /usr/local/go/bin). Persist the image's PATH for login shells.
     return (
         "\n# Added by the task pipeline: the agent works as an unprivileged user.\n"
         f"RUN useradd --create-home --shell /bin/bash {AGENT_USER} \\\n"
         f"    && mkdir -p {joined} \\\n"
-        f"    && chown -R {AGENT_USER}:{AGENT_USER} {joined}\n"
+        f"    && chown -R {AGENT_USER}:{AGENT_USER} {joined} \\\n"
+        '    && echo "export PATH=\\"$PATH\\"" > /etc/profile.d/00-image-path.sh\n'
     )
 
 

@@ -1,0 +1,145 @@
+{
+ "id": "c-easy",
+ "spec": {
+  "taxonomy": {
+   "domain": "Systems programming",
+   "task_type": "Debugging",
+   "core_capability": "Memory and resource management",
+   "failure_mode": "Crash",
+   "environment": "C program built with make",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "easy",
+   "relevant_files": "5-10",
+   "constraints": 1,
+   "subgoals": 1,
+   "failure_scenarios": 1,
+   "notes": [
+    "A single, localized defect",
+    "The instruction may name the affected component and show the failing symptom"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-c-easy-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0.166364,
+   "rounds": 1,
+   "completion_tokens": 39148,
+   "draft_sec": 409.2,
+   "round_errors": [],
+   "bundle_sha256": "f59cbbada8c1ea6ba5fd1b984e9b36e6b7e916f6ddfa47717c8e32dd7f1e4de5",
+   "name": "logfmt-multifile-crash"
+  },
+  {
+   "job_id": "p1-c-easy-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 118.5,
+   "tests_passing_on_nop": []
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-easy/rollout1-r0/f59cbbada8c1ea6ba5fd1b984e9b36e6__U2ooSGr",
+   "cost_usd": 0.002780228,
+   "input_tokens": 22293,
+   "output_tokens": 2269,
+   "steps": 7,
+   "duration_sec": 52.9,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-easy/rollout3-r0/f59cbbada8c1ea6ba5fd1b984e9b36e6__rNtDASJ",
+   "cost_usd": 0.001952736,
+   "input_tokens": 15850,
+   "output_tokens": 1538,
+   "steps": 6,
+   "duration_sec": 47.7,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-easy/rollout2-r0/f59cbbada8c1ea6ba5fd1b984e9b36e6__VsPi6M4",
+   "cost_usd": 0.004106216,
+   "input_tokens": 34465,
+   "output_tokens": 2257,
+   "steps": 7,
+   "duration_sec": 62.5,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-easy/rollout4-r0/f59cbbada8c1ea6ba5fd1b984e9b36e6__BpQShtv",
+   "cost_usd": 0.0027208100000000006,
+   "input_tokens": 24570,
+   "output_tokens": 2513,
+   "steps": 7,
+   "duration_sec": 63.8,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-c-easy/rollout5-r0/f59cbbada8c1ea6ba5fd1b984e9b36e6__dau3zKE",
+   "cost_usd": 0.002731562,
+   "input_tokens": 26794,
+   "output_tokens": 2029,
+   "steps": 8,
+   "duration_sec": 43.8,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.717875,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/f59cbbada8c1ea6ba5fd1b984e9b36e6b7e916f6ddfa47717c8e32dd7f1e4de5",
+ "name": "logfmt-multifile-crash",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794959032.9118469,
+ "wall_sec": 694.2,
+ "cost_usd": {
+  "authoring": 0.1664,
+  "rollouts": 0.0143,
+  "total": 0.1807
+ }
+}

@@ -1,0 +1,119 @@
+{
+ "id": "ex-configure-git-webserver",
+ "spec": null,
+ "steps": [],
+ "rollouts": [
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-ex-configure-git-webserver/rollout1-r0/configure-git-webserver__qhmBmJE",
+   "cost_usd": 0.006335806,
+   "input_tokens": 94448,
+   "output_tokens": 5297,
+   "steps": 11,
+   "duration_sec": 294.8,
+   "failing_tests": [
+    {
+     "test": "test_hello_html_exists",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-ex-configure-git-webserver/rollout4-r0/configure-git-webserver__bFnR6Ww",
+   "cost_usd": 0.012566306,
+   "input_tokens": 202301,
+   "output_tokens": 10534,
+   "steps": 15,
+   "duration_sec": 315.2,
+   "failing_tests": [
+    {
+     "test": "test_hello_html_exists",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-ex-configure-git-webserver/rollout2-r0/configure-git-webserver__hzmTnPJ",
+   "cost_usd": 0.012751374,
+   "input_tokens": 144015,
+   "output_tokens": 9645,
+   "steps": 15,
+   "duration_sec": 338.7,
+   "failing_tests": [
+    {
+     "test": "test_hello_html_exists",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-ex-configure-git-webserver/rollout3-r0/configure-git-webserver__cqG4K5B",
+   "cost_usd": 0.015034812300000002,
+   "input_tokens": 256063,
+   "output_tokens": 11759,
+   "steps": 20,
+   "duration_sec": 370.5,
+   "failing_tests": [
+    {
+     "test": "test_hello_html_exists",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_FAIL",
+   "reward": 0.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-ex-configure-git-webserver/rollout5-r0/configure-git-webserver__vn85BWr",
+   "cost_usd": 0.007972417999999998,
+   "input_tokens": 104412,
+   "output_tokens": 8524,
+   "steps": 11,
+   "duration_sec": 256.9,
+   "failing_tests": [
+    {
+     "test": "test_hello_html_exists",
+     "message": "The test failed in the call phase due to an assertion error"
+    }
+   ],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_hard",
+ "started": 1794956141.023916,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/examples/configure-git-webserver",
+ "passes": 0,
+ "fails": 5,
+ "finished": 1794956701.2114801,
+ "wall_sec": 560.2,
+ "cost_usd": {
+  "authoring": 0,
+  "rollouts": 0.0547,
+  "total": 0.0547
+ }
+}

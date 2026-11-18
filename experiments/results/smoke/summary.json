@@ -1,0 +1,9 @@
+{
+ "pilot": "smoke",
+ "candidates": 1,
+ "spent_usd": 0.0154,
+ "wall_sec": 159.3,
+ "verdicts": {
+  "ex-openssl-selfsigned-cert": "too_easy"
+ }
+}

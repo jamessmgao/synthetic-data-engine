@@ -1,0 +1,147 @@
+{
+ "id": "pipeline-easy",
+ "spec": {
+  "taxonomy": {
+   "domain": "Data pipelines",
+   "task_type": "Debugging",
+   "core_capability": "Consistency of aggregated results",
+   "failure_mode": "Data corruption",
+   "environment": "Python service",
+   "skill_interaction": "Two dependent skills"
+  },
+  "difficulty": {
+   "level": "easy",
+   "relevant_files": "5-10",
+   "constraints": 1,
+   "subgoals": 1,
+   "failure_scenarios": 1,
+   "notes": [
+    "A single, localized defect",
+    "The instruction may name the affected component and show the failing symptom"
+   ]
+  }
+ },
+ "steps": [
+  {
+   "job_id": "p1-pipeline-easy-v1-generate",
+   "type": "generate",
+   "outcome": "OK",
+   "error": null,
+   "cost_usd": 0,
+   "rounds": 1,
+   "completion_tokens": 19085,
+   "draft_sec": 186.9,
+   "round_errors": [],
+   "bundle_sha256": "768a8328f815da807a7c90d6de4d78cd8ee291c0cfe2510a7058e15be181af2c",
+   "name": "sales-reporter-aggregation"
+  },
+  {
+   "job_id": "p1-pipeline-easy-v1-validate0",
+   "type": "validate",
+   "outcome": "OK",
+   "failed_gate": null,
+   "gates": {
+    "structural": true,
+    "lint": true,
+    "oracle1": true,
+    "oracle2": true,
+    "nop": true
+   },
+   "feedback": "",
+   "sec": 71.5,
+   "tests_passing_on_nop": [
+    "test_summary_csv_structure"
+   ]
+  }
+ ],
+ "rollouts": [
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-easy/rollout1-r0/768a8328f815da807a7c90d6de4d78cd__BvkbP7D",
+   "cost_usd": 0.001791913,
+   "input_tokens": 15026,
+   "output_tokens": 1758,
+   "steps": 6,
+   "duration_sec": 51.2,
+   "failing_tests": [],
+   "slot": 1,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-easy/rollout3-r0/768a8328f815da807a7c90d6de4d78cd__FhZzFRN",
+   "cost_usd": 0.00185406,
+   "input_tokens": 12071,
+   "output_tokens": 1714,
+   "steps": 6,
+   "duration_sec": 51.4,
+   "failing_tests": [],
+   "slot": 3,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-easy/rollout2-r0/768a8328f815da807a7c90d6de4d78cd__ooSM8WK",
+   "cost_usd": 0.0019834600000000003,
+   "input_tokens": 15636,
+   "output_tokens": 1703,
+   "steps": 6,
+   "duration_sec": 52.3,
+   "failing_tests": [],
+   "slot": 2,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-easy/rollout4-r0/768a8328f815da807a7c90d6de4d78cd__zVWonpo",
+   "cost_usd": 0.00211288,
+   "input_tokens": 18366,
+   "output_tokens": 1985,
+   "steps": 7,
+   "duration_sec": 80.7,
+   "failing_tests": [],
+   "slot": 4,
+   "retry": 0
+  },
+  {
+   "outcome": "VALID_PASS",
+   "reward": 1.0,
+   "exception": null,
+   "exception_message": null,
+   "trial_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/traces/p1-pipeline-easy/rollout5-r0/768a8328f815da807a7c90d6de4d78cd__LDeVz9f",
+   "cost_usd": 0.001604694,
+   "input_tokens": 13184,
+   "output_tokens": 1376,
+   "steps": 6,
+   "duration_sec": 82.0,
+   "failing_tests": [],
+   "slot": 5,
+   "retry": 0
+  }
+ ],
+ "verdict": "too_easy",
+ "started": 1794958338.716274,
+ "bundle_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/task-builder/work/bundles/768a8328f815da807a7c90d6de4d78cd8ee291c0cfe2510a7058e15be181af2c",
+ "name": "sales-reporter-aggregation",
+ "passes": 5,
+ "fails": 0,
+ "finished": 1794958553.069441,
+ "wall_sec": 214.4,
+ "cost_usd": {
+  "authoring": 0,
+  "rollouts": 0.0093,
+  "total": 0.0093
+ }
+}

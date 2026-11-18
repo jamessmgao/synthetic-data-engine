@@ -195,6 +195,7 @@ def test_dockerfile_is_pinned_and_creates_the_agent_user(tmp_path):
     assert f"FROM python:3.12-slim-bookworm@{BASE_IMAGES['python:3.12-slim-bookworm']}" in dockerfile
     assert "useradd --create-home --shell /bin/bash agent" in dockerfile
     assert "chown -R agent:agent /app /var/lib/stats" in dockerfile
+    assert 'echo "export PATH=\\"$PATH\\"" > /etc/profile.d/00-image-path.sh' in dockerfile
     assert task.config.agent.user == "agent"
     assert task.config.verifier.user is None  # verifier stays root
 
@@ -355,6 +356,16 @@ def test_repair_continues_the_conversation_and_guards_tests(tmp_path, monkeypatc
     assert sent[1] == {"role": "user", "content": "the prompt"} and sent[2]["role"] == "assistant"
     assert "expected 2.5" in sent[3]["content"]
     assert res["result"]["bundle_sha256"] != sha
+
+
+def test_upstream_mid_stream_errors_are_retried_but_4xx_are_not():
+    import httpx
+    import openai
+    req = httpx.Request("POST", "https://x/v1/chat/completions")
+    upstream = openai.APIError("Upstream error from Alibaba: Model output became abnormal", req, body=None)
+    bad_key = openai.AuthenticationError("Unauthorized", response=httpx.Response(401, request=req), body=None)
+    assert llm._retryable(upstream)
+    assert not llm._retryable(bad_key)
 
 
 def test_generate_job_reports_bad_input(tmp_path):

@@ -3,12 +3,12 @@
     bootstrap        create the Terraform state bucket (once)
     plan | apply     Terraform: VPC, RDS Postgres, ElastiCache Redis, S3, runner EC2
     secrets          copy OPENROUTER_API_KEY from .env into SSM (/sde/openrouter_api_key)
-    deploy [REF]     ship git REF (default HEAD) to the runner and `compose up --build`
-    smoke            run shared.jobs.smoke on the runner against RDS, Redis and S3
-    status           what's running, and the deployed release
-    logs [SERVICE]   last 100 log lines from the runner's containers
-    exec CMD…        run a shell command on the runner
-    stop | start     stop or start the runner (managed state keeps running)
+    deploy [REF]     ship git REF (default HEAD) to every runner and `compose up --build`
+    smoke            run shared.jobs.smoke on the control runner against RDS, Redis and S3
+    status           what's running on each runner, and the deployed release
+    logs [SERVICE]   last 100 log lines from the control runner's containers
+    exec CMD…        run a shell command on every runner
+    stop | start     stop or start the runners (managed state keeps running)
     destroy          Terraform destroy: deletes everything it created
 
 Every command checks that the AWS session is the expected account and region
@@ -19,10 +19,12 @@ Terraform. Access to the runner is only through SSM: no SSH, no open ports.
 import base64
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ACCOUNT = "284460774261"
@@ -97,6 +99,16 @@ def wait_for_ssm(instance: str, timeout_s: int = 600) -> None:
     sys.exit(f"{instance} never came online in SSM")
 
 
+def runners() -> list[str]:
+    """Runner instance ids; [0] is the control runner."""
+    return outputs()["runner_instance_ids"]
+
+
+def on_all(fn, instances: list[str]) -> list[str]:
+    with ThreadPoolExecutor(len(instances)) as pool:
+        return list(pool.map(fn, instances))
+
+
 def remote(instance: str, commands: list[str], timeout_s: int = 3600) -> str:
     """Run shell commands on the runner and return their output (fails on non-zero)."""
     wait_for_ssm(instance)
@@ -168,6 +180,17 @@ def cmd_secrets() -> None:
         "/sde/openrouter_api_key", "--tags", "Key=project,Value=sde-task-pipeline")
     print("stored /sde/openrouter_api_key (SecureString)")
 
+    # The API's operator key (SDE_API_KEY): generated once, then kept.
+    have = subprocess.run(["aws", "ssm", "get-parameter", "--region", REGION, "--name", "/sde/api_key"],
+                          capture_output=True).returncode == 0
+    if not have:
+        aws("ssm", "put-parameter", "--name", "/sde/api_key", "--type", "SecureString",
+            "--value", secrets.token_urlsafe(32))
+        aws("ssm", "add-tags-to-resource", "--resource-type", "Parameter", "--resource-id",
+            "/sde/api_key", "--tags", "Key=project,Value=sde-task-pipeline")
+        print("generated /sde/api_key (SecureString); read it with: aws ssm get-parameter "
+              "--name /sde/api_key --with-decryption")
+
 
 def cmd_deploy(ref: str = "HEAD") -> None:
     out = outputs()
@@ -177,54 +200,64 @@ def cmd_deploy(ref: str = "HEAD") -> None:
         tarball = Path(tmp) / "release.tar.gz"
         run(["git", "archive", "--format=tar.gz", "-o", str(tarball), sha], cwd=REPO)
         aws("s3", "cp", str(tarball), f"s3://{out['artifacts_bucket']}/{key}")
-    print(f"uploaded {sha[:12]} → s3://{out['artifacts_bucket']}/{key}; deploying…", flush=True)
-    print(remote_script(out["runner_instance_id"], REPO / "deploy" / "remote-deploy.sh",
-                        [sha, out["artifacts_bucket"], REGION, str(out["docker_slots"])]))
+    ids = out["runner_instance_ids"]
+    print(f"uploaded {sha[:12]} → s3://{out['artifacts_bucket']}/{key}; deploying to {len(ids)} runners…",
+          flush=True)
+
+    def deploy_one(instance: str) -> str:
+        role = "control" if instance == ids[0] else "runner"
+        log = remote_script(instance, REPO / "deploy" / "remote-deploy.sh",
+                            [sha, out["artifacts_bucket"], REGION, str(out["docker_slots"]), role])
+        return f"=== {instance} ({role}) ===\n{log[-3000:]}"
+
+    for log in on_all(deploy_one, ids):
+        print(log)
 
 
 def cmd_smoke() -> None:
     out = outputs()
-    print(remote(out["runner_instance_id"],
+    print(remote(out["runner_instance_ids"][0],
                  [f"{COMPOSE} exec -T worker-control python -m shared.jobs.smoke"], timeout_s=300))
 
 
 def cmd_status() -> None:
     out = outputs()
-    inst = awsj("ec2", "describe-instances", "--instance-ids", out["runner_instance_id"],
-                "--query", "Reservations[0].Instances[0].{state:State.Name,type:InstanceType}")
+    ids = out["runner_instance_ids"]
+    insts = awsj("ec2", "describe-instances", "--instance-ids", *ids, "--query",
+                 "Reservations[].Instances[].{id:InstanceId,state:State.Name,type:InstanceType}")
     db = awsj("rds", "describe-db-instances", "--db-instance-identifier", "sde-pipeline-db",
               "--query", "DBInstances[0].DBInstanceStatus")
     redis = awsj("elasticache", "describe-cache-clusters", "--cache-cluster-id", "sde-pipeline-redis",
                  "--query", "CacheClusters[0].CacheClusterStatus")
-    print(json.dumps({"runner": inst, "rds": db, "redis": redis, **out}, indent=2))
-    if inst["state"] == "running":
-        print(remote(out["runner_instance_id"], [
-            "readlink /opt/sde/current || echo 'no release deployed'",
-            f"{COMPOSE} ps 2>/dev/null || true",
-        ], timeout_s=120))
+    print(json.dumps({"runners": insts, "rds": db, "redis": redis, **out}, indent=2))
+    running = [i["id"] for i in insts if i["state"] == "running"]
+    if running:
+        cmds = ["readlink /opt/sde/current || echo 'no release deployed'",
+                f"{COMPOSE} ps --format '{{{{.Service}}}}: {{{{.Status}}}}' 2>/dev/null || true"]
+        for inst, log in zip(running, on_all(lambda i: remote(i, cmds, timeout_s=120), running)):
+            print(f"=== {inst} ===\n{log}")
 
 
 def cmd_logs(service: str = "") -> None:
-    out = outputs()
-    print(remote(out["runner_instance_id"], [f"{COMPOSE} logs --no-color --tail 100 {service}"],
-                 timeout_s=120))
+    print(remote(runners()[0], [f"{COMPOSE} logs --no-color --tail 100 {service}"], timeout_s=120))
 
 
 def cmd_exec(*command: str) -> None:
-    out = outputs()
-    print(remote(out["runner_instance_id"], [" ".join(command)], timeout_s=600))
+    ids = runners()
+    for inst, log in zip(ids, on_all(lambda i: remote(i, [" ".join(command)], timeout_s=600), ids)):
+        print(f"=== {inst} ===\n{log}")
 
 
 def cmd_stop() -> None:
-    aws("ec2", "stop-instances", "--instance-ids", outputs()["runner_instance_id"])
-    print("runner stopping (RDS, Redis and S3 keep running; `make aws-destroy` removes them)")
+    aws("ec2", "stop-instances", "--instance-ids", *runners())
+    print("runners stopping (RDS, Redis and S3 keep running; `make aws-destroy` removes them)")
 
 
 def cmd_start() -> None:
-    inst = outputs()["runner_instance_id"]
-    aws("ec2", "start-instances", "--instance-ids", inst)
-    wait_for_ssm(inst)
-    print("runner online; the containers restart on their own (restart: unless-stopped)")
+    ids = runners()
+    aws("ec2", "start-instances", "--instance-ids", *ids)
+    on_all(wait_for_ssm, ids)
+    print("runners online; the containers restart on their own (restart: unless-stopped)")
 
 
 COMMANDS = {

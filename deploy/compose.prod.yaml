@@ -19,6 +19,8 @@ services:
     <<: *app
     build: {context: .., dockerfile: deploy/Dockerfile, target: control}
     command: ["python", "-m", "shared.jobs.supervise", "${SDE_API_CMD-}"]
+    environment:
+      SDE_WORK_DIR: /tmp/sde-work # no work-dir mount here: a private cache for S3 reads
     ports: ["127.0.0.1:8000:8000"] # reached through an SSM port-forward only
 
   # ×1: generation + Job Service + the one reconciler.

@@ -35,7 +35,9 @@ OPENROUTER_API_BASE = os.environ.get(
 MODEL = os.environ.get("GENERATOR_MODEL", "z-ai/glm-5.1")
 
 # One generation can emit a whole repository, so give it room and stream it.
-GENERATOR_MAX_TOKENS = int(os.environ.get("GENERATOR_MAX_TOKENS", "65536"))
+# Reasoning tokens count against this cap: hard-level drafts used all of 65k
+# before writing any JSON, so the cap is 128k.
+GENERATOR_MAX_TOKENS = int(os.environ.get("GENERATOR_MAX_TOKENS", "131072"))
 GENERATOR_TIMEOUT_SEC = float(os.environ.get("GENERATOR_TIMEOUT_SEC", "1800"))
 # Rounds where the model's draft is rejected and it is asked to fix it.
 GENERATOR_MAX_ATTEMPTS = int(os.environ.get("GENERATOR_MAX_ATTEMPTS", "3"))

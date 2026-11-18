@@ -30,6 +30,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
  && rm -rf /var/lib/apt/lists/*
 # Harbor in its own tool environment so its dependencies can't clash with ours.
+# --force: the control stage may already have a pip-installed harbor on PATH.
 RUN pip install "uv==${UV_VERSION}" \
- && UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin uv tool install "harbor==${HARBOR_VERSION}"
+ && UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin uv tool install --force "harbor==${HARBOR_VERSION}"
 # Stays root: the runner talks to the host Docker daemon through its socket.

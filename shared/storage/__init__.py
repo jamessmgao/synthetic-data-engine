@@ -3,7 +3,7 @@
 | Env var                          | Unset (local default)        | Set (compose / prod)         |
 |----------------------------------|------------------------------|------------------------------|
 | DATABASE_URL                     | sqlite:///work/sde.db         | postgresql://…               |
-| REDIS_URL                        | queue = the jobs table       | single-node Redis sorted sets|
+| REDIS_URL (+ SDE_REDIS_PREFIX)    | queue = the jobs table       | single-node Redis sorted sets|
 | S3_BUCKET (+ S3_ENDPOINT_URL)    | files under work/            | S3, or a local S3 via the endpoint|
 | SDE_WORK_DIR                      | <repo>/work                  | local cache dir              |
 """
@@ -31,7 +31,7 @@ def from_env(env: dict[str, str] | None = None) -> Backend:
     env = dict(os.environ if env is None else env)
     work_dir = Path(env.get("SDE_WORK_DIR") or REPO_ROOT / "work").resolve()
     store = SqlStore(env.get("DATABASE_URL") or f"sqlite:///{work_dir / 'sde.db'}")
-    queue = make_queue(store, env.get("REDIS_URL") or None)
+    queue = make_queue(store, env.get("REDIS_URL") or None, env.get("SDE_REDIS_PREFIX") or "sde:")
     if bucket := env.get("S3_BUCKET"):
         artifacts: LocalArtifactStore = S3ArtifactStore(
             work_dir, bucket, env.get("S3_ENDPOINT_URL") or None

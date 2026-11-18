@@ -49,19 +49,22 @@ class JobQueue:
     ) -> dict[str, Any] | None:
         """Lease the best claimable job of the given type(s), or return None.
 
-        `docker_slots` caps leased validate + rollout jobs across all processes.
+        `docker_slots` caps leased validate + rollout jobs on this machine.
         The returned row includes `lease_token`; pass it to every later call.
 
-        Owners named `<host>:<pid>:…` (both worker loops do this) get crash
-        isolation: see `sql.claim`.
+        Owners named `<host>:<pid>:…` (both worker loops do this) get a per-machine
+        Docker cap and crash isolation: see `sql.claim`. Other owners share one
+        global cap.
         """
         types = [JobType(t) for t in (job_type if isinstance(job_type, list) else [job_type])]
         process = process_prefix()
-        process = process if owner.startswith(process) else None
+        mine = owner.startswith(process)
+        host = f"{socket.gethostname()}:" if mine else None
         for candidate in self.queue.candidates(types):
             with self.store.tx() as c:
                 row = sql_claim(c, owner, types, lease_s=lease_sec, docker_slots=docker_slots,
-                                batch_id=batch_id, only_id=candidate, process=process)
+                                batch_id=batch_id, only_id=candidate,
+                                process=process if mine else None, host=host)
             if row:
                 if candidate:
                     self.queue.claimed(candidate)

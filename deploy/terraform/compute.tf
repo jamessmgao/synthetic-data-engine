@@ -1,5 +1,5 @@
-# One runner instance: the app containers plus the Harbor task containers.
-# Reached only through SSM (no SSH key, no inbound ports).
+# Runner instances: Harbor task containers, plus (on runner[0]) the API and
+# worker-control. Reached only through SSM (no SSH key, no inbound ports).
 
 data "aws_ssm_parameter" "al2023" {
   name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
@@ -65,9 +65,10 @@ resource "aws_iam_instance_profile" "runner" {
 }
 
 resource "aws_instance" "runner" {
+  count                       = var.runner_count
   ami                         = data.aws_ssm_parameter.al2023.value
   instance_type               = var.runner_instance_type
-  subnet_id                   = aws_subnet.public[0].id
+  subnet_id                   = aws_subnet.public[count.index % 2].id
   vpc_security_group_ids      = [aws_security_group.runner.id]
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.runner.name
@@ -88,7 +89,10 @@ resource "aws_instance" "runner" {
     buildx_version  = var.buildx_version
   })
 
-  tags = { Name = "${var.name}-runner" }
+  tags = {
+    Name = "${var.name}-runner-${count.index}"
+    role = count.index == 0 ? "control" : "runner"
+  }
 
   lifecycle {
     # A newer AMI must not replace a running runner; recreate it deliberately.

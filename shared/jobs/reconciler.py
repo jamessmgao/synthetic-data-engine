@@ -4,7 +4,9 @@ Each pass:
 
 1. Dead-letters jobs that were claimed MAX_JOB_ATTEMPTS times without settling
    (each lease expired: the job keeps killing its worker). They become DEAD with
-   `handled_at` NULL, so the Job Service sees them and resolves the task.
+   `handled_at` NULL. A dead rollout also gets `<id>-analyze` in the same
+   transaction, the follow-up its worker never settled, so the Analysis service
+   resolves its version instead of waiting for it forever.
 2. Re-adds every claimable job to the queue backend (Redis mode), which covers a
    crash between commit and publish, a dead worker's popped job, and Redis
    losing its data. A no-op for the database queue.
@@ -27,8 +29,9 @@ from pathlib import Path
 
 from shared.storage import REPO_ROOT, Backend, describe, from_env
 from shared.storage.artifacts import sweep_staging
-from shared.storage.sql import utcnow
-from shared.contracts.models import LEASE_TTL_S, MAX_JOB_ATTEMPTS, RECONCILE_S
+from shared.storage.sql import insert_job, utcnow
+from shared.jobs.jobqueue import JobQueue
+from shared.contracts.models import LEASE_TTL_S, MAX_JOB_ATTEMPTS, RECONCILE_S, JobType
 
 # Where accepted bundles are published; the Job Service reads the same variable.
 ACCEPTED_DIR = Path(os.environ.get("SDE_ACCEPTED_DIR") or REPO_ROOT / "output" / "accepted")
@@ -37,17 +40,25 @@ log = logging.getLogger("reconciler")
 
 
 def reconcile(backend: Backend, accepted_dir: Path = ACCEPTED_DIR) -> dict[str, int]:
+    analyze: list[str] = []
     with backend.store.tx() as c:
         dead = c.execute(
             """UPDATE jobs SET status = 'DEAD', finished_at = ?, lease_until = NULL,
                    error = 'dead-lettered: claimed ' || attempts || ' times without settling'
                 WHERE attempts >= ?
                   AND (status = 'READY' OR (status = 'LEASED' AND lease_until < ?))
-            RETURNING id""",
+            RETURNING id, type, task_id, version""",
             (utcnow(), MAX_JOB_ATTEMPTS, time.time()),
         ).fetchall()
+        for row in dead:
+            if row["type"] == JobType.ROLLOUT:
+                aid = f"{row['id']}-analyze"
+                if insert_job(c, id=aid, task_id=row["task_id"], version=row["version"],
+                              type=JobType.ANALYZE, input={"trigger": row["id"]}):
+                    analyze.append(aid)
     for row in dead:
         log.warning("%s: dead-lettered after %d claims", row["id"], MAX_JOB_ATTEMPTS)
+    JobQueue(backend).publish(analyze)
     republished = backend.queue.reconcile()
     swept = sweep_staging([*backend.artifacts.staging_dirs(), accepted_dir], LEASE_TTL_S)
     return {"dead_lettered": len(dead), "republished": republished, "staging_swept": swept}

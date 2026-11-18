@@ -36,6 +36,13 @@ _TRANSPORT_ERRORS = (
 )
 
 
+def _retryable(e: openai.APIError) -> bool:
+    """Transport errors, plus errors raised mid-stream by the upstream provider
+    (e.g. "Upstream error from Alibaba: Model output became abnormal"). Those
+    carry no HTTP status; a 4xx such as a bad request or bad key is final."""
+    return isinstance(e, _TRANSPORT_ERRORS) or not isinstance(e, openai.APIStatusError)
+
+
 @dataclass
 class Completion:
     content: str
@@ -97,13 +104,18 @@ def complete(messages: list[dict], response_format: dict, *, llm_dir: str | Path
     round), so two different jobs with identical prompts still get separate
     responses, while a retry of the same job reuses its own.
     """
-    request = {"model": config.MODEL, "messages": messages, "response_format": response_format,
-               "max_tokens": config.GENERATOR_MAX_TOKENS}
+    # The token cap is a client limit, not part of the logical request: raising
+    # it must not invalidate finished calls (a truncated one is re-asked anyway).
+    request = {"model": config.MODEL, "messages": messages, "response_format": response_format}
     sha = request_sha256(cache_key, request)
+    # Calls cached before 2026-11-17 15:30 hashed the cap in (then 65536).
+    legacy_sha = request_sha256(cache_key, {**request, "max_tokens": 65536})
+    request["max_tokens"] = config.GENERATOR_MAX_TOKENS
     path = Path(llm_dir) / f"{sha}.json" if llm_dir else None
-    if path and path.exists():
-        record = json.loads(path.read_text())
-        return Completion(**{**record["completion"], "cached": True})
+    for candidate in ([path, path.with_name(f"{legacy_sha}.json")] if path else []):
+        if candidate.exists():
+            record = json.loads(candidate.read_text())
+            return Completion(**{**record["completion"], "cached": True})
 
     completion = _stream(messages, response_format)
     completion.request_sha256 = sha
@@ -148,10 +160,13 @@ def _stream(messages: list[dict], response_format: dict) -> Completion:
                           f"{sum(map(len, parts))} output chars", file=sys.stderr, flush=True)
                     next_report += PROGRESS_EVERY_SEC
             break
-        except _TRANSPORT_ERRORS:
+        except openai.APIError as e:
+            if not _retryable(e):
+                raise
             retries += 1
             if retries > config.GENERATOR_MAX_TRANSPORT_RETRIES:
                 raise
+            print(f"  retrying after {type(e).__name__}: {str(e)[:160]}", file=sys.stderr, flush=True)
             time.sleep(min(60, 5 * 2 ** retries))
 
     prompt_tokens = usage.prompt_tokens if usage else 0
