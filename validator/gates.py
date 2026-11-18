@@ -314,8 +314,11 @@ BLIND_FORMAT = {
 
 JUDGE_SYSTEM = """You compare an engineer's prediction, made from a task's instruction
 alone, with the task's real fix and counterexample. Answer "specific" only if the
-prediction names the real fix's mechanism AND where it applies (or the real failing
-sequence), so that the agent would not need to investigate the code to find it.
+prediction names the real fix's mechanism AND where it applies, so that the agent would
+not need to investigate the code to find it. Predicting the failing sequence counts only
+together with the right location; the textbook failure for the guarantee stated (e.g. a
+write acknowledged before it is durable, for "acknowledged writes survive failover") is
+"generic".
 Answer "generic" if it is only a reasonable general remedy any careful engineer
 would list (add validation, make it transactional, add retries), and "none" if it
 does not match. Both parts must hold for "specific": a right mechanism in the wrong
@@ -502,7 +505,9 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     feedback = ("\n\n".join(parts) + "\n\nRewrite the instruction so it states what must be true through the "
                 "system's interface (commands, inputs, outputs, files) and the symptom users saw, without the "
                 "fix's mechanism or location, the failing sequence, crash hooks or stage names. Keep every "
-                "requirement the tests check, and do not single out the exact cases the defect breaks.")
+                "requirement the tests check, and do not single out the exact cases the defect breaks. "
+                "Remove sentences, never add explanations: a sentence about how the system stores, recovers "
+                "or computes something makes the leak worse.")
     return Gate("leak", False, detail, feedback)
 
 
