@@ -101,6 +101,29 @@ def test_runs_terminus_with_glm51_and_costs_from_tokens(tmp_path, monkeypatch):
     assert (Path(out["artifacts_dir"]) / "world" / "world.json").is_file()
 
 
+def test_an_infra_failed_trial_is_set_aside_and_rerun_not_adopted(tmp_path, monkeypatch):
+    """Harbor writes result.json for an infra failure too; re-adopting it (e.g. fetched again
+    from S3 on every retry) failed the job forever without a new trial."""
+    calls = []
+    infra = {"exception_type": "RuntimeError", "exception_message": "failed to export layer: lease does not exist"}
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls, exception=infra, artifacts=()))
+    ah.run_authoring_trial("j", "x", {}, tmp_path)
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls))
+    again = ah.run_authoring_trial("j", "x", {}, tmp_path)
+    runs = [c for c in calls if "cmd" in c]
+    assert len(runs) == 2 and not again["adopted"] and again["error"] is None
+    assert (tmp_path / "traces" / "j" / f"{ah.JOB_NAME}.infra-failed-1").is_dir()
+
+
+def test_a_timed_out_trial_that_wrote_its_artifacts_is_still_adopted(tmp_path, monkeypatch):
+    calls = []
+    timeout = {"exception_type": "AgentTimeoutError", "exception_message": "timed out"}
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls, exception=timeout))
+    ah.run_authoring_trial("j", "x", {}, tmp_path)
+    again = ah.run_authoring_trial("j", "x", {}, tmp_path)
+    assert len([c for c in calls if "cmd" in c]) == 1 and again["adopted"]
+
+
 def test_a_finished_trial_is_adopted_not_rerun(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(ah.subprocess, "run", fake_harbor(calls))

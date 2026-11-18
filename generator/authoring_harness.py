@@ -144,12 +144,26 @@ def render_task(task_dir: Path, job_id: str, instruction: str, files: dict[str, 
     return task_dir
 
 
+def _usable(trial_dir: Path, result: dict) -> bool:
+    """Whether a finished trial is worth adopting. Harbor writes result.json even when the
+    trial died of an infra error (containerd "failed to export layer", a compose service
+    that never resolved): adopting that one failed the job the same way on every retry,
+    re-downloaded from S3 each time. A trial with an exception counts only if it still
+    produced artifacts (e.g. the agent ran out of time after writing its world)."""
+    if not result.get("exception_info"):
+        return True
+    out = artifacts_dir(trial_dir)
+    return out.is_dir() and any(out.iterdir())
+
+
 def _finished_trial(job_dir: Path) -> tuple[Path | None, dict | None]:
-    """The trial Harbor wrote under job_dir, if it got as far as a result.json."""
-    trials = sorted(p.parent for p in job_dir.glob("*/result.json"))
-    if not trials:
-        return None, None
-    return trials[0], json.loads((trials[0] / "result.json").read_text())
+    """A usable trial Harbor wrote under job_dir (see `_usable`), if any. Several can come
+    back from S3 after retries; prefer one that worked."""
+    for trial in sorted(p.parent for p in job_dir.glob("*/result.json")):
+        result = json.loads((trial / "result.json").read_text())
+        if _usable(trial, result):
+            return trial, result
+    return None, None
 
 
 def artifacts_dir(trial_dir: Path) -> Path:
@@ -216,11 +230,14 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
     trial_dir, result = _finished_trial(job_dir)
     if result is not None:
         return {**summarize(trial_dir, result, adopted=True), "instruction_size": size}
-    if job_dir.exists():  # a run that died before its result.json: keep it for the audit
+    if job_dir.exists():
+        # Keep it for the audit: a run that died before its result.json is "abandoned", one
+        # that finished with an infra error and nothing to show is "infra-failed".
+        kind = "infra-failed" if any(job_dir.glob("*/result.json")) else "abandoned"
         n = 1
-        while job_dir.with_name(f"{JOB_NAME}.abandoned-{n}").exists():
+        while job_dir.with_name(f"{JOB_NAME}.{kind}-{n}").exists():
             n += 1
-        job_dir.rename(job_dir.with_name(f"{JOB_NAME}.abandoned-{n}"))
+        job_dir.rename(job_dir.with_name(f"{JOB_NAME}.{kind}-{n}"))
 
     task_dir = render_task(trace / "task", job_id, instruction, files, timeout_sec)
     stop = _RUNNING.setdefault(job_id, threading.Event())

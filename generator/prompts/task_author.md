@@ -1,5 +1,5 @@
 You are authoring one Terminal-Bench task from a world that is already built and checked.
-**Be done in 10 minutes.** Keep each step's reasoning short: decide, act, check.
+**Aim to be done in ~10 minutes.** Keep each step's reasoning short: decide, act, check.
 
 # Checklist
 

@@ -116,7 +116,7 @@ def test_initial_create_writes_a_bundle_from_the_world(work):
     files = harness.calls[0]["files"]
     assert set(files) == {"world/world.json", "world/environment/Dockerfile", "world/repro/repro.sh",
                           "world/world_fix/fix.sh"}
-    assert harness.calls[0]["timeout_sec"] == at.AUTHOR_TIMEOUT_SEC == 900
+    assert harness.calls[0]["timeout_sec"] == at.AUTHOR_TIMEOUT_SEC == 7200
 
 
 def test_instruction_carries_the_world_the_shape_and_the_rules(work):
@@ -129,7 +129,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    "python:3.12-slim-bookworm",  # system.md, images filled in
                    "# plausible_wrong_fix: <world.json's text, exactly>", "setup errors",
                    "the counterexample test must be among nop's failures",
-                   "sde-task schema", "**Be done in 10 minutes.**", "by absolute `/app/...` paths",
+                   "sde-task schema", "**Aim to be done in ~10 minutes.**", "by absolute `/app/...` paths",
                    # Invariants as properties over seeded schedules; no hooks; exact values.
                    "A dedicated test per invariant", "at least 10 seeds", "after every step",
                    "exact expected values", "crash hooks or stage names", "never import internals",
@@ -513,11 +513,11 @@ def test_the_instruction_size_reaches_the_result(work):
 
 def test_the_task_author_stops_at_15_minutes(work):
     _, harness = create(work)
-    assert harness.calls[0]["timeout_sec"] == 900
+    assert harness.calls[0]["timeout_sec"] == 7200
 
 
-@pytest.mark.parametrize("module,var,default", [("author_task", "SDE_CREATE_TIMEOUT_S", 900.0),
-                                                ("author", "SDE_WORLD_TIMEOUT_S", 1500.0)])
+@pytest.mark.parametrize("module,var,default", [("author_task", "SDE_CREATE_TIMEOUT_S", 7200.0),
+                                                ("author", "SDE_WORLD_TIMEOUT_S", 7200.0)])
 def test_authoring_time_boxes_are_env_overridable(module, var, default):
     root = Path(__file__).resolve().parent.parent
     code = (f"import sys; sys.path[:0] = [{str(root / 'generator')!r}, {str(root / 'validator')!r}]; "

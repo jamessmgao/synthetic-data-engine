@@ -27,13 +27,14 @@ configMapGenerator:
     literals:
       - SDE_MOCK_LLM=0
       - SDE_AUTHOR_MODE=agent
+      - SDE_AUTHORING_REASONING_EFFORT=medium  # as round 2 (tune-r3); unset = the provider default
       - SDE_DB_POOL_MAX=2
       - SDE_WORK_DIR=/opt/sde/work
       - AWS_DEFAULT_REGION=us-east-2
 replicas:
-  - {name: generation, count: 6}  # one authoring session per pod: a stray docker kill hits only its own job
+  - {name: generation, count: 10}  # one authoring session per pod: a stray docker kill hits only its own job
   - {name: validate, count: 2}
-  # executor: KEDA, 1-4 (base/keda.yaml).
+  # executor: KEDA, 1-10 in production (the base's ScaledObject says 1-4; patched below).
 patches:
   # No in-cluster data stores.
   - target: {kind: StatefulSet, name: "postgres|redis|s3"}
@@ -64,6 +65,9 @@ patches:
   - target: {kind: Deployment, name: executor}
     patch: |-
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "4"}}
+  - target: {kind: ScaledObject, name: executor}
+    patch: |-
+      - {op: replace, path: /spec/maxReplicaCount, value: 10}
   - path: generation.yaml
   - path: authoring-image.yaml
     target: {kind: Deployment, name: generation}

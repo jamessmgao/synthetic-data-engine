@@ -72,8 +72,8 @@ from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 from generator.worker import _repair_guard, _save_draft_record, format_validation_errors, load_draft_record
 
 PROMPTS = Path(config.PROMPTS_DIR)
-# The task author's hard stop (the prompt asks for done in 10 min).
-AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_CREATE_TIMEOUT_S", "900"))
+# A safety net for a hung session only (2 h): the prompt suggests ~10 min, it doesn't enforce it.
+AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_CREATE_TIMEOUT_S", "7200"))
 DEFAULT_SHAPE, DEFAULT_DIAL = "fix", 2
 REVISE_ORIGINS = ("repair", "easier", "repair_ambiguity")
 
