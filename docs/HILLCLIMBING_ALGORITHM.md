@@ -15,6 +15,26 @@ Branch: work on main. Commit, push and deploy only from it. Never deploy from an
 History: iterations 0-2 ran as whole batches (submit, wait for every task to be decided, then
 change and deploy). From 2026-11-18 the loop runs as a sliding window, below.
 
+## Rule: reuse worlds, don't build new ones (the user, 2026-11-18)
+
+**Build no more worlds.** We have plenty of checked worlds (worlds that passed world_check).
+Every new task in the iteration starts at **task authoring** (a create job) on a reused world,
+never at a world job:
+
+- Submit **batches of task-authoring jobs on reused worlds**: `POST /v1/batches` with
+  `"reuse_worlds": true` (and `area` to pick families). Each task takes a checked world, copies
+  that world's spec, records `reused_from` (the task that built it), and starts at create;
+  world and world_check are skipped. The pick: least-reused first, then worlds whose earlier task
+  was rejected or too easy (a fresh create under the new prompts) before ones accepted or still
+  in flight, spread across the requested families. Mock-run worlds (cost 0) are never reused.
+  `GET /v1/worlds` lists the pool.
+- **Don't cancel world jobs already running**: let them finish; their worlds join the pool.
+- **World mutations stay on** (the user: "Keep mutations"): a too-easy task's revision may still
+  mutate its world. Only NEW tasks reuse worlds.
+- A world authored under an older pipeline is still a good world: the levers being tuned now
+  (instructions, tests, leak rules, revisions) all act from create on, so reusing worlds makes
+  windows comparable and saves the 20-45 min (and the spend) of every world.
+
 ## The sliding window
 
 A task takes hours end to end (a world 20-45 min, authoring 10-20 min, 5 agent runs, then

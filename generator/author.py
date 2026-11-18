@@ -90,12 +90,18 @@ def solver_run_files(job_input: dict) -> dict[str, bytes]:
             if re.fullmatch(r"run\d+\.md", name) and isinstance(text, str)}
 
 
+# Spec keys the pipeline keeps for itself (api/submit.py): how the task was submitted, never
+# what to build, so the authoring model doesn't see them.
+PIPELINE_SPEC_KEYS = ("reused_world", "reused_from", "reuse_tier", "reuse_reason")
+
+
 def render_world_instruction(spec: dict, origin: str = "initial", feedback: str = "") -> str:
     section = INITIAL_SECTION if origin == "initial" else Template(REPAIR_SECTION).safe_substitute(
         feedback=(feedback or "(no feedback recorded)")[-4000:])
+    shown = {k: v for k, v in spec.items() if k not in PIPELINE_SPEC_KEYS}
     return Template((PROMPTS / "world.md").read_text()).safe_substitute(
         origin_section=section,
-        spec_json=json.dumps(spec, indent=1, sort_keys=True),
+        spec_json=json.dumps(shown, indent=1, sort_keys=True),
         family_brief=brief_for(spec.get("family")),
         base_images=", ".join(f"`{i}`" for i in sorted(BASE_IMAGES)),
     ).rstrip() + "\n"

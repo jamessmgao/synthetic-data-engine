@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BatchesTable } from "@/components/batches-table";
 import { ScopeToggle, scopeQuery, useScope } from "@/components/dev-toggle";
-import { JobsTable } from "@/components/jobs-table";
+import { JobsTable, jobTypeLabel } from "@/components/jobs-table";
 import { QueryState, Stat } from "@/components/status";
 import { ApiError, useApi } from "@/lib/api";
 import { duration, pct, usd } from "@/lib/format";
@@ -75,7 +75,7 @@ export default function Overview() {
                     .filter((t) => queue.data.counts[t])
                     .map((t) => (
                       <TableRow key={t}>
-                        <TableCell className="font-mono text-xs">{t}</TableCell>
+                        <TableCell className="font-mono text-xs">{jobTypeLabel(t)}</TableCell>
                         {JOB_STATUSES.map((s) => {
                           const n = queue.data.counts[t]?.[s] ?? 0;
                           return (

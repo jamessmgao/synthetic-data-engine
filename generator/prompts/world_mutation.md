@@ -47,6 +47,12 @@ Earlier mutations of this world (keep their effects; do not undo them):
 
 $history
 
+# What this family's defects look like
+
+$family_brief
+
+Realize the operators in this family's way: the new defect is one this brief describes.
+
 # What makes a good mutation
 
 1. **It increases the reasoning required, not the size.** Adding unrelated files,
@@ -117,3 +123,6 @@ prompt (they end the session); put multi-step checks in a script or `bash -c 'â€
 
 `sde-world check $output_dir` must exit 0. You are not done until it does; if it fails, fix
 the one failing check it names and re-run. Never finish with a failing or skipped check.
+Once `sde-world check` exits 0 and the old strategy fails, finish: hardness WARNINGs are
+signals, not gates; never rework a passing world to clear them (a world that did broke
+its own runtime and lost 10 minutes repairing it).

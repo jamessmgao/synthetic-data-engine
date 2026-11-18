@@ -9,7 +9,7 @@ import { LeakReviewPanel } from "@/components/leak-review";
 import { PassPattern, QueryState, StatusBadge } from "@/components/status";
 import { useApi } from "@/lib/api";
 import { duration, localTime, usd } from "@/lib/format";
-import type { Gate, Rollout, TaskDetail, Version } from "@/lib/types";
+import type { AgentRun, Gate, TaskDetail, Version } from "@/lib/types";
 
 export default function TaskPage() {
   const { id } = useParams<{ id: string }>();
@@ -52,7 +52,7 @@ export default function TaskPage() {
           <section className="flex flex-col gap-3">
             <h2 className="font-semibold">Versions</h2>
             {[...d.versions].reverse().map((v) => (
-              <VersionCard key={v.n} v={v} accepted={d.task.accepted_version === v.n} rollouts={d.rollouts.filter((r) => r.version === v.n)} />
+              <VersionCard key={v.n} v={v} accepted={d.task.accepted_version === v.n} agentRuns={d.rollouts.filter((r) => r.version === v.n)} />
             ))}
           </section>
 
@@ -100,7 +100,7 @@ function gatePassed(g: Gate): boolean | null {
   return typeof g?.passed === "boolean" ? g.passed : null;
 }
 
-function VersionCard({ v, rollouts, accepted }: { v: Version; rollouts: Rollout[]; accepted: boolean }) {
+function VersionCard({ v, agentRuns, accepted }: { v: Version; agentRuns: AgentRun[]; accepted: boolean }) {
   return (
     <Card className={accepted ? "ring-2 ring-emerald-500/50" : undefined}>
       <CardHeader>
@@ -164,10 +164,10 @@ function VersionCard({ v, rollouts, accepted }: { v: Version; rollouts: Rollout[
             </div>
           </details>
         )}
-        {rollouts.length > 0 && (
+        {agentRuns.length > 0 && (
           <div className="flex flex-col divide-y rounded-lg border">
-            {rollouts.map((r) => (
-              <RolloutRow key={r.id} r={r} />
+            {agentRuns.map((r) => (
+              <AgentRunRow key={r.id} r={r} />
             ))}
           </div>
         )}
@@ -176,7 +176,7 @@ function VersionCard({ v, rollouts, accepted }: { v: Version; rollouts: Rollout[
   );
 }
 
-function RolloutRow({ r }: { r: Rollout }) {
+function AgentRunRow({ r }: { r: AgentRun }) {
   const m = r.trace_metrics;
   const f = r.failure;
   return (

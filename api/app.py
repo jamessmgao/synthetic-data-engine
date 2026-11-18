@@ -57,6 +57,12 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
         environments, verification methods and shapes."""
         return families_listing()
 
+    @v1.get("/worlds")
+    def list_worlds(area: str | None = None):
+        """The checked worlds `reuse_worlds` picks from: each one's family, mechanism, the task
+        that built it (and how it ended) and how many tasks have reused it."""
+        return service.list_worlds(store, area=area)
+
     @v1.get("/tasks", response_model=list[TaskSummary])
     def list_tasks(status: str | None = None, since: str | None = None, scope: Scope = "all"):
         return service.list_tasks(store, status=status, since=since, scope=scope)
@@ -107,7 +113,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
         spec = body.spec.model_dump(exclude_none=True) if body.spec else None
         batch_id, task_ids, created = create_batch(backend, body.count, batch_id=body.batch_id,
                                                    prompt=body.prompt, spec=spec, budget_usd=body.budget_usd,
-                                                   **body.filter_kwargs())
+                                                   reuse_worlds=body.reuse_worlds, **body.filter_kwargs())
         return {"batch_id": batch_id, "task_ids": task_ids, "created": created}
 
     @v1.get("/batches", response_model=list[BatchSummary])

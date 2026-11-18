@@ -505,3 +505,38 @@ def test_oneshot_create_is_unchanged(backend, monkeypatch):
     fields = fns["create"]({"id": "x-v1-create", "type": "create", "bundle_sha256": None,
                             "input": {"origin": "initial"}})
     assert calls == ["x-v1-create"] and fields["outcome"] == "FAILED" and "trace_uri" not in fields
+
+
+def test_a_reused_worlds_create_gets_the_earlier_tasks_instructions(backend, authoring, monkeypatch):
+    """reuse_worlds: a new task on a checked world sees the instructions already written on it
+    (each task's latest bundle on that world; not its own, not other worlds'), so it writes a
+    different one. A fresh world's create gets none."""
+    seen = []
+    real = sys.modules["author"].run_create_job
+
+    def run_create_job(job_id, job_input, work_dir=None):
+        seen.append(job_input.get("earlier_instructions"))
+        return real(job_id, job_input, work_dir)
+
+    monkeypatch.setattr(sys.modules["author"], "run_create_job", run_create_job)
+    draft = worker.draft_fn(backend, "agent")
+    src, other, new = add_task(backend), add_task(backend), add_task(backend)
+    world = worker.world_fn(backend)({"id": f"{src}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    elsewhere = worker.world_fn(backend)({"id": f"{other}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+
+    def created(t, v, w, finished):
+        out = draft({"id": f"{t}-v{v}-create", "task_id": t, "bundle_sha256": None,
+                     "input": {"origin": "initial", "world_sha256": w}})
+        with backend.store.tx() as c:
+            insert_job(c, id=f"{t}-v{v}-create", task_id=t, version=v, type=JobType.CREATE)
+            c.execute("UPDATE jobs SET status = 'DONE', outcome = 'OK', bundle_sha256 = ?, result = ?,"
+                      " finished_at = ? WHERE id = ?",
+                      (out["bundle_sha256"], json.dumps(out["result"]), finished, f"{t}-v{v}-create"))
+
+    created(src, 1, world, "2026-11-18T20:00:00")
+    created(src, 2, world, "2026-11-18T21:00:00")  # the source task's latest bundle on the world
+    created(other, 1, elsewhere, "2026-11-18T21:30:00")
+    assert seen == [None, None, None]
+    draft({"id": f"{new}-v1-create", "task_id": new, "bundle_sha256": None,
+           "input": {"origin": "initial", "world_sha256": world, "reused": True}})
+    assert seen[-1] == [f"task from {src}-v2-create"]

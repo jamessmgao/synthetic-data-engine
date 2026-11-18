@@ -29,17 +29,22 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Algorithmic and constraint-solving problems",
         "mechanisms": "global optimization, combinatorial interactions, invariants, algorithms that work "
                       "locally but fail globally",
-        "lever": "a counterexample to a plausible greedy or heuristic solution, at a stated input size where "
-                 "exhaustive search cannot finish within the time limit (2^n or n! far past it), so the fix is "
-                 "the correct polynomial algorithm or a correct repair, not brute force",
-        "world": "e.g. a scheduler, allocator, matcher or planner whose current implementation is a greedy or "
-                 "first-fit heuristic that accepts or rejects inputs wrongly",
-        "counterexample": "a concrete small input on which the plausible algorithm returns a wrong or "
-                          "suboptimal answer, checked against a brute-force or reference solver on that input",
+        "lever": "the system already runs an exact algorithm (a DP, branch-and-bound, max-flow or matching) that "
+                 "is right on its textbook core, and the defect is a subtle error inside or around it: a tie-break "
+                 "that breaks a stated order, a constraint interaction the recurrence or pruning bound misses (a "
+                 "bonus, a precedence, a capacity shared across stages), memoized state left stale by an "
+                 "incremental update, or a bound that is not admissible on one input shape. Never a greedy or "
+                 "heuristic where an optimal algorithm is needed: then \"the result is optimal\" names the fix. "
+                 "Input sizes are stated where exhaustive search cannot finish in the time limit, so the fix "
+                 "repairs the algorithm in place, not brute force",
+        "world": "e.g. a scheduler, allocator, matcher or planner that already plans with a DP, exact search or "
+                 "flow, and also re-plans incrementally, caches sub-results or reports from the plan",
+        "counterexample": "a concrete small input on which the exact algorithm returns a wrong or suboptimal "
+                          "answer, checked against a brute-force reference solver on that input",
         "scaffold": "sde_repro.py, with a small brute-force reference solver as the invariant check on the "
                     "counterexample input",
-        "dependent": "a caller relies on the heuristic's current output shape or order (a report, a cache "
-                     "keyed on it, an incremental re-plan), so replacing the algorithm in one place breaks it",
+        "dependent": "a caller relies on the planner's current output shape or order (a report, a cache "
+                     "keyed on it, an incremental re-plan), so rewriting the algorithm from scratch breaks it",
     },
     "performance_resources": {
         "title": "Performance and resource optimization",

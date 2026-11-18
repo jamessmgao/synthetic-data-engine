@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from generator import author_task as at
+from generator.families import brief_for
 from test_generator import VALID, WRONG_FIX, draft_with
 from generator.worker import load_draft_record
 
@@ -139,7 +140,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
                    "where a crash fires relative to the effects", "GOOD (a real Terminal-Bench task)",
                    "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish", "is REQUIRED wherever it is described", "may emit `result_ready`",
-                   "a short request in a user's voice", "discovers the tools itself", "Make the suite comprehensive", "# Before you finish", "You are not done until both exit 0", "Never finish with a failing check"):
+                   "a short request in a user's voice", "discovers the tools itself", "never the checks it applies or the criteria an answer meets", "Make the suite comprehensive", "# Before you finish", "you are not done until both commands exit 0", "Never finish with a failing check"):
         assert needle in text, needle
     # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
     assert text.index("# Checklist") < text.index("# The draft")
@@ -151,6 +152,26 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
     assert "{base_images}" not in text and "This is a revision" not in text
     # system.md's one-shot output contract does not apply: there is no response schema here.
     assert "Return exactly one JSON object that matches the provided schema" not in text
+    assert "This world already has a task" not in text
+
+
+def test_a_reused_world_shows_its_earlier_tasks_and_asks_for_a_different_one(work):
+    earlier = ["Orders are sometimes charged twice after a restart.\nNo order may be charged twice.",
+               "x" * 1500]  # the worker's cap per instruction
+    _, harness = create(work, reused=True, earlier_instructions=earlier)
+    text = harness.calls[0]["instruction"]
+    for needle in ("# This world already has a task", "Write a different one",
+                   "another entry point or user-visible symptom", "never the same request reworded",
+                   "Task 1:\n> Orders are sometimes charged twice after a restart.\n> No order may be charged twice.",
+                   "Task 2:\n> xxx"):
+        assert needle in text, needle
+    assert text.index("# This world already has a task") < text.index("# Before you finish")
+    assert len(text) / 4 < 4500  # ≈ tokens: the prompt plus up to 3 capped instructions
+    # A revision keeps its own request; without earlier tasks there's no section.
+    revision = at.render_task_author_instruction(WORLD, {"origin": "repair", "feedback": "nop passed",
+                                                         "earlier_instructions": earlier}, "fix", 2)
+    assert "This is a revision" in revision and "This world already has a task" not in revision
+    assert at.earlier_tasks_section({"reused": True, "earlier_instructions": []}) == ""
 
 
 def test_the_leak_review_flags_counterexample_shaped_text_and_crash_hooks():
@@ -418,9 +439,14 @@ def test_world_mutation_instruction():
                    "A mutation is where difficulty is added",
                    "nor describe the failing schedule", "describe its schedule",
                    "If the strategy that passed was a local fix", "size-adding changes",
-                   "no documented crash hook or stage names"):
+                   "no documented crash hook or stage names",
+                   "signals, not gates; never rework a passing world"):
         assert needle in text, needle
     assert "the fix was process-local" in text
+    # The family brief (no new worlds are built, so a mutation is where it reaches a world).
+    assert "# What this family's defects look like" in text and brief_for("database_consistency") in text
+    no_spec = at.render_world_mutation_instruction({k: v for k, v in job.items() if k != "spec"}, WORLD)
+    assert brief_for("database_consistency") in no_spec  # from the parent world's spec
     assert text.count('"operators": ["add_persistent_state"]') == 0  # this mutation isn't listed as history
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]
 

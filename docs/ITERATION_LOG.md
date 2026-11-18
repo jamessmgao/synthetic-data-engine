@@ -300,3 +300,31 @@ release).
 
 Lanes top up one task per decided task. Queued for window 2: calibration `add_persistent_state`
 as a last resort (L4, 9af8ab7: 0 of 7 such mutations reached the band).
+
+## Windows 2-4 (2026-11-18, 21:30-22:15 UTC): reuse worlds, novelty, revisions
+
+User rules from 21:20: build no new worlds (new tasks start at create on a reused, checked world via
+`reuse_worlds`); keep world mutations; never cancel running world jobs. Novelty must come from which
+worlds are picked and from what the new task asks. The blind-check shadow experiment was approved,
+then cancelled by the user before it shipped (the leak gate stays enforced).
+
+| Window | Release (where) | Live (UTC) | Changes (lane: lever) |
+|---|---|---|---|
+| 2 | ae6a064 (full, drained) | ~21:40 | API `reuse_worlds` + `GET /v1/worlds` (L5); calibration: `add_persistent_state` last resort, 0 of 7 such mutations reached the band (L4); classify: the solver closing its own terminal after the verifier passed is scored, not INVALID (L5; 4 such re-paid runs); task_author Tests: a test needing a database starts its own instance (L1; aws-iter2-t03 v1 run 3) |
+| 3 | 3561611 (api + generation, drained; executors untouched) | ~21:55 | world selection policy + domain/mechanism dedup (L1: exclude accepted / leaked x3 / failed worlds; tiers 4/5 > 0/5 > unscored > old-prompt leak > 5/5; round-robin families; <= 2 reuses); a create on a reused world sees the world's earlier task(s) and must ask something different (L3); the task view shows the reused world (L5); dashboard labels agent_run / author_task / analyze_trajectory |
+| 4 | d41eb74 (generation, drained) | ~22:10 | algorithmic brief: an exact algorithm with a subtle defect, never greedy-vs-optimal (L2; aws-w1-l5-t03, aws-w1-l2-t02 leaked on "be optimal"); family briefs now reach world mutations (L4); task_author: say what a command reports, never the checks behind it (L3; aws-w2-l2-t03 semantic leak) |
+| next | 34fd3dd + 3bb9f33 | pending | selection: blind-leaked and greedy-defect worlds last (L1); mutations stop once `sde-world check` passes, warnings aren't gates (L4) |
+
+Submitted: window 1 = 25 tasks (aws-w1-l1..l5), window 2 = 15 reuse tasks (aws-w2-l1..l5, 21:40, default
+picker). Lanes hold ~6-8 in flight and top up in reuse batches (aws-w3-*).
+
+Early window-1 outcomes (22:05): aws-w1-l5-t03 REJECTED (blind leak x3, algorithmic "be optimal");
+aws-w1-l3-t01 CANCELLED (world terminal wedged in an unclosed heredoc; L5 is building a harness
+self-heal); aws-w1-l1-t04 5/5 (mutating); several more at 4/4 so far; aws-w1-l3-t02 at 3 passes with 2
+runs left. Window-1 world rules changed world shape (2-file fixes, no limit_named warnings, smaller
+commands) but not yet v1 difficulty.
+
+Infrastructure in this period: 17 nodes (8 Spot, after the Paid-plan upgrade lifted the Free plan's
+DenySpotMarket); RDS db.t4g.medium (400 connections); generation 11 x 3 sessions; executor KEDA 2-10 x 3;
+validate 4. Generation deploys drain (no lost sessions); executor drain is built (executor-drain) and
+waits on the user's OK. Model spend ~$35-40/h, ~$40 per accepted task so far.

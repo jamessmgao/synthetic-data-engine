@@ -22,7 +22,8 @@ Generation Service calls it for `create` and, in agent mode, `revise` jobs.
 
 job_input, by origin:
 
-    {"origin": "initial", "world_sha256", "shape", "dial"}
+    {"origin": "initial", "world_sha256", "shape", "dial", "reused"?, "earlier_instructions"?}
+                                  a reused world: the instructions of its earlier tasks
     {"origin": "repair", "bundle_sha256", "feedback", "world_sha256"?}     the gates failed
     {"origin": "easier", "bundle_sha256", "world_sha256", "result", "evidence", "analysis"?}
     {"origin": "repair_ambiguity", "bundle_sha256", "world_sha256", "evidence", "analysis"?}
@@ -66,6 +67,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from shared.contracts import config
+from generator.families import brief_for
 from shared.taskformat.materialize import write_bundle
 from generator.prompting import EASIER_GUIDE, FORMS, HARDENING_TECHNIQUES
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
@@ -234,12 +236,29 @@ def revise_request(job_input: dict, origin: str | None = None) -> str:
     return ""
 
 
+def earlier_tasks_section(job_input: dict) -> str:
+    """For a new task on a reused world: the instructions of the tasks already written on it
+    (shared/jobs/worker.py earlier_instructions), which the new one must not repeat. Empty
+    otherwise."""
+    earlier = job_input.get("earlier_instructions") or []
+    if not earlier:
+        return ""
+    quoted = "\n\n".join(f"Task {n}:\n" + "\n".join(f"> {line}" for line in text.splitlines())
+                         for n, text in enumerate(earlier, 1))
+    return ("# This world already has a task\n\n"
+            f"{'Tasks have' if len(earlier) > 1 else 'A task has'} already been written on this world "
+            "(below). Write a different one: another of the world's guarantees or invariants, another "
+            "entry point or user-visible symptom; never the same request reworded. The fix may be the "
+            "same; the request, the symptom and what the agent must establish must not.\n\n" + quoted)
+
+
 def render_task_author_instruction(world: dict, job_input: dict, shape: str, dial: int,
                                    origin: str | None = None) -> str:
     template = Template((PROMPTS / "task_author.md").read_text())
+    request = revise_request(job_input, origin) or earlier_tasks_section(job_input)
     return template.safe_substitute(
         world_summary=world_summary(world), shape_section=shape_section(shape, dial),
-        system_rules=_system_rules(), request=revise_request(job_input, origin),
+        system_rules=_system_rules(), request=request,
     ).rstrip() + "\n"
 
 
@@ -274,6 +293,8 @@ def render_world_mutation_instruction(job_input: dict, parent_world: dict, paren
         history=_bullets([json.dumps(m, sort_keys=True) for m in history[:-1]] if history else []),
         techniques="\n".join(f"- {name}: {text}" for name, text in HARDENING_TECHNIQUES.items()),
         hardness=hardness_section(job_input.get("hardness")),
+        # With worlds reused, a mutation is the only new world: the family brief reaches it here.
+        family_brief=brief_for((job_input.get("spec") or parent_world.get("spec") or {}).get("family")),
     ).rstrip() + "\n"
 
 

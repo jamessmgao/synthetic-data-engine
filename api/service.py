@@ -23,6 +23,7 @@ from typing import Any
 
 from evaluation.calibration import eval_config, in_band
 from evaluation.verdict import decision_text, pass_pattern, version_input
+from api import submit
 from shared.storage import budget
 from shared.jobs import tasks as task_state
 from shared.storage.artifacts import LocalArtifactStore
@@ -231,19 +232,25 @@ def _analysis_view(vjobs: list[dict], scored: dict[int, str]) -> dict | None:
 
 def _world_view(vjobs: list[dict]) -> dict | None:
     """The version's world (agent mode, plan §3.3): the world job's sha and lineage, or
-    the world a create/revise job reports it was built on. None in one-shot mode."""
+    the world a create/revise job reports it was built on, or (a reused world, while its
+    create still runs) the one its input names. None in one-shot mode. `reused` is set
+    when the version's create started from a pooled world (POST /v1/batches reuse_worlds)."""
     worlds = [j for j in vjobs if j["type"] == JobType.WORLD]
     built_on = [j for j in vjobs if j["type"] in GENERATION_TYPES and (j["result"] or {}).get("world_sha256")]
-    if not worlds and not built_on:
+    given = [j for j in vjobs if j["type"] in GENERATION_TYPES and (j["input"] or {}).get("world_sha256")]
+    if not worlds and not built_on and not given:
         return None
     done = [j for j in worlds if j["outcome"] == Outcome.OK]
     result = (done[-1]["result"] if done else None) or {}
-    sha = result.get("world_sha256") or ((built_on[-1]["result"] or {}).get("world_sha256") if built_on else None)
+    sha = (result.get("world_sha256")
+           or ((built_on[-1]["result"] or {}).get("world_sha256") if built_on else None)
+           or ((given[-1]["input"] or {}).get("world_sha256") if given else None))
     return {
         "world_sha256": sha,
         "lineage": result.get("lineage"),
         "status": worlds[-1]["status"] if worlds else None,
         "outcome": worlds[-1]["outcome"] if worlds else None,
+        **({"reused": True} if any((j["input"] or {}).get("reused") for j in given) else {}),
     }
 
 
@@ -258,11 +265,17 @@ def get_task(store: SqlStore, task_id: str) -> dict:
         (j for j in jobs if j["type"] == JobType.ROLLOUT),
         key=lambda j: (j["version"], j["slot"], j["retry"]),
     )
+    slot = task.get("slot") or {}
     return {
         "task": {k: task[k] for k in (
             "id", "name", "slot", "status", "reason", "current_version", "stage",
             "accepted_version", "batch_id", "created_at", "updated_at",
         )},
+        # A task started on a pooled world (reuse_worlds): which world, the task that built it, and
+        # why the selection policy picked it, to check novelty against the world's earlier tasks.
+        "reuse": ({"world_sha256": slot.get("reused_world"), "from_task": slot.get("reused_from"),
+                   "tier": slot.get("reuse_tier"), "reason": slot.get("reuse_reason")}
+                  if isinstance(slot, dict) and slot.get("reused_world") else None),
         "versions": [_version_view(task, v, jobs, n_runs) for v in range(1, task["current_version"] + 1)],
         "rollouts": [
             {k: j[k] for k in (
@@ -541,6 +554,16 @@ def cancel_task(store: SqlStore, task_id: str, by: str = "user", note: str = "")
 
 def cancel_batch(store: SqlStore, batch_id: str, by: str = "user", note: str = "") -> dict:
     return {"batch_id": batch_id, **cancel_tasks(store, [t["id"] for t in _batch_tasks(store, batch_id)], by, note)}
+
+
+def list_worlds(store: SqlStore, area: str | None = None) -> list[dict]:
+    """The reusable world pool (api/submit.py world_pool), least-reused first."""
+    pool = submit.world_pool(store.conn)
+    if area:
+        pool = [w for w in pool if w["family"] == area]
+    return sorted(({k: w[k] for k in ("world_sha256", "family", "mechanism", "source_task", "source_status",
+                                      "source_reason", "reuses")} for w in pool),
+                  key=lambda w: (w["reuses"], w["family"], w["world_sha256"]))
 
 
 def list_batches(store: SqlStore) -> list[dict]:

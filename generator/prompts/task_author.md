@@ -7,7 +7,7 @@ You are authoring one Terminal-Bench task from a world that is already built and
 2. Write `/logs/artifacts/draft.json`, reusing the world's `environment/` as it is (do not grow or rewrite it).
 3. Tests: one per world invariant, marked `# invariant: N`, over at least 10 fixed seeds (below). Write them one file or test group per response, never the whole suite in one.
 4. `wrong_fix_script` starts `# plausible_wrong_fix: <world.json's text, exactly>`.
-5. `sde-task check /logs/artifacts/draft.json`, then `sde-task run /logs/artifacts/draft.json --as all`; both must exit 0 before you finish (a draft that fails them is sent back). If one fails and you're short of time, fix the single failing check or role rather than finishing.
+5. `sde-task check /logs/artifacts/draft.json`, then `sde-task run /logs/artifacts/draft.json --as all`; both must exit 0 before you finish.
 
 You work as root in `/work`; Docker is available through the host's socket (label what you
 start by hand with `--label "$SDE_DOCKER_LABEL"`; clean up only your own containers, `docker ps
@@ -48,6 +48,8 @@ shapes, edge cases, restarts, every command it touches), so a fix that handles o
 case fails. Every assertion traces to the request's plain meaning or to behavior the environment
 documents (README, `--help`), never to a detail neither states (what each command optimizes).
 Assert outcomes; pin one answer among equally valid ones only if the tie-break is stated.
+A test needing a DB starts its own (temp dir, free port, `pg_ctl -w start`), never
+the environment's: the agent may leave a server or stale `postmaster.pid` there.
 Drive the system only through its interface (never import internals, never write its
 database tables or state files directly: a solver may change their schema); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
@@ -59,8 +61,9 @@ outcome terms ("an order is never charged twice, even if the service crashes"). 
 a user would name: the command they run, the file or URL they read, the output format they
 expect. Never mention tools, modules, how the system is built or where to look: the
 agent gets the lay of the land and discovers the tools itself. No enumerated list of guarantees.
-Anything else the tests use must be discoverable in the environment (its README, `--help`,
-the code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
+Say what a command must report, never the checks it applies or the criteria an answer meets
+(BAD: "`verify` (checks every job starts after its prerequisites)"). Anything else the tests
+use must be discoverable in the environment (its README, `--help`, the code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
 board. It is currently white to move. Write the best move for white to play to /app/move.txt in
 the form [src][dst], for example, e2e4. If there are multiple winning moves, print them all, one
 per line." NEVER: the counterexample (its steps, schedule or
@@ -100,13 +103,9 @@ $request
 
 # Before you finish
 
-1. `sde-task check /logs/artifacts/draft.json` exits 0.
-2. `sde-task run /logs/artifacts/draft.json --as all` exits 0: oracle reward 1 (both runs), nop
-   reward 0, wrong reward 0.
-
-You are not done until both exit 0, on the final draft. If one fails, fix that one thing and
-re-run both. Never finish with a failing check: the pipeline re-checks the saved results and
-sends a draft with any failing role back to you.
+Checklist step 5: you are not done until both commands exit 0. If one fails, fix that one
+thing and re-run both. Never finish with a failing check: the pipeline re-checks the saved
+results and sends a failing draft back to you.
 
 While you fix the draft, check only the reference solution (`sde-task run … --as oracle`,
 about a third of the time) until it passes; run `--as all` once that's green.

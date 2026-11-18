@@ -6,10 +6,17 @@ import { StatusBadge } from "@/components/status";
 import { between, duration, localTime, usd } from "@/lib/format";
 import type { Job } from "@/lib/types";
 
+// Display names for the API's job types ("rollout" is an agent run, "create" authors the task, "analyze" analyzes the trajectories).
+const JOB_TYPE_LABELS: Record<string, string> = { rollout: "agent_run", create: "author_task", analyze: "analyze_trajectory" };
+
+export function jobTypeLabel(type: string): string {
+  return JOB_TYPE_LABELS[type] ?? type;
+}
+
 export function jobLabel(j: Job): string {
   const slot = j.type === "rollout" ? ` #${j.slot}${j.retry ? ` retry ${j.retry}` : ""}` : "";
   const origin = j.origin && j.origin !== "initial" ? ` (${j.origin})` : "";
-  return `${j.type} v${j.version}${slot}${origin}`;
+  return `${jobTypeLabel(j.type)} v${j.version}${slot}${origin}`;
 }
 
 export function JobsTable({ jobs, showTask = false, empty = "No jobs." }: { jobs: Job[]; showTask?: boolean; empty?: string }) {

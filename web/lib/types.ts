@@ -125,7 +125,7 @@ export interface Version {
   pass_pattern: string;
   cost_usd: number | null;
   leak_review: LeakReview | null; // the leak gate on the final bundle
-  leak_attempts: LeakReview[]; // earlier drafts (a create or repair it sent back)
+  leak_attempts: LeakReview[]; // earlier drafts (an author_task or repair it sent back)
 }
 
 // The leak gate (validator/gates.py gate_leak) on one bundle: a semantic review of the
@@ -164,7 +164,8 @@ export interface ToolCall {
   output: string;
 }
 
-export interface Rollout {
+// One agent run (the API's "rollout").
+export interface AgentRun {
   id: string;
   version: number;
   slot: number;
@@ -207,7 +208,7 @@ export interface TaskDetail {
     updated_at: string;
   };
   versions: Version[];
-  rollouts: Rollout[];
+  rollouts: AgentRun[];
   jobs: Job[];
   decision: string;
   reason: string | null;
