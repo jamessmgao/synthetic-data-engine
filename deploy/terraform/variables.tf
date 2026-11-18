@@ -29,9 +29,15 @@ variable "runner_instance_type" {
 }
 
 variable "runner_count" {
-  description = "Runners share the queue; each adds docker_slots of capacity. runner[0] also hosts the API and worker-control. The account's vCPU quota (16) allows 8."
+  description = "Runners share the queue; each adds docker_slots of capacity. runner[0] also hosts the API and worker-control. on_demand_count of them on-demand, the rest Spot."
   type        = number
-  default     = 8 # the account's vCPU quota (16) at 2 vCPU each
+  default     = 17 # 9 on-demand + 8 Spot (the user's call, 2026-11-18; Spot allowed since the Paid-plan upgrade lifted the Free plan's DenySpotMarket); new ones join K3s with `k8s_aws.py join`
+}
+
+variable "on_demand_count" {
+  description = "Runners 0..on_demand_count-1 are on-demand (runner[0] is the K3s server, with api, control, the tunnels and the dashboard); the rest are Spot. 9 x 2 vCPU = the on-demand vCPU quota (18)."
+  type        = number
+  default     = 9
 }
 
 variable "runner_disk_gb" {
@@ -59,15 +65,15 @@ variable "agent_lease_ttl_s" {
 }
 
 variable "budget_usd" {
-  description = "Pipeline-wide spend cap (SDE_BUDGET_USD): no new paid work is claimed once recorded spend reaches it."
-  type        = number
-  default     = 40
+  description = "Pipeline-wide spend cap (SDE_BUDGET_USD): no new paid work is claimed once recorded spend reaches it. \"none\" = no cap."
+  type        = string
+  default     = "none" # the user's call, 2026-11-18 (was 40); an apply must not bring a cap back
 }
 
 variable "db_instance_class" {
-  description = "RDS class. The account's AWS Free plan only allows db.t4g.micro (~80 max_connections); the runners' connection pools are sized to fit it (SDE_DB_POOL_MAX in remote-deploy.sh)."
+  description = "RDS class. db.t4g.medium (4 GB): ~410 max_connections (micro had ~80), for 24 generation + 20 executor pods. Changing it modifies the DB in place (a few minutes' restart, apply_immediately)."
   type        = string
-  default     = "db.t4g.micro"
+  default     = "db.t4g.medium" # the user's call, 2026-11-18 (Paid plan; was db.t4g.micro)
 }
 
 variable "compose_version" {

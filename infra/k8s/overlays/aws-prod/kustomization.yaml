@@ -48,8 +48,10 @@ configMapGenerator:
       - SDE_ADOPT_AUTHOR_CHECKS=1
       - AWS_DEFAULT_REGION=us-east-2
 replicas:
-  - {name: generation, count: 10}  # ≤10 pods (RDS connections); 2 authoring sessions each (generation.yaml)
-  - {name: validate, count: 2}
+  # One per node across 17 (the spread), 3 authoring sessions each (generation.yaml): 51.
+  # Needs the 17 runners joined and RDS db.t4g.medium (micro's ~80 connections fit only 10).
+  - {name: generation, count: 17}  # 17 runners; 3 sessions each = 51 (RDS db.t4g.medium: 400 connections)
+  - {name: validate, count: 4}  # the user's call, 2026-11-18: more validation concurrency
   # executor: KEDA, 1-10 in production (the base's ScaledObject says 1-4; patched below).
 patches:
   # No in-cluster data stores.
@@ -76,6 +78,23 @@ patches:
     target: {kind: Deployment, name: "api|control"}
   - path: ../aws/on-agents.yaml
     target: {kind: Deployment, name: "validate|executor|generation"}
+  # validate stays off Spot nodes (labelled sde/lifecycle=spot by `k8s_aws.py join`; unlabelled
+  # nodes match). api, control, the tunnels and the dashboard are on the K3s server already.
+  # generation and executor may run anywhere: a reclaimed node's jobs are re-claimed.
+  - target: {kind: Deployment, name: validate}
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: {name: any}
+      spec:
+        template:
+          spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - {key: sde/lifecycle, operator: NotIn, values: [spot]}
   # Docker slots per pod.
   - target: {kind: Deployment, name: validate}
     patch: |-
@@ -85,7 +104,7 @@ patches:
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "4"}}
   - target: {kind: ScaledObject, name: executor}
     patch: |-
-      - {op: replace, path: /spec/maxReplicaCount, value: 10}
+      - {op: replace, path: /spec/maxReplicaCount, value: 17}  # 17 runners, RDS db.t4g.medium
       # Scale down only after 15 min of a short queue (base: 2 min), longer than a rollout:
       # a scale-down deletes a pod without knowing it's mid-rollout, and batch aws-agent-b1
       # lost several in-flight rollouts that way (one dead-lettered after three).

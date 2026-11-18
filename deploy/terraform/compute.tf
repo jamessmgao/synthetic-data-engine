@@ -84,6 +84,20 @@ resource "aws_instance" "runner" {
     http_put_response_hop_limit = 2 # containers on the box can reach the instance role
   }
 
+  # Runners from on_demand_count up are Spot (8 x 2 vCPU, within the Spot vCPU quota of 32).
+  # Persistent + stop: an interrupted runner keeps its disk (images, K3s agent) and starts
+  # again when capacity returns, rejoining the cluster by itself; its pods reschedule meanwhile.
+  dynamic "instance_market_options" {
+    for_each = count.index >= var.on_demand_count ? [1] : []
+    content {
+      market_type = "spot"
+      spot_options {
+        spot_instance_type             = "persistent"
+        instance_interruption_behavior = "stop"
+      }
+    }
+  }
+
   user_data = templatefile("${path.module}/runner-init.sh.tftpl", {
     compose_version = var.compose_version
     buildx_version  = var.buildx_version

@@ -1,5 +1,7 @@
 """The API's request/response bodies. Status vocabularies live in shared.contracts.models."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 from shared.contracts.models import RejectReason, Stage, TaskStatus
@@ -120,7 +122,8 @@ class TaskSummary(BaseModel):
     id: str
     name: str | None
     status: TaskStatus
-    reason: RejectReason | None
+    # A cancelled task carries CANCELLED_REASON; a rejected one, a RejectReason.
+    reason: RejectReason | Literal["cancelled_by_user"] | None
     current_version: int
     stage: Stage
     pass_pattern: str  # one char per rollout slot: ✓ pass, ✗ fail, · not yet scored

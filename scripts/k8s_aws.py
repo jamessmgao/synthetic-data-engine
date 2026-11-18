@@ -8,6 +8,8 @@
               check. `--only ui,api,…` (aws-prod): build, apply and roll just those components;
               nothing else restarts. A deploy never restarts the tunnels, so their URLs stay.
     public    the API's and the dashboard's public URLs (`api: …`, `dashboard: …`)
+    join      add runners that aren't nodes yet as K3s agents, with the live release's images;
+              the server and existing nodes are untouched (`up` would rebuild them)
     status    nodes, pods, services
     logs SVC  last 100 lines: api|control|validate|executor|generation|postgres|redis|s3|bootstrap
     test ARGS run scripts/k8s_test.py ARGS on the server, from the last shipped release, as the
@@ -42,6 +44,7 @@ COMPONENTS = {"ui": ("dashboard", "dashboard-tunnel"), "api": ("api",), "control
               "validate": ("validate",), "executor": ("executor",), "generation": ("generation",)}
 # Quick tunnels: a restart gives a new URL, so a deploy restarts them only when their spec changes.
 TUNNELS = ("public-tunnel", "dashboard-tunnel")
+JOINING = "sde/joining"  # the taint `join` holds on a new node until its images are in
 # aws-prod-mock: production stores and glue, but mock models and no authoring claims.
 OVERLAYS = ("aws", "aws-prod", "aws-prod-mock")
 NS = "sde"
@@ -86,7 +89,7 @@ def ensure_token() -> None:
     print(f"generated {TOKEN_PARAM} (SecureString)")
 
 
-def ship(ref: str, server_only: bool = False) -> str:
+def ship(ref: str, server_only: bool = False, targets: list[str] | None = None) -> str:
     """Upload git REF as a release (as `aws_ops deploy` does) and unpack it on every runner."""
     out = outputs()
     sha = run(["git", "rev-parse", ref], cwd=REPO)
@@ -107,12 +110,12 @@ def ship(ref: str, server_only: bool = False) -> str:
         print(f"shipped {sha[:12]} to the server")
         return release
     unpack.append(f"ln -sfn {release} {CURRENT}")
-    on_all(lambda i: remote(i, unpack, timeout_s=600), runners())
-    print(f"shipped {sha[:12]} to every runner")
+    on_all(lambda i: remote(i, unpack, timeout_s=600), targets or cluster_runners())
+    print(f"shipped {sha[:12]} to {f'{len(targets)} runners' if targets else 'every runner'}")
     return release
 
 
-def build_and_import(release: str) -> None:
+def build_and_import(release: str, targets: list[str] | None = None) -> None:
     """Build the image into each node's Docker and copy it into K3s's containerd.
 
     `ctr import` can report success without the image landing, so crictl checks each node.
@@ -125,7 +128,7 @@ def build_and_import(release: str) -> None:
         f" || {{ echo \"image {IMAGE} missing on $(hostname) after import\" >&2; exit 1; }}",
         f"echo \"$(hostname): {IMAGE} imported\"",
     ]
-    for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), runners()):
+    for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), targets or cluster_runners()):
         print(log.strip())
 
 
@@ -184,7 +187,72 @@ def cmd_up(ref: str = "HEAD") -> None:
     cmd_status()
 
 
-def authoring_image(release: str) -> str:
+def runner_ips(ids: list[str]) -> dict[str, str]:
+    return dict(zip(ids, on_all(lambda i: remote(i, ["hostname -I | awk '{print $1}'"], timeout_s=120).strip(), ids)))
+
+
+def node_ips(server: str) -> set[str]:
+    """The K3s nodes' InternalIPs (empty when K3s isn't on the server yet)."""
+    return set(remote(server, [f"{KUBECTL} get nodes -o jsonpath="
+                               "'{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address} {end}'"
+                               " 2>/dev/null || true"], timeout_s=120).split())
+
+
+def cluster_runners() -> list[str]:
+    """The runners that are K3s nodes: what a deploy ships to and builds on. A runner added by
+    Terraform but not joined yet has no K3s to import into (`join` brings it in)."""
+    ids = runners()
+    known = node_ips(ids[0])
+    if not known:
+        return ids
+    ips = runner_ips(ids)
+    nodes = [i for i in ids if ips[i] in known]
+    if len(nodes) < len(ids):
+        print(f"skipping {len(ids) - len(nodes)} runner(s) not in the cluster yet: run `join`", flush=True)
+    return nodes
+
+
+def cmd_join() -> None:
+    """Add runners that aren't K3s nodes yet (after raising runner_count) as agents, with the
+    LIVE release's images, so they match the running pods. The server and the existing nodes
+    are not touched: no compose stop, no rebuild, no restart, no KEDA reinstall (as `up` does)."""
+    ids = runners()
+    server = ids[0]
+    ips = runner_ips(ids)
+    new = [i for i in ids if ips[i] not in node_ips(server)]
+    if not new:
+        print(f"all {len(ids)} runners are already K3s nodes")
+        return
+    # The release the cluster runs, so the new nodes import the same sde-pipeline:local and
+    # authoring tarball as the old ones (another ref would run other code on these nodes).
+    sha = remote(server, [f"basename $(readlink -e {CURRENT})"], timeout_s=60).strip()
+    print(f"joining {len(new)} runners {new} at the live release {sha[:12]}…", flush=True)
+    release = ship(sha, targets=new)
+    live = remote(server, [f"{K} exec deploy/generation -c app -- printenv SDE_AUTHORING_IMAGE"], timeout_s=120).strip()
+    tag = authoring_image(release, targets=new)  # Docker only: no K3s needed yet
+    if tag != live:
+        sys.exit(f"the new nodes built {tag}, the cluster runs {live}: not joining them")
+    # The agent first (the image import needs its containerd), tainted so no pod lands on the
+    # node before sde-pipeline:local is in it. Each node is labelled sde/lifecycle=spot|on-demand.
+    install = f"curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION={K3S_VERSION} K3S_TOKEN={TOKEN}"
+    imds = "http://169.254.169.254/latest"
+    on_all(lambda i: remote(i, [
+        f"t=$(curl -s -X PUT {imds}/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')",
+        f"lc=$(curl -s -H \"X-aws-ec2-metadata-token: $t\" {imds}/meta-data/instance-life-cycle)",
+        "systemctl is-active --quiet k3s-agent || {"
+        f" ip=$(hostname -I | awk '{{print $1}}');"
+        f" {install} K3S_URL=https://{ips[server]}:6443 sh -s - agent --node-ip $ip"
+        f" --node-label sde/lifecycle=${{lc:-unknown}} --node-taint {JOINING}:NoSchedule >/dev/null; }}",
+    ], timeout_s=900), new)
+    wait_ready(server, new, len(ids))
+    build_and_import(release, targets=new)
+    # K3s applies --node-taint only when the node registers, so removing it once is enough.
+    hosts = on_all(lambda i: remote(i, ["hostname"], timeout_s=60).strip(), new)
+    print(remote(server, [*(f"{KUBECTL} taint node {h} {JOINING}:NoSchedule- || true" for h in hosts),
+                          f"{KUBECTL} get nodes -L sde/lifecycle"], timeout_s=120))
+
+
+def authoring_image(release: str, targets: list[str] | None = None) -> str:
     """Build the authoring image on every node (as remote-deploy.sh does) and save it to
     /opt/sde/images/sde-authoring.tar, where the dind sidecars load it. Returns its tag."""
     tar = "/opt/sde/images/sde-authoring.tar"
@@ -201,7 +269,8 @@ def authoring_image(release: str) -> str:
         f" || {{ docker save -o {tar}.tmp $img && mv {tar}.tmp {tar} && echo $img > {tar}.tag; }}",
         "echo $img",
     ]
-    tags = {log.strip().splitlines()[-1] for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), runners())}
+    tags = {log.strip().splitlines()[-1]
+            for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), targets or cluster_runners())}
     if len(tags) != 1:
         sys.exit(f"the nodes disagree on the authoring image: {sorted(tags)}")
     tag = tags.pop()
@@ -245,6 +314,22 @@ def prod_secret_cmds() -> list[str]:
     ]
 
 
+def template_snapshot(sel: str) -> str:
+    """Record each selected Deployment's pod-template hash before an apply (for
+    restart_unchanged, in the same command list: SSM runs it as one shell script)."""
+    return (f"tmpl=$(mktemp); for d in $({K} get deploy -l {shlex.quote(sel)} -o name); do"
+            f" echo \"$d $({K} get $d -o jsonpath='{{.spec.template}}' | sha256sum | cut -c1-16)\"; done > $tmpl")
+
+
+def restart_unchanged(sel: str) -> str:
+    """Restart only the Deployments whose template the apply left as it was (same tag, new
+    image contents). One the apply changed is already rolling: a restart would roll it twice."""
+    return (f"for d in $({K} get deploy -l {shlex.quote(sel)} -o name); do"
+            f" h=$({K} get $d -o jsonpath='{{.spec.template}}' | sha256sum | cut -c1-16);"
+            f" if grep -qx \"$d $h\" $tmpl; then {K} rollout restart $d;"
+            " else echo \"$d: rolling from the apply\"; fi; done; rm -f $tmpl")
+
+
 def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
     """A scoped deploy: build only the images these components use, apply only their objects
     (plus sde-config and the bootstrap Job for pipeline components), roll only their
@@ -273,13 +358,15 @@ def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
     sel = names + (["sde-config", "bootstrap"] if pipeline else [])
     rolled = [n for n in names if n not in TUNNELS]
     print(f"deploying only {', '.join(names)} from {path}…", flush=True)
+    rolled_sel = "app.kubernetes.io/name in (" + ",".join(rolled) + ")"
     print(remote(runners()[0], [
         *pre,
         *([f"{K} delete job bootstrap --ignore-not-found"] if pipeline else []),
-        f"set -o pipefail; {KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path}"
+        template_snapshot(rolled_sel),
+        f"set -o pipefail;{KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path}"
         f" | {KUBECTL} apply -l {shlex.quote('app.kubernetes.io/name in (' + ','.join(sel) + ')')} -f -",
         *([f"{K} wait job/bootstrap --for=condition=complete --timeout=300s"] if pipeline else []),
-        f"{K} rollout restart " + " ".join(f"deploy/{n}" for n in rolled),
+        restart_unchanged(rolled_sel),
         *(f"{K} rollout status deploy/{n} --timeout=300s" for n in names),
     ], timeout_s=1800))
     cmd_public()
@@ -307,17 +394,19 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
         pre += [f"test -d {path} || {{ echo 'no {path} in this release' >&2; exit 1; }}",
                 f"echo SDE_AUTHORING_IMAGE={tag} > infra/k8s/overlays/aws-prod/authoring.env",
                 *prod_secret_cmds()]
+    not_tunnels = "app.kubernetes.io/name notin (" + ",".join(TUNNELS) + ")"
     print(f"deploying {path}…", flush=True)
     print(remote(runners()[0], [
         *pre,
         # Jobs are immutable: replace the bootstrap job so it runs again on every deploy.
         f"{K} delete job bootstrap --ignore-not-found",
+        template_snapshot(not_tunnels),
         # pipefail: a rejected object fails the deploy here instead of being restarted on its
         # old spec below (how 082166f's generation change went missing).
         f"set -o pipefail; {KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path} | {KUBECTL} apply -f -",
         # Same tag, new image contents: restart so the pods pick up what was just imported.
         # Not the tunnels: their image is pinned, and a restart would change their public URL.
-        f"{K} rollout restart deploy -l {shlex.quote('app.kubernetes.io/name notin (' + ','.join(TUNNELS) + ')')}",
+        restart_unchanged(not_tunnels),
         f"for s in $({K} get statefulset -o name); do {K} rollout status $s --timeout=300s; done",
         f"if {K} get job/bootstrap >/dev/null 2>&1; then"
         f" {K} wait job/bootstrap --for=condition=complete --timeout=300s; fi",
@@ -388,7 +477,8 @@ def cmd_down() -> None:
 
 
 COMMANDS = {"up": cmd_up, "deploy": cmd_deploy, "status": cmd_status, "logs": cmd_logs,
-            "test": cmd_test, "test-log": cmd_test_log, "public": cmd_public, "down": cmd_down}
+            "test": cmd_test, "test-log": cmd_test_log, "public": cmd_public, "join": cmd_join,
+            "down": cmd_down}
 
 
 def main() -> None:
