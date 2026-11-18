@@ -140,10 +140,19 @@ class TraceParserService:
             used = [(j["input"] or {}).get("operator") for j in jobs if j["type"] == JobType.REVISE]
             action, operator = "revise", calibration.choose_operator(passes, enriched, [o for o in used if o])
         reason = RejectReason.INVALID if blamed_task else RejectReason.EXHAUSTED
+        # Too easy: find out exactly why from the passing traces, so the revision
+        # (or the rejection record) says what made it easy and how to harden it.
+        analysis = None
+        if not blamed_task and calibration.too_easy(passes):
+            analysis, c = self._review_passes(tid, n, enriched, passes)
+            cost += c
+        direction = ("repair" if blamed_task else "easier" if calibration.too_hard(passes)
+                     else "harder" if calibration.too_easy(passes) else None)
         summary = (f"{passes}/{self.n_runs} passed" + (f"; task blamed by {blamed_task}" if blamed_task else "")
                    + {"accept": "; accepted", "reject": f"; rejected ({reason})",
-                      "revise": f"; revising with {operator}"}[action])
-        fields = _result(action, summary, pass_count=passes, operator=operator)
+                      "revise": f"; revising ({direction}) with {operator}"}[action])
+        fields = _result(action, summary, pass_count=passes, operator=operator, direction=direction,
+                         easy_analysis=analysis)
         fields["cost_usd"] = round(cost, 6)
 
         def handoff(conn: Conn, row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -161,8 +170,10 @@ class TraceParserService:
                     "id": job_id(tid, n + 1, "revise"), "type": JobType.REVISE, "task_id": tid,
                     "version": n + 1, "bundle_sha256": sha,
                     "input": {"origin": "revision", "bundle_sha256": sha, "operator": operator,
+                              "direction": direction,
                               "result": f"{passes} of {self.n_runs} runs passed.",
-                              "evidence": calibration.evidence(enriched)},
+                              "evidence": calibration.evidence(enriched),
+                              **({"analysis": analysis} if analysis else {})},
                 })
             if not ok:  # another copy decided this version first: record that, not our decision
                 conn.execute("UPDATE jobs SET result = ? WHERE id = ?", (json.dumps(
@@ -200,14 +211,37 @@ class TraceParserService:
                 waiting = True
         return scored, retries, waiting, exhausted
 
-    def _parse(self, run: dict[str, Any]) -> tuple[dict | None, dict | None, float]:
-        """trace_parser.parse over one scored run's trace, fetched from the artifact store."""
+    def _trial_dir(self, run: dict[str, Any]) -> Path | None:
+        """The run's Harbor trial directory, fetched from the artifact store."""
         rid, art = run["id"], self.backend.artifacts
         art.fetch_trace(rid)
         trace = art.trace_dir(rid)
         trial = (run.get("result") or {}).get("trial")
         trial_dir = trace / trial if trial else next((p.parent for p in trace.glob("*/result.json")), None)
-        if trial_dir is None or not (trial_dir / "result.json").exists():
+        return trial_dir if trial_dir is not None and (trial_dir / "result.json").exists() else None
+
+    def _review_passes(self, tid: str, n: int, enriched: list[dict[str, Any]], passes: int) -> tuple[dict, float]:
+        """Why was this version too easy? A review of its fastest passing runs."""
+        passing = [r for r in enriched if r["outcome"] == Outcome.VALID_PASS]
+        passing.sort(key=lambda r: ((r.get("trace_metrics") or {}).get("llm_calls") or 10**6, r["slot"]))
+        chosen = [(f"run {r['slot']}", d) for r in passing[:trace_parser.MAX_PASS_RUNS]
+                  if (d := self._trial_dir(r)) is not None]
+        if not chosen:
+            return {"why_easy": None, "trusted": False, "review_error": "no passing trace found"}, 0.0
+        sha = passing[0].get("bundle_sha256")
+        analysis, cost = trace_parser.review_passes(
+            trace_parser.pass_evidence(chosen),
+            trace_parser.load_instruction(self.backend.artifacts.bundle_path(sha) if sha else None),
+            trace_parser.load_spec(self.backend.work_dir, sha),
+            passed=passes, runs=self.n_runs, cache_key=f"pass-review:{tid}-v{n}",
+            llm_dir=self.backend.work_dir / "llm", complete=self.complete)
+        return {**analysis, "runs_reviewed": [label for label, _ in chosen]}, cost
+
+    def _parse(self, run: dict[str, Any]) -> tuple[dict | None, dict | None, float]:
+        """trace_parser.parse over one scored run's trace, fetched from the artifact store."""
+        rid, art = run["id"], self.backend.artifacts
+        trial_dir = self._trial_dir(run)
+        if trial_dir is None:
             log.warning("%s: no trace to parse", rid)
             failure = ({"failing_tests": [], "evidence": [], "explanation": None, "attribution": "unexplained",
                         "pitfall_matched": None, "cited_evidence": [], "review_error": "trace not found"}

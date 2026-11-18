@@ -45,6 +45,7 @@ cluster, or `SDE_E2E_PG_ADMIN_URL` / `SDE_E2E_REDIS_URL` / `SDE_E2E_S3_ENDPOINT`
 | Test | Proves |
 |---|---|
 | `test_tasks_run_every_path_to_the_scripted_verdict` | Each task path ends in the right verdict: accepted at v1; revised then accepted at v2; repaired; gates failing 3 times (`invalid`); out of band at v3 (`exhausted`); invalid runs retried and never scored; a slot never valid (`infra_unresolved`); a failed draft. It also checks the exact set of jobs created, the published bundles and `verdict.md`, and the API report, cost included. |
+| `test_a_batch_runs_to_its_yield_report` | The same scenario created with one `POST /v1/batches`: the batch's status, the batch list, and its report with the yield block (4 of 8 learnable). |
 | `test_verdicts_explain_every_step` | Versions, revision types, the evidence handed to the model, and retried runs are all visible through the API. |
 | `test_resubmitting_finished_tasks_changes_nothing` | Creating a task again with the same id is a no-op, and 409 with a different request. Rerunning finished tasks does nothing. |
 | `test_kill_dash_nine_mid_run_then_restart` | Two SIGKILLs mid-run, then restarts: same verdicts, and no model call or trial repeated. |
@@ -79,7 +80,7 @@ SDE_API_KEY=... docker compose --env-file .env -p sde-live -f deploy/compose.dev
 Two kinds of live test:
 
 - **The whole loop:** `POST /v1/tasks` (`{"prompt": ...}` or `{}`), or `scripts/run_tasks.py
-  --count N`. Everything is real, including generation, so its outcome depends on how good the
+  --count N --batch <id>` (one `POST /v1/batches`, then its report and yield). Everything is real, including generation, so its outcome depends on how good the
   generated task is.
 - **Past generation:** `scripts/inject_task.py <task_dir> <task_id> --draft <draft.json>`
   hands an existing bundle straight to Build + Validate, as if the Generation Service had just

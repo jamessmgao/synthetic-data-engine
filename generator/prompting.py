@@ -192,16 +192,68 @@ Change only what is needed to fix these problems. Keep every correctness
 constraint and every test function: you may correct a test that is itself
 wrong, but do not delete or weaken a test to make the reference solution pass."""
 
-REVISION_REQUEST = """Five independent agent runs were made on your task. {result}
+# Ways to make a task harder in depth of reasoning, not in size. The Trace
+# Parser's pass review picks from these by name; the revision prompt lists them.
+HARDENING_TECHNIQUES = {
+    "interacting_requirements": "Make correctness guarantees depend on one another, so the straightforward fix "
+                                "for one violates another and the trade-off has to be understood.",
+    "counterfactual_failure": "Make a reasonable-looking implementation fail when events happen differently "
+                              "(another order, a retry, a crash, a concurrent caller), not only on the normal path.",
+    "state_and_history": "Make correctness depend on state over time: transitions, delayed effects, retries, "
+                         "recovery, changing conditions. What is right in one state is wrong in another.",
+    "partial_observability": "Spread the evidence for the root cause across logs, components or execution paths, "
+                             "so it has to be investigated and reconciled; everything needed stays available.",
+    "nonlocal_cause": "Make the symptom appear in a different component from the root cause, so dependencies and "
+                      "data flow have to be traced instead of patching where the symptom shows.",
+    "adversarial_edge_cases": "Add realistic failure sequences, unusual inputs, concurrent operations or boundary "
+                              "conditions that defeat the naive solution by exposing a real design weakness.",
+    "locally_correct_globally_wrong": "Make a greedy decision, isolated fix or simple heuristic look right but "
+                                      "violate a stated overall requirement.",
+    "dependent_subproblems": "Require several connected decisions where earlier choices constrain later ones, so "
+                             "a partial solution is not enough.",
+    "preserve_guarantees": "Require the change without regressions: other behavior, including what hidden "
+                           "dependents rely on, must keep working (tested by a regression suite).",
+    "genuine_tradeoff": "Require balancing correctness with progress, concurrency, efficiency or reliability, "
+                        "without a trivial solution that disables one of them.",
+}
 
-Revise the task: {operator_instruction}
+HARDER_GUIDE = """How to make it harder:
 
-Evidence from the runs:
+First, find why the current task is easy: the simple strategy that solved it and
+the cues that led the agents straight to it (the analysis above says what the
+agents actually did). Then make one or two careful semantic changes that make
+exactly that strategy insufficient, using one or more of these techniques:
+
+{techniques}
+
+Make the reasoning deeper, not the task bigger. The ideal harder task is one
+where a competent engineer writes a plausible solution that works in ordinary
+cases, but has to discover a deeper interaction, state dependency or
+counterexample to get it fully right. Do NOT make it harder through vague
+instructions, hidden or unstated requirements, more code, larger inputs alone,
+arbitrary restrictions, or unreliable tests. State every new requirement in the
+instruction, at the level of the system's interface, without describing the fix.
+Keep it coherent, realistic, solvable and objectively verifiable."""
+
+EASIER_GUIDE = """How to make it easier: keep the core engineering problem, but remove what made it
+unreachable. Reduce the number of interacting requirements, make the relevant
+evidence easier to find, or narrow where the problem can be, without naming the
+defect or describing the fix."""
+
+REVISION_REQUEST = """Five independent agent runs were made on your task. {result} {verdict}
+
+{analysis}Evidence from the runs:
 {evidence}
+
+{guide}
+
+Suggested focus: {operator_instruction}
 
 Return a complete new version of the task as one JSON object matching the
 schema. Keep it realistic and fair: every requirement the tests check must be
 stated in the instruction, and the task must stay solvable."""
+
+TARGET_BAND = "The target is a task that 1 to 3 of 5 runs pass."
 
 # PRD §6.6 revision operators: what GLM-5.1 is asked to change.
 OPERATORS = {
@@ -219,6 +271,61 @@ OPERATORS = {
                         "tests check in the instruction, or fix the broken test or environment. Keep the "
                         "difficulty unchanged.",
 }
+
+
+EASIER_OPERATORS = {"localize_diagnosis", "reduce_unrelated_constraints"}
+
+
+def revision_direction(job_input: dict) -> str:
+    """harder | easier | repair, given or inferred from the operator."""
+    if job_input.get("direction") in ("harder", "easier", "repair"):
+        return job_input["direction"]
+    op = job_input.get("operator")
+    if op == "repair_ambiguity":
+        return "repair"
+    return "easier" if op in EASIER_OPERATORS else "harder"
+
+
+def format_pass_analysis(analysis: dict | None) -> str:
+    """The Trace Parser's review of the passing runs, as a prompt section."""
+    if not analysis or analysis.get("trusted") is False \
+            or not (analysis.get("why_easy") or analysis.get("simple_strategy")):
+        return ""  # missing, failed, or cites no real evidence: don't steer the revision with it
+    lines = ["Why the runs passed (a review of the passing agents' traces):"]
+    for key, label in (("why_easy", "Why it was easy"), ("simple_strategy", "The strategy that worked"),
+                       ("fix_applied", "The fix the agents applied")):
+        if analysis.get(key):
+            lines.append(f"- {label}: {analysis[key]}")
+    cues = [c for c in analysis.get("cues") or [] if c.get("quote")]
+    if cues:
+        lines.append("- Cues that led the agents straight to it:")
+        lines += [f"  - \"{c['quote']}\" ({c.get('where', 'task')})" for c in cues]
+    suggestions = analysis.get("suggestions") or []
+    if suggestions:
+        lines.append("- Suggested changes (each aimed at the strategy above):")
+        for i, s in enumerate(suggestions, 1):
+            lines.append(f"  {i}. [{s.get('technique')}] {s.get('change')} (defeats: {s.get('defeats')})")
+    return "\n".join(lines) + "\n\n"
+
+
+def render_revision_request(job_input: dict) -> str:
+    direction = revision_direction(job_input)
+    if direction == "harder":
+        verdict = f"That is too easy. {TARGET_BAND}"
+        techniques = "\n".join(f"- {name}: {text}" for name, text in HARDENING_TECHNIQUES.items())
+        guide = HARDER_GUIDE.format(techniques=techniques)
+    elif direction == "easier":
+        verdict, guide = f"That is too hard. {TARGET_BAND}", EASIER_GUIDE
+    else:
+        verdict, guide = "A review found that the task itself is defective.", (
+            "Fix the defect without changing the difficulty.")
+    operator = job_input.get("operator")
+    return REVISION_REQUEST.format(
+        result=job_input.get("result", "").strip(), verdict=verdict,
+        analysis=format_pass_analysis(job_input.get("analysis")) if direction == "harder" else "",
+        evidence=job_input.get("evidence") or "(none recorded)", guide=guide,
+        operator_instruction=OPERATORS.get(operator, "use the analysis above") if operator else "use the analysis above",
+    )
 
 
 def continuation(prompt: str, previous: TaskDraft, request: str) -> list[dict]:

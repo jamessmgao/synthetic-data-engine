@@ -32,6 +32,14 @@ def config_hash() -> str:
 def in_band(pass_count: int) -> bool:
     return config.BAND_LOW <= pass_count <= config.BAND_HIGH
 
+
+def too_easy(pass_count: int) -> bool:
+    return pass_count > config.BAND_HIGH
+
+
+def too_hard(pass_count: int) -> bool:
+    return pass_count < config.BAND_LOW
+
 # Tried in order; an operator already used on this task is skipped.
 HARDER = ["increase_diagnosis_depth", "increase_constraint_interaction", "increase_cross_component_dependency"]
 EASIER = ["localize_diagnosis", "reduce_unrelated_constraints"]
@@ -70,10 +78,15 @@ def evidence(rollouts: list[dict]) -> str:
     tests), else any `failing_tests` the caller attached."""
     lines = []
     for r in sorted(rollouts, key=lambda r: r["slot"]):
-        seconds = (r.get("trace_metrics") or {}).get("duration_seconds") or (r.get("result") or {}).get("duration_sec")
+        metrics = r.get("trace_metrics") or {}
+        seconds = metrics.get("duration_seconds") or (r.get("result") or {}).get("duration_sec")
         took = f", {seconds:.0f}s" if seconds else ""
         if r["outcome"] == Outcome.VALID_PASS:
-            lines.append(f"- run {r['slot']}: passed{took}")
+            # How easily it passed is part of the evidence: steps and what it edited.
+            steps = f", {metrics['llm_calls']} agent steps" if metrics.get("llm_calls") else ""
+            files = metrics.get("files_modified")
+            edited = f", edited {', '.join(files[:5])}" if files else ""
+            lines.append(f"- run {r['slot']}: passed{took}{steps}{edited}")
             continue
         failure = r.get("failure") or {}
         tests = failure.get("failing_tests") or r.get("failing_tests") or []

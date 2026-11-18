@@ -44,7 +44,7 @@ DEFAULT_DIFFICULTY = {"form": "behavior_preserving", "dial": 2}
 def sample_spec(existing: list[dict], rng: random.Random | None = None) -> dict:
     """A spec for one new task, spread across the taxonomy given every task so far.
 
-    Quota sampling over all tasks ever created (there are no batches): the new
+    Quota sampling over all tasks ever created (a batch adds its own picks as it goes): the new
     task takes an unused (domain, task_type, environment) combination with the
     least-used values, and the least-used value on every other dimension. Once
     every combination has been used, repeats are allowed, still least-used first.

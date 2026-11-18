@@ -236,8 +236,31 @@ def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):
     assert got == set(ids)
 
 
-def test_schema_init_drops_the_old_batch_id_column(tmp_path):
-    """Databases created before batches were removed lose tasks.batch_id on startup."""
+def test_schema_init_adds_a_nullable_batch_id(tmp_path):
+    """Databases from when there were no batches gain tasks.batch_id (nullable, indexed);
+    a second start changes nothing."""
+    import sqlite3
+
+    from shared.storage.sql import SqlStore
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as c:
+        c.execute("""CREATE TABLE tasks (id TEXT PRIMARY KEY, slot TEXT NOT NULL DEFAULT '{}',
+                     status TEXT NOT NULL, reason TEXT, current_version INTEGER NOT NULL DEFAULT 1,
+                     stage TEXT NOT NULL, bundle_sha256 TEXT, name TEXT, accepted_version INTEGER,
+                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
+        c.execute("INSERT INTO tasks (id, status, stage, created_at, updated_at)"
+                  " VALUES ('t-old', 'CREATED', 'QUEUED', 'x', 'x')")
+    for _ in range(2):
+        store = SqlStore(f"sqlite:///{db}")
+        assert store.task("t-old")["batch_id"] is None
+    indexes = {r["name"] for r in store.conn.execute("PRAGMA index_list(tasks)").fetchall()}
+    assert "tasks_batch" in indexes
+
+
+def test_schema_init_relaxes_the_first_batch_releases_not_null(tmp_path):
+    """The first batch release had batch_id NOT NULL; its rows keep their label and
+    a single task (null batch) can be inserted afterwards."""
     import sqlite3
 
     from shared.storage.sql import SqlStore
@@ -248,12 +271,14 @@ def test_schema_init_drops_the_old_batch_id_column(tmp_path):
                      status TEXT NOT NULL, reason TEXT, current_version INTEGER NOT NULL DEFAULT 1,
                      stage TEXT NOT NULL, bundle_sha256 TEXT, name TEXT, accepted_version INTEGER,
                      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""")
-        c.execute("CREATE INDEX tasks_batch ON tasks (batch_id)")
         c.execute("INSERT INTO tasks (id, batch_id, status, stage, created_at, updated_at)"
                   " VALUES ('t-old', 'b-1', 'CREATED', 'QUEUED', 'x', 'x')")
     store = SqlStore(f"sqlite:///{db}")
-    cols = {d[0] for d in store.conn.execute("SELECT * FROM tasks LIMIT 0").description}
-    assert "batch_id" not in cols and store.task("t-old")["status"] == "CREATED"
+    assert store.task("t-old")["batch_id"] == "b-1"
+    with store.tx() as conn:
+        conn.execute("INSERT INTO tasks (id, status, stage, created_at, updated_at)"
+                     " VALUES ('t-new', 'CREATED', 'QUEUED', 'y', 'y')")
+    assert [b["batch_id"] for b in store.batches()] == ["b-1"]
 
 
 def test_schema_init_lifts_the_old_three_version_cap(tmp_path):

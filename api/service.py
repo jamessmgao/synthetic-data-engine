@@ -1,7 +1,7 @@
 """
-Read models behind the API (docs/PRD.md §4): the task list, the task verdict and
-the report over a set of tasks, computed from the `pipeline` store. Task creation
-goes through `api.submit.create_task`; nothing here writes.
+Read models behind the API (docs/PRD.md §4): the task list, the task verdict,
+batches, and the report (with its yield block) over a set of tasks, computed from
+the `pipeline` store. Creation goes through `api.submit`; nothing here writes.
 
 What the services write and these read (PRD §5.1):
   - create / revise (Generation Service): `input.origin` in {initial, repair,
@@ -69,9 +69,10 @@ def _gate_passed(gate: Any) -> bool:
     return gate is True or (isinstance(gate, dict) and gate.get("passed") is True)
 
 
-def list_tasks(store: SqlStore, status: str | None = None, since: str | None = None) -> list[dict]:
-    """Every task (optionally one status, or created at/after `since`), oldest first."""
-    tasks = store.tasks(status=status, since=since)
+def list_tasks(store: SqlStore, status: str | None = None, since: str | None = None,
+               batch_id: str | None = None) -> list[dict]:
+    """Every task (optionally one status, one batch, or created at/after `since`), oldest first."""
+    tasks = store.tasks(status=status, since=since, batch_id=batch_id)
     jobs_by_task = _jobs_by_task(store, tasks)
     n_runs = eval_config()["n_runs"]
     return [
@@ -164,6 +165,10 @@ def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None
         raise NotFound(f"unknown task ids: {missing}")
     if not tasks:
         raise NotFound("no tasks match")
+    return _summary(store, tasks)
+
+
+def _summary(store: SqlStore, tasks: list[dict]) -> dict:
     jobs_by_task = _jobs_by_task(store, tasks)
     all_jobs = [j for t in tasks for j in jobs_by_task[t["id"]]]
     cfg = eval_config()
@@ -196,7 +201,7 @@ def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None
     # More than one config hash means rollouts weren't all measured the same way.
     hashes = sorted({j["config_hash"] for j in rollouts if j["config_hash"]})
 
-    return {
+    summary = {
         "task_ids": [t["id"] for t in tasks],
         "candidates": len(tasks),
         "structural_pass": sum(
@@ -220,3 +225,44 @@ def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None
         "wall_clock_s": wall_clock,
         "config_hash": hashes[0] if len(hashes) == 1 else (hashes or None),
     }
+    return {**summary, "yield": _yield(summary)}
+
+
+def _yield(summary: dict) -> dict:
+    """The headline number: the share of finished candidates accepted as learnable.
+    Tasks still in progress are left out of the denominator; null until one finishes."""
+    finished = summary["candidates"] - summary["in_progress"]
+    return {
+        "candidates": summary["candidates"],
+        "functional": summary["functional_pass"],
+        "accepted": summary["accepted_total"],
+        "accepted_v1": summary["accepted_v1"],
+        "learnable_rate": round(summary["accepted_total"] / finished, 4) if finished else None,
+    }
+
+
+def list_batches(store: SqlStore) -> list[dict]:
+    """Every batch with its outcome counts, newest first."""
+    return store.batches()
+
+
+def _batch_tasks(store: SqlStore, batch_id: str) -> list[dict]:
+    tasks = store.tasks(batch_id=batch_id)
+    if not tasks:
+        raise NotFound(f"batch {batch_id!r} not found")
+    return tasks
+
+
+def get_batch(store: SqlStore, batch_id: str) -> dict:
+    """One batch: task count per status and each task's summary."""
+    tasks = _batch_tasks(store, batch_id)
+    return {
+        "batch_id": batch_id,
+        "counts_by_status": dict(Counter(t["status"] for t in tasks)),
+        "tasks": list_tasks(store, batch_id=batch_id),
+    }
+
+
+def batch_report(store: SqlStore, batch_id: str) -> dict:
+    """summary.json over one batch's tasks."""
+    return {"batch_id": batch_id, **_summary(store, _batch_tasks(store, batch_id))}

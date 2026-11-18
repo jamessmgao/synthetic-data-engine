@@ -18,7 +18,7 @@ from shared.storage.sql import claim as sql_claim, insert_job, job_id, rollout_j
 from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import MAX_VERSIONS, JobType
 from shared.jobs.reconciler import reconcile
-from api.submit import TaskConflict, create_task
+from api.submit import BatchConflict, TaskConflict, create_batch, create_task
 from shared.taxonomy.taxonomy import TAXONOMY, UNIQUE_DIMENSIONS, sample_spec
 
 T = "t-1"
@@ -145,6 +145,33 @@ def test_create_task_is_idempotent_and_conflicts_on_a_different_request(backend)
     with pytest.raises(TaskConflict):
         create_task(backend, prompt="another idea", task_id=T)
     assert len(backend.store.tasks()) == 1
+
+
+def test_create_batch_writes_labelled_tasks_with_diverse_specs(backend):
+    create_task(backend, task_id=T)
+    batch_id, task_ids, created = create_batch(backend, 4, batch_id="b-x")
+    assert (batch_id, created) == ("b-x", True) and task_ids == [f"b-x-t0{i}" for i in range(1, 5)]
+    tasks = [task(backend, t) for t in [T, *task_ids]]
+    assert [t["batch_id"] for t in tasks] == [None, "b-x", "b-x", "b-x", "b-x"]
+    combos = {tuple(t["slot"]["taxonomy"][d] for d in UNIQUE_DIMENSIONS) for t in tasks}
+    assert len(combos) == 5  # spread across the earlier task and each other
+    for t in task_ids:
+        assert backend.store.job(job_id(t, 1, "create"))["status"] == "READY"
+
+
+def test_create_batch_is_idempotent_and_all_or_nothing(backend):
+    first = create_batch(backend, 2, batch_id="b-x", prompt="idea")
+    assert create_batch(backend, 2, batch_id="b-x", prompt="idea") == (*first[:2], False)
+    with pytest.raises(BatchConflict):
+        create_batch(backend, 3, batch_id="b-x")
+    with pytest.raises(BatchConflict):
+        create_batch(backend, 2, batch_id="b-x", prompt="another idea")
+    create_task(backend, task_id="b-y-t02")
+    with pytest.raises(BatchConflict):
+        create_batch(backend, 2, batch_id="b-y")  # t01 must not be left behind
+    with pytest.raises(ValueError):
+        create_batch(backend, 51)
+    assert sorted(t["id"] for t in backend.store.tasks()) == ["b-x-t01", "b-x-t02", "b-y-t02"]
 
 
 def test_sampling_spreads_across_every_task_so_far():
@@ -289,6 +316,50 @@ def test_too_easy_is_revised_until_exhausted(backend, parser):
     assert (t["status"], t["reason"], t["current_version"]) == ("REJECTED", "exhausted", MAX_VERSIONS)
     assert not backend.store.job(job_id(T, MAX_VERSIONS + 1, "revise"))  # no version past the cap
     assert not parser.accepted_dir.exists()
+
+
+def test_too_easy_revision_carries_why_it_was_easy(backend, tmp_path):
+    """5/5: the passing traces are reviewed and the revision is told why it was easy."""
+    calls = []
+
+    def complete(messages, response_format, llm_dir=None, cache_key=""):
+        calls.append((response_format["json_schema"]["name"], cache_key))
+        reply = {"why_easy": "Every run read the instruction's hint and patched drain() [E1].",
+                 "simple_strategy": "patch drain() locally", "cues": [{"quote": "drain", "where": "instruction"}],
+                 "fix_applied": "reordered the ack", "cited_evidence": ["E1"],
+                 "suggestions": [{"technique": "preserve_guarantees", "change": "make the stats module rely on "
+                                  "the old ordering", "defeats": "the local reorder breaks the stats"}]}
+        return SimpleNamespace(content=json.dumps(reply), cost_usd=0.02, cached=False)
+
+    parser = TraceParserService(backend, accepted_dir=tmp_path / "accepted", complete=complete)
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score(backend, parser, 1, "11111")
+    rev = backend.store.job(job_id(T, 2, "revise"))
+    assert rev["input"]["direction"] == "harder"
+    analysis = rev["input"]["analysis"]
+    assert analysis["trusted"] and analysis["simple_strategy"] == "patch drain() locally"
+    assert analysis["suggestions"][0]["technique"] == "preserve_guarantees"
+    assert calls == [("pass_review", f"pass-review:{T}-v1")]  # one review per version, not per run
+    decision = next(j for j in backend.store.task_jobs(T) if j["type"] == "analyze" and
+                    (j["result"] or {}).get("action") == "revise")
+    assert decision["result"]["easy_analysis"]["why_easy"].startswith("Every run")
+    assert decision["cost_usd"] >= 0.02
+
+
+def test_in_band_and_too_hard_versions_get_no_pass_review(backend, tmp_path):
+    names = []
+
+    def complete(messages, response_format, llm_dir=None, cache_key=""):
+        names.append(response_format["json_schema"]["name"])
+        return review()(messages, response_format, llm_dir, cache_key)
+
+    parser = TraceParserService(backend, accepted_dir=tmp_path / "accepted", complete=complete)
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score(backend, parser, 1, "00000")
+    assert "pass_review" not in names
+    assert backend.store.job(job_id(T, 2, "revise"))["input"]["direction"] == "easier"
 
 
 def test_too_hard_is_made_easier_then_accepted_at_v2(backend, parser):

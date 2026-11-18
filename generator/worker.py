@@ -19,7 +19,10 @@ job_input, by origin:
     {"origin": "initial", "spec": {...}}          or {"origin": "initial", "prompt": "..."}
     {"origin": "repair", "bundle_sha256": "...", "feedback": "<gate evidence>"}
     {"origin": "revision", "bundle_sha256": "...", "operator": "<PRD §6.6 name>",
-     "result": "2 of 5 runs passed.", "evidence": "<failure evidence>"}
+     "result": "5 of 5 runs passed.", "evidence": "<one line per run>",
+     "direction": "harder" | "easier" | "repair"   (optional; inferred from the operator),
+     "analysis": {...}   (optional; the Trace Parser's review of the passing runs:
+                          why_easy, simple_strategy, cues, fix_applied, suggestions)}
 
 Idempotent by construction: model calls are cached under work/llm/ by
 (job_id, round, request), and bundles are content-addressed under
@@ -39,7 +42,8 @@ from pydantic import ValidationError
 from shared.contracts import config
 from shared.llm import llm
 from shared.taskformat.materialize import write_bundle
-from generator.prompting import OPERATORS, REPAIR_REQUEST, REVISION_REQUEST, continuation, render_initial_prompt
+from generator.prompting import (OPERATORS, REPAIR_REQUEST, continuation, render_initial_prompt, render_revision_request,
+                       revision_direction)
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 
 RESPONSE_FORMAT = {
@@ -122,9 +126,9 @@ def _conversation(job_input: dict, work_dir: Path) -> tuple[str, list[dict], Tas
     if origin == "repair":
         request = REPAIR_REQUEST.format(feedback=job_input["feedback"])
     elif origin == "revision":
-        request = REVISION_REQUEST.format(result=job_input.get("result", ""),
-                                          operator_instruction=OPERATORS[job_input["operator"]],
-                                          evidence=job_input.get("evidence", "(none recorded)"))
+        if job_input.get("operator") and job_input["operator"] not in OPERATORS:
+            raise ValueError(f"unknown operator {job_input['operator']!r}")
+        request = render_revision_request(job_input)
     else:
         raise ValueError(f"unknown origin {origin!r}")
     return parent["prompt"], continuation(parent["prompt"], previous, request), previous
@@ -183,7 +187,9 @@ def run_generate_job(job_id: str, job_input: dict, work_dir: str | Path | None =
     if origin != "initial":
         meta["parent_bundle_sha256"] = job_input["bundle_sha256"]
     if origin == "revision":
-        meta["operator"] = job_input["operator"]
+        if job_input.get("operator"):
+            meta["operator"] = job_input["operator"]
+        meta["direction"] = revision_direction(job_input)
     sha, bundle_path = write_bundle(draft, work_dir / "bundles", meta)
     draft_path = _save_draft_record(sha, work_dir, {"draft": draft.model_dump(), "prompt": prompt,
                                                     "generation_meta": meta, "job_id": job_id})

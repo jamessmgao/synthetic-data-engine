@@ -174,6 +174,25 @@ def test_tasks_run_every_path_to_the_scripted_verdict(make_pipeline):
     assert report["wall_clock_s"] is not None
 
 
+def test_a_batch_runs_to_its_yield_report(make_pipeline):
+    """A batch the way run_tasks.py does it: one POST /v1/batches, then the
+    batch's report. Batch `e2e` names its tasks e2e-t01.., the scenario's ids."""
+    p = make_pipeline(SCENARIO)
+    created = p.api("POST", "/v1/batches", json={"count": len(SCENARIO), "batch_id": "e2e"})
+    assert created == {"batch_id": "e2e", "task_ids": p.task_ids, "created": True}
+    p.wait(p.start())
+    check_outcome(p)
+
+    status = p.api("GET", "/v1/batches/e2e")
+    assert status["counts_by_status"] == {"ACCEPTED": 4, "REJECTED": 4}
+    assert p.api("GET", "/v1/batches") == [{"batch_id": "e2e", "tasks": 8, "accepted": 4, "rejected": 4,
+                                            "in_progress": 0, "created_at": status["tasks"][0]["created_at"]}]
+    report = p.api("GET", "/v1/batches/e2e/report")
+    assert report["batch_id"] == "e2e" and {k: report[k] for k in EXPECTED_REPORT} == EXPECTED_REPORT
+    assert report["yield"] == {"candidates": 8, "functional": 6, "accepted": 4, "accepted_v1": 3,
+                               "learnable_rate": 0.5}
+
+
 def test_verdicts_explain_every_step(make_pipeline):
     p = make_pipeline({"t01": SCENARIO["t02"], "t02": SCENARIO["t04"], "t03": SCENARIO["t05"]})
     p.submit()

@@ -182,3 +182,50 @@ def test_a_missing_trajectory_is_noted_not_fatal(tmp_path):
     (tmp_path / "t" / "verifier").mkdir(parents=True)
     tests, evidence = trace_parser.extract_evidence(tmp_path / "t")
     assert tests == [] and evidence[-1]["text"] == "no agent trajectory was recorded"
+
+
+# --- why was it easy? review of passing runs ---------------------------------------
+
+
+def pass_reply(**over):
+    reply = {"why_easy": "The instruction names the faulty check [E2].", "simple_strategy": "read report.py",
+             "cues": [{"quote": "the check must compare", "where": "instruction"}],
+             "fix_applied": "compare against raw totals",
+             "suggestions": [{"technique": "nonlocal_cause", "change": "move the symptom to the exporter",
+                              "defeats": "the symptom no longer points at report.py"},
+                             {"technique": "made_up_technique", "change": "x", "defeats": "y"}],
+             "cited_evidence": ["E2", "E99"]}
+    return {**reply, **over}
+
+
+def test_pass_evidence_records_speed_analysis_and_commands(trial):
+    ev = trace_parser.pass_evidence([("run 1", trial)])
+    texts = [e["text"] for e in ev]
+    assert ev[0]["id"] == "E1" and ev[0]["source"] == "run 1"
+    assert texts[0].startswith("passed in 4 agent steps") and "/etc/nginx/sites-enabled/app" in texts[0]
+    assert any(t.startswith("agent's analysis at step 2") for t in texts)
+    assert any(t.startswith("$ sed -i") for t in texts)
+
+
+def test_pass_review_keeps_only_real_citations_and_known_techniques(trial):
+    llm = FakeLLM(pass_reply())
+    analysis, cost = trace_parser.review_passes(trace_parser.pass_evidence([("run 1", trial)]), "the task",
+                                                {"root_cause": "rc"}, passed=5, runs=5, cache_key="k",
+                                                llm_dir=None, complete=llm)
+    assert cost == 0.003 and analysis["trusted"] and analysis["cited_evidence"] == ["E2"]
+    assert [s["technique"] for s in analysis["suggestions"]] == ["nonlocal_cause"]
+    assert "5 of 5 runs" in llm.prompts[0] and "locally_correct_globally_wrong" in llm.prompts[0]
+    assert "rc" in llm.prompts[0]
+
+
+def test_pass_review_citing_nothing_is_untrusted(trial):
+    analysis, _ = trace_parser.review_passes(trace_parser.pass_evidence([("run 1", trial)]), "", None,
+                                             passed=4, runs=5, cache_key="k", llm_dir=None,
+                                             complete=FakeLLM(pass_reply(cited_evidence=["E99"])))
+    assert analysis["trusted"] is False
+
+
+def test_pass_review_that_cannot_run_is_recorded_not_raised():
+    analysis, cost = trace_parser.review_passes([], "", None, passed=5, runs=5, cache_key="k", llm_dir=None,
+                                                complete=FakeLLM(RuntimeError("gateway down")))
+    assert analysis["trusted"] is False and "gateway down" in analysis["review_error"] and cost == 0.0

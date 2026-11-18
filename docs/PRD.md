@@ -10,7 +10,7 @@ contract). Items marked **(open)** still need a decision; see §7.
 **One-line summary:** GLM-5.1 writes original Terminal-Bench 2 / Harbor tasks. The pipeline
 proves each one works (the reference solution passes, an untouched container fails), then runs
 `terminus-2` + `glm-5.3-flash` five times. It ships only tasks where 1–3 runs pass, and explains
-every failure. Tasks outside the band are revised, up to `MAX_VERSIONS` versions (10), then rejected. Everything is recorded so a reviewer
+every failure. Tasks outside the band are revised, up to `MAX_VERSIONS` versions (8), then rejected. Everything is recorded so a reviewer
 can check each verdict without reading code, and the pipeline survives being killed or run twice.
 
 ---
@@ -21,7 +21,8 @@ can check each verdict without reading code, and the pipeline survives being kil
 
 **Operator**
 1. An operator can create a task with one API call (`POST /v1/tasks`): from a free-text idea, an
-   explicit spec, or nothing (the service samples one). Creating 10 is 10 calls (`scripts/run_tasks.py`).
+   explicit spec, or nothing (the service samples one), or a batch of N with one call
+   (`POST /v1/batches`, which `scripts/run_tasks.py` uses).
 2. An operator can see where every candidate is (stage, version, pass pattern) at any time.
 3. An operator can kill the pipeline at any point and restart it. It continues where it stopped
    and never re-runs (or re-pays for) a finished LLM call or trial.
@@ -41,7 +42,7 @@ can check each verdict without reading code, and the pipeline survives being kil
    (failing tests, last commands). If a failure shows a task defect, the version goes back for a
    repair; it is not counted as hard.
 10. The Trace Parser accepts 1–3/5; otherwise it sends the task back to the generation
-    workers as a revision (harder or easier) up to `MAX_VERSIONS` (10, `SDE_MAX_VERSIONS`), then rejects
+    workers as a revision (harder or easier) up to `MAX_VERSIONS` (8, `SDE_MAX_VERSIONS`), then rejects
     it with reason `exhausted`.
 11. Only accepted tasks are written to `output/accepted/<name>/`, each with its `verdict.md`.
 
@@ -88,8 +89,8 @@ transaction (compare-and-set). Reports and `status` can be a few seconds stale.
 ### Back-of-the-envelope (illustrative; replaced by measurements after M2)
 
 - Harbor runs per candidate version: oracle × 2 + nop × 1 + rollouts × 5 = **8**. Expected versions per
-  candidate ≈ 1.7 (assuming about 50% need a v2 and 20% a v3; the cap of 10 versions
-  raises the worst case to ≈ 80 runs per candidate), so ≈ **14 Harbor runs per candidate**.
+  candidate ≈ 1.7 (assuming about 50% need a v2 and 20% a v3; the cap of 8 versions
+  raises the worst case to ≈ 64 runs per candidate), so ≈ **14 Harbor runs per candidate**.
 - Docker capacity: 8 CPU / ~10 GB VM, task containers 1 CPU / 2 GB → **4 trial slots**.
 - Trial time: the smoke test took 78 s on an easy example; in-band tasks will be longer. Assume
   ~8 min average → 10 candidates × 14 runs × 8 min / 4 slots ≈ **4.7 h**.
@@ -122,8 +123,9 @@ What we deliberately don't have:
 - **No events/audit table.** Job rows already record every step; task decisions are on `tasks`;
   LLM transcripts and traces are objects referenced from job rows. In production the job row
   inserted in the same transaction is also the outbox (`jobs.published_at`).
-- **No batches at all.** Tasks are created one at a time; a "batch of 10" is just ten tasks a
-  client created and names in the report. The pinned evaluation config lives in `shared/contracts/config.py`, and every job records its
+- **No batches table.** A batch is a nullable, indexed `tasks.batch_id` label set by
+  `POST /v1/batches`; single tasks leave it null. Nothing downstream reads it: services handle
+  one task's jobs, and the label only groups tasks for status and the yield report. The pinned evaluation config lives in `shared/contracts/config.py`, and every job records its
   `config_hash`.
 
 Task bundles, LLM transcripts and raw Harbor traces are **objects** (the diagram's S3), referenced
@@ -138,7 +140,7 @@ Object store (S3 in prod, ./work locally):
   llm/<request_sha256>.json  prompt + response + usage, written before the job settles
   traces/<job_id>/           raw Harbor job dir(s) for one job (trajectory, verifier logs)
 output/accepted/<name>/      accepted bundles + verdict.md
-output/reports/<name>/       summary.json + report.md (written by scripts/run_tasks.py)
+output/reports/<batch_id>/   summary.json (written by scripts/run_tasks.py)
 ```
 
 **`tasks`**
@@ -153,6 +155,7 @@ output/reports/<name>/       summary.json + report.md (written by scripts/run_ta
 | `stage` | text | Stage of the current version: `QUEUED → GENERATING → BUILDING → VALIDATING → EVALUATING → BAND_OK \| OUT_OF_BAND`, or `INVALID` / `UNRESOLVED`. |
 | `bundle_sha256`, `name` | text, nullable | The current version's bundle and slug (copied from its latest successful `create` / `revise` job, for cheap reads). |
 | `accepted_version` | int, nullable | |
+| `batch_id` | text, nullable, indexed | The batch that created it (`POST /v1/batches`); null for a single task. |
 | `created_at`, `updated_at` | text (UTC ISO) | |
 
 **`jobs`** (partial unique `(task_id, version, slot)` where `type='rollout'` and `outcome` is `VALID_PASS`/`VALID_FAIL`)
@@ -228,10 +231,11 @@ transition has one owning service (§5.1).
 ## 4. API
 
 One FastAPI service, which is the diagram's **API Gateway** (there is no separate gateway in
-front of it). JSON, under `/v1`. **One call creates one task; the system has no batches.**
-Creation returns immediately; nothing blocks on generation or evaluation. The operator is
-identified by an `X-Api-Key` header. Errors: `404` unknown id, `409` a `task_id` reused for a
-different request, `422` validation.
+front of it). JSON, under `/v1`. **`POST /v1/tasks` creates one task; `POST /v1/batches` creates N under one
+`batch_id` label** so their yield can be reported together. Creation returns immediately;
+nothing blocks on generation or evaluation. The operator is identified by an `X-Api-Key`
+header. Errors: `404` unknown id, `409` a `task_id` or `batch_id` reused for a different
+request, `422` validation.
 
 ```
 POST /v1/tasks          → 202 { task_id, created }
@@ -263,15 +267,30 @@ GET  /v1/report         → summary.json (below) over a set of tasks:
        ?task_id=…&task_id=…   the tasks a client created, or
        ?since=<time>          every task created at/after a time (all tasks if neither)
 
+POST /v1/batches        → 202 { batch_id, task_ids, created }
+       { "count": 10, "batch_id"?: "...", "prompt"?: "..." | "spec"?: {...} }
+           count 1–50 (default 10); tasks are <batch_id>-t01..; batch_id defaults to
+           b-<date>-<hex>. One transaction: the batch exists whole or not at all.
+           A prompt or spec applies to every task; with neither, each task samples
+           its own slot, spread across every task so far and the batch's own picks.
+           The same batch_id again with the same count and request creates nothing
+           (created: false); anything else is 409.
+
+GET  /v1/batches        → [{ batch_id, tasks, accepted, rejected, in_progress, created_at }]
+                          newest first
+GET  /v1/batches/{id}   → { batch_id, counts_by_status, tasks: [the /v1/tasks summary] }
+GET  /v1/batches/{id}/report → summary.json (below) over the batch, plus "batch_id"
+
 GET  /healthz           → liveness + DB/queue reachability
 ```
 
-**A batch of 10 is a client concern, not a system concept.**
-`scripts/run_tasks.py` posts N tasks, waits for them to finish, and prints `GET /v1/report`
-for exactly those task ids:
+**A batch of 10** is one `POST /v1/batches`. `scripts/run_tasks.py` creates it,
+polls `GET /v1/batches/{id}` until every task is final, writes the batch report to
+`output/reports/<batch_id>/summary.json` and prints its yield. Rerunning the same command
+resumes the same batch:
 
 ```
-python scripts/run_tasks.py --count 10 [--url http://localhost:8000] [--prompt "..."]
+python scripts/run_tasks.py --count 10 [--batch run-1] [--url http://localhost:8000] [--prompt "..."]
 ```
 
 The services themselves (what compose's `worker-control` / `worker-runner` run):
@@ -299,11 +318,15 @@ Developer tools: `scripts/generate.sh "<topic>"` (one draft + gates, no evaluati
   "pass_count_histogram": {"0": 4, "1": 3, "2": 4, "3": 2, "4": 3, "5": 1},
   "valid_rollouts": 104, "invalid_rollouts": 7,
   "cost_usd": {"authoring": 11.2, "evaluation": 1.9, "total": 13.1, "per_accepted": 2.18},
-  "wall_clock_s": 16420, "config_hash": "…"
+  "wall_clock_s": 16420, "config_hash": "…",
+  "yield": {"candidates": 10, "functional": 9, "accepted": 6, "accepted_v1": 3,
+            "learnable_rate": 0.6}
 }
 ```
 
-(The numbers above are illustrative only.)
+(The numbers above are illustrative only.) `yield` is the headline number, computed the
+same way for `/v1/report` and a batch report: `learnable_rate` = accepted ÷ finished
+candidates (`candidates − in_progress`), `null` until one finishes.
 
 ---
 
@@ -401,7 +424,7 @@ Generation Service
    version does the work: parse the traces, a GLM-5.1 review of each failed run, then the decision.
    1–3 passes and every failure the model's fault → `ACCEPTED`, bundle published. Too easy or
    too hard → a `revise` job for v(n+1) on the revise queue, and the loop runs again from step 2.
-   A failure blamed on the task → a repair revision. Still out of band at `MAX_VERSIONS` (10) →
+   A failure blamed on the task → a repair revision. Still out of band at `MAX_VERSIONS` (8) →
    `REJECTED (exhausted)`.
 
 ### 5.3 Reliability and scalability
@@ -631,7 +654,7 @@ Parser decides (an `analyze` job that finds fewer finishes with `action: wait`):
 pass_count in 1..3, all failures model → BAND_OK, task ACCEPTED, publish
 any failure attribution task      → repair revision (repair_ambiguity), not a difficulty measurement
 pass_count 0 or 4..5, n < MAX      → OUT_OF_BAND, advance to v(n+1) and enqueue its revision job
-pass_count 0 or 4..5, n = MAX      → OUT_OF_BAND, task REJECTED (exhausted)   (MAX = MAX_VERSIONS, 10)
+pass_count 0 or 4..5, n = MAX      → OUT_OF_BAND, task REJECTED (exhausted)   (MAX = MAX_VERSIONS, 8)
 ```
 
 Moving to v(n+1) is one compare-and-set, `UPDATE tasks SET current_version=n+1, stage='QUEUED'
@@ -639,9 +662,9 @@ WHERE id=? AND current_version=n AND stage='EVALUATING'`, in the same transactio
 `revise` job with its deterministic id, so two analyze jobs that both see five valid rollouts
 can't both create it: one wins, the other finds the stage already moved and finishes.
 
-**Version cap: `MAX_VERSIONS` = 10** (`SDE_MAX_VERSIONS`), raised from 3 on 2026-11-18. Each extra
+**Version cap: `MAX_VERSIONS` = 8** (`SDE_MAX_VERSIONS`), raised from 3 on 2026-11-18 (briefly 10, then 8). Each extra
 version costs about $0.10–0.30 of drafting, $0.03–0.07 of runs and 20–40 minutes, so a task that
-never reaches the band costs up to ~10× a single evaluation. The cap lives in code, not in the
+never reaches the band costs up to ~8× a single evaluation. The cap lives in code, not in the
 table (`tasks.current_version` is only checked `>= 1`; schema init lifts the old 3-version check).
 Once every operator in a direction has been used, the first one is applied again on top of the
 previous version.
@@ -785,7 +808,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 
 | # | Decision | Proposal |
 |---|---|---|
-| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; tasks are created one per request, with no batches (2026-11-18). **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
+| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; tasks are created one per request or N per batch, a batch being a `tasks.batch_id` label (2026-11-18). **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
 | D2 | How `tests/test.sh` gets pytest | Install pinned `uv` + pytest at verify time into a fresh interpreter (agent can't tamper). Accept the `verifier-runtime-install` / `verifier-network-download` lint warnings and document why. Alternative: pytest baked into the image, lint-clean but tamperable. |
 | D3 | Wrong-solution gate | Add `wrong_solution_script` to `TaskDraft` (the pitfall the spec predicts, as code); must score 0. Cheap and the strongest test-sensitivity evidence. |
 | D4 | Diagnosis prompt | Use GLM-5.1 to explain failures, bound to code-extracted evidence (§6.5). The alternative, code-only evidence with no prose, is weaker for "know why it fails". |
@@ -805,6 +828,6 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
    and the Executor each hand off their next stage in their settle transaction; executors ping
    `sde:analyze`; the Trace Parser service extracts evidence and has GLM-5.1 review each failed run, writes `failure` / `trace_metrics`, and decides accept /
    revision / repair / reject. Owner per stage transition as in §5.1.
-6. **M4 revision loop:** operators, v2…v10 through the Generation Service's revision path, before/after in the report.
-7. **M5 run:** 10+ candidates via `scripts/run_tasks.py`, `GET /v1/report`, update `CHANGELOG.md` with measured results.
+6. **M4 revision loop:** operators, v2…v8 through the Generation Service's revision path, before/after in the report.
+7. **M5 run:** 10+ candidates via `scripts/run_tasks.py` (one batch), its batch report, update `CHANGELOG.md` with measured results.
 8. **M6 human-likeness:** blind rubric comparison with `examples/`; optional compose backend.

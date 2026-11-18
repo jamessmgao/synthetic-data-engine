@@ -20,6 +20,15 @@ Two layers, in this order:
    nothing real, or a failed call, is recorded as attribution ``unexplained``:
    kept, never trusted, never blocking.
 
+3. **Pass review** (a version that came in too easy, one GLM-5.1 call per
+   version, over its fastest passing runs; ``review_passes``): why the agents
+   passed so easily, the simple strategy that worked, the cues in the task that
+   led them to it, the fix they applied, and up to three semantic changes (named
+   from ``prompting.HARDENING_TECHNIQUES``) that would defeat that strategy. The
+   Trace Parser service puts it into the revision job, so the next version is
+   hardened against what the agents actually did. Untrusted (cites no real
+   evidence) or failed reviews are recorded and left out of the revision prompt.
+
 The result goes onto the rollout's own job row (``failure``, ``trace_metrics``).
 The Trace Parser service (evaluation/trace_parser_service.py) calls ``parse`` on
 every scored run of a version before it decides, so an accepted task's failures
@@ -311,6 +320,147 @@ def review(evidence: list[dict], instruction: str, spec: dict | None, *, cache_k
     return {"explanation": out.get("explanation"), "attribution": attribution,
             "pitfall_matched": _match_pitfall(out.get("pitfall_matched"), spec),
             "cited_evidence": cited}, cost
+
+
+# --- why was it easy? (review of passing runs) -------------------------------------------
+# For a version that came in too easy, one GLM-5.1 call over its fastest passing
+# runs: what simple strategy worked, which cues in the task led the agents
+# straight to it, and which semantic changes would make that strategy fail. The
+# result goes into the revision job, so the next version is hardened against
+# what the agents actually did, not against a generic operator.
+
+MAX_PASS_RUNS = 3  # the fastest passing runs are the most informative
+PASS_ANALYSIS_STEPS = 4  # agent analyses quoted per run (where it found the cause)
+PASS_COMMANDS = 12  # commands quoted per run
+
+
+def _hardening_techniques() -> dict[str, str]:
+    _llm()  # puts generator/ on the path
+    from generator import prompting
+    return prompting.HARDENING_TECHNIQUES
+
+
+def pass_evidence(runs: list[tuple[str, Path]]) -> list[dict]:
+    """Numbered evidence lines for passing runs: how fast, what the agent
+    concluded early on, the commands that got it there, what it changed."""
+    evidence: list[dict] = []
+
+    def add(source: str, text: str) -> None:
+        evidence.append({"id": f"E{len(evidence) + 1}", "source": source, "text": text})
+
+    for label, trial_dir in runs:
+        trajectory = load_trajectory(trial_dir)
+        if trajectory is None:
+            add(label, "no agent trajectory was recorded")
+            continue
+        steps, calls = _agent_steps(trajectory), _tool_calls(trajectory)
+        written = files_modified([c["input"] for c in calls])
+        add(label, f"passed in {len(steps)} agent steps; files it wrote: {', '.join(written) or 'none detected'}")
+        for s in steps[:PASS_ANALYSIS_STEPS]:
+            if (s.get("message") or "").strip():
+                add(label, f"agent's analysis at step {s.get('step_id')}: {s['message'].strip()[:MESSAGE_CHARS]}")
+        for c in calls[:PASS_COMMANDS]:
+            if c["tool"] == "mark_task_complete":
+                add(label, "agent declared the task complete")
+                continue
+            out = c["output"].strip()[-OUTPUT_CHARS:]
+            add(label, f"$ {c['input'].strip()[:CMD_CHARS]}" + (f"\n→ {out}" if out else ""))
+    return evidence
+
+
+def _pass_review_schema(techniques: list[str]) -> dict:
+    return {"type": "json_schema", "json_schema": {"name": "pass_review", "strict": True, "schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["why_easy", "simple_strategy", "cues", "fix_applied", "suggestions", "cited_evidence"],
+        "properties": {
+            "why_easy": {"type": "string", "description": "2-4 sentences: why the agents passed so easily, "
+                                                          "citing evidence ids."},
+            "simple_strategy": {"type": "string", "description": "The simple strategy that solved it, in one or "
+                                                                 "two sentences."},
+            "cues": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["quote", "where"],
+                "properties": {"quote": {"type": "string", "description": "The exact text that pointed the "
+                                                                          "agents at the cause or the fix."},
+                               "where": {"type": "string", "description": "instruction, a file path, a log, "
+                                                                          "an error message, ..."}}}},
+            "fix_applied": {"type": "string", "description": "What the passing agents changed."},
+            "suggestions": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["technique", "change", "defeats"],
+                "properties": {"technique": {"type": "string", "enum": techniques},
+                               "change": {"type": "string", "description": "A concrete semantic change to the "
+                                                                           "task."},
+                               "defeats": {"type": "string", "description": "Why the observed strategy would no "
+                                                                            "longer pass."}}}},
+            "cited_evidence": {"type": "array", "items": {"type": "string"}},
+        }}}}
+
+
+PASS_REVIEW_PROMPT = """An AI coding agent passed this terminal task in {passed} of {runs} runs. The
+target is that only 1 to 3 of 5 runs pass, so the task is too easy. Work out
+exactly why from the evidence below, then propose how to make it harder. Work
+only from the evidence; do not invent facts. Cite evidence ids for every claim.
+
+1. why_easy: why the agents passed so easily (how quickly they found the cause,
+   and what made it obvious).
+2. simple_strategy: the simple strategy that solved it.
+3. cues: the exact text that pointed them at the cause or the fix (a sentence
+   of the instruction, a file or function name, a log line, an error message).
+4. fix_applied: what the passing agents changed.
+5. suggestions: one to three concrete semantic changes to the task that would
+   make that exact strategy fail, each using one technique:
+{techniques}
+   Make the reasoning deeper, not the task bigger. Never suggest vague
+   instructions, unstated requirements, more code, larger inputs alone,
+   arbitrary restrictions or unreliable tests. Every suggestion must keep the
+   task solvable with all requirements stated in the instruction.
+
+## Task instruction (what the agents saw)
+{instruction}
+
+## Hidden task spec (the agents never saw this)
+{spec}
+
+## Evidence from the passing runs
+{evidence}
+"""
+
+
+def review_passes(evidence: list[dict], instruction: str, spec: dict | None, *, passed: int, runs: int,
+                  cache_key: str, llm_dir: Path | None, complete: Complete | None = None) -> tuple[dict, float]:
+    """One GLM-5.1 review of why a version was too easy. Returns (analysis, cost). Never raises."""
+    techniques = _hardening_techniques()
+    spec_text = json.dumps({k: spec.get(k) for k in ("root_cause", "correctness_constraints", "subgoals",
+                                                    "expected_agent_pitfalls")}, indent=1) \
+        if spec else "(none: this task has no recorded spec)"
+    prompt = PASS_REVIEW_PROMPT.format(
+        passed=passed, runs=runs, instruction=instruction or "(not available)", spec=spec_text,
+        techniques="\n".join(f"   - {name}: {text}" for name, text in techniques.items()),
+        evidence="\n".join(f"[{e['id']}] ({e['source']}) {e['text']}" for e in evidence),
+    )
+    out, cost, error = None, 0.0, None
+    for attempt in range(1, REVIEW_ATTEMPTS + 1):
+        try:
+            complete = complete or _llm().complete
+            c = complete([{"role": "user", "content": prompt}], _pass_review_schema(sorted(techniques)),
+                         llm_dir=llm_dir, cache_key=cache_key)
+            cost += 0.0 if getattr(c, "cached", False) else float(getattr(c, "cost_usd", 0.0) or 0.0)
+            out = json.loads(c.content)
+            break
+        except Exception as e:  # never block the decision on the analysis
+            error = f"{type(e).__name__}: {str(e)[:300]}"
+            log.warning("%s: pass review attempt %d/%d failed: %s", cache_key, attempt, REVIEW_ATTEMPTS, error)
+    if out is None:
+        return {"why_easy": None, "trusted": False, "review_error": error}, cost
+
+    known = {e["id"] for e in evidence}
+    cited = [i for i in out.get("cited_evidence") or [] if i in known]
+    suggestions = [s for s in out.get("suggestions") or []
+                   if isinstance(s, dict) and s.get("technique") in techniques and s.get("change")][:3]
+    return {"why_easy": out.get("why_easy"), "simple_strategy": out.get("simple_strategy"),
+            "cues": [c for c in out.get("cues") or [] if isinstance(c, dict) and c.get("quote")],
+            "fix_applied": out.get("fix_applied"), "suggestions": suggestions, "cited_evidence": cited,
+            # Like the failure review: an analysis that cites nothing real is kept but not trusted.
+            "trusted": bool(cited)}, cost
 
 
 # --- entry point used by the executor --------------------------------------------------

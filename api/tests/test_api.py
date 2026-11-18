@@ -66,7 +66,7 @@ def test_healthz_needs_no_key(client):
     assert body["status"] == "ok" and body["backends"]["store"] == "sqlite"
 
 
-# --- task creation (one task per call; no batches) -------------------------
+# --- task creation (one task per call) ---------------------------------------
 
 
 def create(client, **body):
@@ -145,10 +145,12 @@ def test_unknown_ids_are_404(client):
 
 @pytest.fixture
 def worked_batch(client, backend):
-    """Three tasks a client created one by one. t01: v1 too easy (5/5), v2 accepted at
-    2/5. t02: rejected invalid. t03: mid-evaluation."""
-    t1, t2, t3 = (create(client, task_id=f"t-0{i}")["task_id"] for i in (1, 2, 3))
+    """Three tasks a client created one by one (see work_three)."""
+    return work_three(backend, *(create(client, task_id=f"t-0{i}")["task_id"] for i in (1, 2, 3)))
 
+
+def work_three(backend, t1, t2, t3):
+    """t1: v1 too easy (5/5), v2 accepted at 2/5. t2: rejected invalid. t3: mid-evaluation."""
     add_job(backend, t1, 1, "validate", job_id(t1, 1, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
     for slot in range(1, 6):
         rollout(backend, t1, 1, slot, "VALID_PASS", cost_usd=0.01)
@@ -215,6 +217,9 @@ def test_report_over_named_tasks(client, worked_batch):
     assert r["cost_usd"] == {"authoring": 0.5, "evaluation": 0.05, "total": 0.55, "per_accepted": 0.55}
     assert r["config_hash"] == "cfg1"
     assert r["wall_clock_s"] is not None
+    # One finished candidate of two accepted; t-03 is still running.
+    assert r["yield"] == {"candidates": 3, "functional": 2, "accepted": 1, "accepted_v1": 0,
+                          "learnable_rate": 0.5}
     # A subset, and everything created since a time, use the same report.
     assert client.get("/v1/report", params={"task_id": ["t-02"]}, headers=AUTH).json()["candidates"] == 1
     assert client.get("/v1/report", params={"since": "2000-01-01"}, headers=AUTH).json()["candidates"] == 3
@@ -225,3 +230,97 @@ def test_fresh_report_has_nulls_not_zeros(client):
     r = client.get("/v1/report", params={"task_id": ids}, headers=AUTH).json()
     assert r["cost_usd"] == {"authoring": None, "evaluation": None, "total": None, "per_accepted": None}
     assert r["wall_clock_s"] is None and r["config_hash"] is None
+    assert r["yield"]["learnable_rate"] is None  # nothing has finished
+
+
+# --- batches: N tasks under one label, reported together ---------------------
+
+
+def create_batch(client, **body):
+    r = client.post("/v1/batches", json=body, headers=AUTH)
+    assert r.status_code == 202, r.text
+    return r.json()
+
+
+def test_batch_creates_tasks_and_their_create_jobs(client, backend):
+    body = create_batch(client, count=3, batch_id="b-1")
+    assert body == {"batch_id": "b-1", "task_ids": ["b-1-t01", "b-1-t02", "b-1-t03"], "created": True}
+    for tid in body["task_ids"]:
+        task = backend.store.task(tid)
+        assert task["batch_id"] == "b-1" and task["status"] == "CREATED"
+        (job,) = backend.store.task_jobs(tid)
+        assert job["id"] == f"{tid}-v1-create" and job["input"]["spec"] == task["slot"]
+
+
+def test_batch_specs_are_diverse_within_the_batch(client, backend):
+    create(client, task_id="solo")
+    ids = create_batch(client, count=6)["task_ids"]
+    combos = {tuple(backend.store.task(t)["slot"]["taxonomy"][d] for d in ("domain", "task_type", "environment"))
+              for t in ["solo", *ids]}
+    assert len(combos) == 7
+
+
+def test_batch_prompt_applies_to_every_task(client, backend):
+    ids = create_batch(client, count=2, prompt="a flaky retry loop")["task_ids"]
+    assert {backend.store.task(t)["slot"]["seed"] for t in ids} == {"a flaky retry loop"}
+
+
+def test_batch_is_idempotent_and_409_on_conflict(client, backend):
+    first = create_batch(client, count=2, batch_id="b-1")
+    again = create_batch(client, count=2, batch_id="b-1")
+    assert again == {**first, "created": False}
+    assert client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH).status_code == 409
+    assert client.post("/v1/batches", json={"count": 2, "batch_id": "b-1", "prompt": "x"},
+                       headers=AUTH).status_code == 409
+    assert len(backend.store.tasks(batch_id="b-1")) == 2
+    # A task id the batch would use, taken by a single task, is a conflict too.
+    create(client, task_id="b-2-t01")
+    assert client.post("/v1/batches", json={"count": 1, "batch_id": "b-2"}, headers=AUTH).status_code == 409
+
+
+def test_batch_defaults_to_ten_with_a_generated_id(client):
+    body = create_batch(client)
+    assert body["batch_id"].startswith("b-") and len(body["task_ids"]) == 10
+
+
+@pytest.mark.parametrize("body", [
+    {"count": 0}, {"count": 51}, {"count": "x"}, {"batch_id": "Bad/Id"},
+    {"prompt": "x", "spec": {"seed": "y"}}, {"spec": {"difficulty": {"dial": 1}}},
+])
+def test_batch_validation_is_422(client, body):
+    assert client.post("/v1/batches", json=body, headers=AUTH).status_code == 422
+
+
+def test_unknown_batch_is_404(client):
+    assert client.get("/v1/batches/nope", headers=AUTH).status_code == 404
+    assert client.get("/v1/batches/nope/report", headers=AUTH).status_code == 404
+
+
+@pytest.fixture
+def worked_real_batch(client, backend):
+    create(client, task_id="solo")  # not in the batch: must not leak into its numbers
+    return work_three(backend, *create_batch(client, count=3, batch_id="b-1")["task_ids"])
+
+
+def test_batch_list(client, worked_real_batch):
+    create_batch(client, count=1, batch_id="b-2")
+    first, second = client.get("/v1/batches", headers=AUTH).json()
+    assert first["batch_id"] == "b-2"  # newest first
+    assert {k: second[k] for k in ("batch_id", "tasks", "accepted", "rejected", "in_progress")} == {
+        "batch_id": "b-1", "tasks": 3, "accepted": 1, "rejected": 1, "in_progress": 1}
+
+
+def test_batch_status(client, worked_real_batch):
+    body = client.get("/v1/batches/b-1", headers=AUTH).json()
+    assert body["counts_by_status"] == {"ACCEPTED": 1, "REJECTED": 1, "CALIBRATING": 1}
+    assert [t["id"] for t in body["tasks"]] == worked_real_batch
+    assert body["tasks"][0]["pass_pattern"] == "✗✓✗✓✗"
+
+
+def test_batch_report_matches_the_task_report(client, worked_real_batch):
+    r = client.get("/v1/batches/b-1/report", headers=AUTH).json()
+    assert r["batch_id"] == "b-1" and r["task_ids"] == worked_real_batch
+    assert r["yield"] == {"candidates": 3, "functional": 2, "accepted": 1, "accepted_v1": 0,
+                          "learnable_rate": 0.5}
+    named = client.get("/v1/report", params={"task_id": worked_real_batch}, headers=AUTH).json()
+    assert {k: v for k, v in r.items() if k != "batch_id"} == named

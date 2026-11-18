@@ -79,7 +79,7 @@ DOCKER_SLOTS = int(os.environ.get("SDE_DOCKER_SLOTS", "4"))
 
 # Calibration limits (PRD §6.3–§6.6), shared so every component agrees.
 # Versions per task: v1 plus up to MAX_VERSIONS - 1 revisions by the Trace Parser.
-MAX_VERSIONS = int(os.environ.get("SDE_MAX_VERSIONS", "10"))
+MAX_VERSIONS = int(os.environ.get("SDE_MAX_VERSIONS", "8"))
 MAX_REPAIRS_PER_VERSION = 2
 MAX_ROLLOUT_RETRIES = 3
 # Claims of one job row before the reconciler dead-letters it: a lease that keeps

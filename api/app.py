@@ -3,8 +3,9 @@ The API service (docs/PRD.md §4): FastAPI over the `pipeline` store.
 
 Task creation (api/submit.py) returns 202 as soon as the task and its
 `create` job are committed; nothing here waits on generation or evaluation.
-There are no batches: each POST /v1/tasks creates one task, and the report is
-computed over whichever tasks the caller names (or created since a time).
+POST /v1/tasks creates one task; POST /v1/batches creates N under a shared
+`batch_id` label, whose report gives the batch's yield. /v1/report covers
+whichever tasks the caller names (or created since a time).
 """
 
 import hmac
@@ -14,10 +15,10 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, R
 from fastapi.responses import JSONResponse
 
 from shared.storage import Backend, describe, from_env
-from api.submit import TaskConflict, create_task
+from api.submit import BatchConflict, TaskConflict, create_batch, create_task
 
 from . import service
-from .models import TaskCreated, TaskRequest, TaskSummary
+from .models import BatchCreated, BatchRequest, BatchSummary, TaskCreated, TaskRequest, TaskSummary
 
 
 def create_app(backend: Backend | None = None, api_key: str | None = None) -> FastAPI:
@@ -56,6 +57,26 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     def get_task(task_id: str):
         return service.get_task(store, task_id)
 
+    @v1.post("/batches", status_code=202, response_model=BatchCreated)
+    def post_batch(body: BatchRequest):
+        spec = body.spec.model_dump(exclude_none=True) if body.spec else None
+        batch_id, task_ids, created = create_batch(backend, body.count, batch_id=body.batch_id,
+                                                   prompt=body.prompt, spec=spec)
+        return {"batch_id": batch_id, "task_ids": task_ids, "created": created}
+
+    @v1.get("/batches", response_model=list[BatchSummary])
+    def list_batches():
+        return service.list_batches(store)
+
+    @v1.get("/batches/{batch_id}")
+    def get_batch(batch_id: str):
+        return service.get_batch(store, batch_id)
+
+    @v1.get("/batches/{batch_id}/report")
+    def get_batch_report(batch_id: str):
+        """summary.json over the batch, with its yield block."""
+        return service.batch_report(store, batch_id)
+
     app.include_router(v1)
 
     @app.get("/healthz")
@@ -71,7 +92,8 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
         return JSONResponse({"detail": str(exc)}, status_code=404)
 
     @app.exception_handler(TaskConflict)
-    def conflict(_: Request, exc: TaskConflict):
+    @app.exception_handler(BatchConflict)
+    def conflict(_: Request, exc: TaskConflict | BatchConflict):
         return JSONResponse({"detail": str(exc)}, status_code=409)
 
     @app.exception_handler(ValueError)

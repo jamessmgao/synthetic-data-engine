@@ -14,6 +14,7 @@ Readers (`sde status`) never take the lock.
 """
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -43,6 +44,7 @@ SCHEMA = [
         bundle_sha256    TEXT,
         name             TEXT,
         accepted_version INTEGER,
+        batch_id         TEXT,
         created_at       TEXT NOT NULL,
         updated_at       TEXT NOT NULL
     )""",
@@ -310,10 +312,11 @@ def _split_generate_jobs(conn: Conn) -> None:
                  (str(JobType.CREATE), PRIORITY[JobType.CREATE]))
 
 
-def _sqlite_drop_version_cap(path: Path) -> None:
+def _sqlite_rebuild_old_tasks(path: Path) -> None:
     """Databases created when tasks had at most 3 versions carry
     CHECK (current_version BETWEEN 1 AND 3); the cap is now MAX_VERSIONS, enforced
-    in code. SQLite can't alter a constraint, so rebuild `tasks` the documented
+    in code. The first batch release also made `batch_id` NOT NULL; single tasks
+    now leave it null. SQLite can't alter a constraint, so rebuild `tasks` the documented
     way (new table, copy, drop, rename) with foreign keys off: `jobs` keeps
     referencing `tasks`, so no reference is rewritten."""
     if not path.exists():
@@ -321,7 +324,7 @@ def _sqlite_drop_version_cap(path: Path) -> None:
     c = sqlite3.connect(path, timeout=30, isolation_level=None)
     try:
         row = c.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone()
-        if row is None or "BETWEEN 1 AND 3" not in row[0]:
+        if row is None or not ("BETWEEN 1 AND 3" in row[0] or re.search(r"batch_id\s+TEXT\s+NOT NULL", row[0])):
             return
         c.execute("PRAGMA foreign_keys=OFF")
         c.execute("BEGIN IMMEDIATE")
@@ -345,7 +348,7 @@ class SqlStore:
         self.url = url
         self._local = threading.local()
         if url.startswith("sqlite:///"):
-            _sqlite_drop_version_cap(Path(url.removeprefix("sqlite:///")))
+            _sqlite_rebuild_old_tasks(Path(url.removeprefix("sqlite:///")))
         with self.tx() as conn:
             for stmt in SCHEMA:
                 conn.execute(stmt)
@@ -355,12 +358,13 @@ class SqlStore:
             if "isolated" not in have:
                 conn.execute("ALTER TABLE jobs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0")
             _split_generate_jobs(conn)
-            # Tasks are created one at a time; the batch concept was removed.
+            # A batch is a label on its tasks (POST /v1/batches); single tasks leave it null.
             task_cols = {d[0] for d in conn.execute("SELECT * FROM tasks LIMIT 0").description}
-            if "batch_id" in task_cols:
-                conn.execute("DROP INDEX IF EXISTS tasks_batch")
-                conn.execute("ALTER TABLE tasks DROP COLUMN batch_id")
+            if "batch_id" not in task_cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN batch_id TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS tasks_batch ON tasks (batch_id)")
             if self.url.startswith(("postgresql://", "postgres://")):
+                conn.execute("ALTER TABLE tasks ALTER COLUMN batch_id DROP NOT NULL")  # no-op when nullable
                 # Lift the old 3-version cap once. Postgres names an inline column
                 # check <table>_<column>_check; only an old definition is replaced,
                 # so later starts (and runners booting together) change nothing.
@@ -395,9 +399,12 @@ class SqlStore:
         return row_dict(row) if row else None
 
     def tasks(self, ids: list[str] | None = None, status: str | None = None,
-              since: str | None = None) -> list[dict[str, Any]]:
-        """Tasks in creation order, optionally narrowed to ids, a status, or those created at/after `since`."""
+              since: str | None = None, batch_id: str | None = None) -> list[dict[str, Any]]:
+        """Tasks in creation order, optionally narrowed to ids, a status, a batch, or those created at/after `since`."""
         where, params = [], []
+        if batch_id is not None:
+            where.append("batch_id = ?")
+            params.append(batch_id)
         if ids is not None:
             if not ids:
                 return []
@@ -411,6 +418,24 @@ class SqlStore:
             params.append(since)
         sql = "SELECT * FROM tasks" + (" WHERE " + " AND ".join(where) if where else "")
         return [row_dict(r) for r in self.conn.execute(sql + " ORDER BY created_at, id", params).fetchall()]
+
+    def batches(self) -> list[dict[str, Any]]:
+        """Every batch with its task count per outcome, newest first."""
+        rows = self.conn.execute(
+            """SELECT batch_id, COUNT(*) AS tasks,
+                      COUNT(*) FILTER (WHERE status = 'ACCEPTED') AS accepted,
+                      COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected,
+                      MIN(created_at) AS created_at
+                 FROM tasks WHERE batch_id IS NOT NULL
+                GROUP BY batch_id ORDER BY MIN(created_at) DESC, batch_id DESC"""
+        ).fetchall()
+        out = []
+        for r in rows:
+            counts = {k: int(r[k]) for k in ("tasks", "accepted", "rejected")}
+            out.append({"batch_id": r["batch_id"], **counts,
+                        "in_progress": counts["tasks"] - counts["accepted"] - counts["rejected"],
+                        "created_at": r["created_at"]})
+        return out
 
     def task_jobs(self, task_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(

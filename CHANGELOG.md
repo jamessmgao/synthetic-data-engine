@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-11-18: version cap 8
+
+**What changed**
+- `MAX_VERSIONS` defaults to 8 (v1 plus up to 7 revisions), down from 10; `SDE_MAX_VERSIONS`
+  still overrides it (the e2e suite pins 3). The PRD and the diagram say v8.
+
+**Why**
+- Eight versions leave room for several harder/easier passes (now guided by the Trace
+  Parser's review of passing runs) while capping a never-in-band task at ~8× one evaluation.
+
+**Tradeoffs**
+- A task that would have reached the band at v9 or v10 is now rejected `exhausted`.
+
+## 2026-11-18: batches are back, as a label, with a yield report
+
+**What changed**
+- `POST /v1/batches` `{count=10, batch_id?, prompt?|spec?}` creates N tasks (`<batch_id>-tNN`) in
+  one transaction; `GET /v1/batches`, `GET /v1/batches/{id}` and `GET /v1/batches/{id}/report`
+  list, show and report on them. Every `/v1/tasks` route and `/v1/report` is unchanged.
+- `tasks.batch_id` returns as a nullable, indexed label (schema init adds it; SQLite databases
+  from the first batch release, where it was NOT NULL, are rebuilt). Single tasks leave it null.
+- Every report gains a `yield` block: candidates, functional, accepted, accepted_v1 and
+  `learnable_rate` = accepted ÷ finished candidates (null until one finishes).
+- `create_task` and `create_batch` share one insert; a batch samples each task's slot against
+  every task so far plus its own earlier picks. `scripts/run_tasks.py` uses one batch
+  (`--batch`, `--count`, `--prompt`), resumes on rerun and prints the yield.
+
+**Why**
+- A batch's yield is the number that gets reported. Ten loose tasks plus a list of ids worked, but the
+  batch is the unit we report on, so it should be one call to create and one id to report.
+
+**Tradeoffs**
+- Still no batches table and nothing downstream knows about batches: the label only groups
+  tasks for status and reporting. Idempotency compares the count (and a shared prompt/spec);
+  a sampled batch can't be compared slot by slot, since sampling isn't deterministic.
+
 ## 2026-11-18: one task per request; no batches
 
 **What changed**

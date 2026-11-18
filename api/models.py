@@ -41,6 +41,37 @@ class TaskRequest(BaseModel):
         return self
 
 
+class BatchRequest(BaseModel):
+    """N tasks under one batch id. A prompt or spec applies to every task;
+    with neither, each task samples its own spec, spread across the taxonomy."""
+
+    count: int = Field(10, ge=1, le=50)
+    batch_id: str | None = Field(None, pattern=TASK_ID_PATTERN)
+    prompt: str | None = Field(None, min_length=1, max_length=20_000)
+    spec: TaskSpec | None = None
+
+    @model_validator(mode="after")
+    def _one_source(self):
+        if self.prompt is not None and self.spec is not None:
+            raise ValueError("give a prompt or a spec, not both")
+        return self
+
+
+class BatchCreated(BaseModel):
+    batch_id: str
+    task_ids: list[str]
+    created: bool  # False when this exact batch already existed
+
+
+class BatchSummary(BaseModel):
+    batch_id: str
+    tasks: int
+    accepted: int
+    rejected: int
+    in_progress: int
+    created_at: str
+
+
 class TaskCreated(BaseModel):
     task_id: str
     created: bool  # False when this exact task already existed

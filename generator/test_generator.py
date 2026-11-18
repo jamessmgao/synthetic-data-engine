@@ -416,6 +416,57 @@ def test_prompt_rejects_unknown_form_and_clamps_dial():
     assert "level 3 of 3" in prompting.render_initial_prompt({"difficulty": {"dial": 9}})
 
 
+ANALYSIS = {"why_easy": "All runs patched drain() in 6 steps.", "simple_strategy": "patch drain() locally",
+            "cues": [{"quote": "jobs are acknowledged early", "where": "instruction"}],
+            "fix_applied": "moved the ack after the write", "trusted": True,
+            "suggestions": [{"technique": "preserve_guarantees", "change": "make stats depend on the old ordering",
+                             "defeats": "the local reorder breaks the stats"}]}
+
+
+def test_harder_revision_states_the_gap_the_analysis_and_the_techniques():
+    from generator import prompting
+    text = prompting.render_revision_request({"origin": "revision", "operator": "increase_diagnosis_depth",
+                                              "result": "5 of 5 runs passed.", "evidence": "- run 1: passed",
+                                              "direction": "harder", "analysis": ANALYSIS})
+    assert "5 of 5 runs passed. That is too easy. The target is a task that 1 to 3 of 5 runs pass." in text
+    for must in ("Why the runs passed", "patch drain() locally", "\"jobs are acknowledged early\" (instruction)",
+                 "[preserve_guarantees] make stats depend on the old ordering", "How to make it harder",
+                 "counterfactual_failure", "Do NOT make it harder through vague", "- run 1: passed",
+                 prompting.OPERATORS["increase_diagnosis_depth"]):
+        assert must in text, must
+
+
+def test_untrusted_analysis_is_left_out_and_direction_is_inferred():
+    from generator import prompting
+    text = prompting.render_revision_request({"operator": "increase_diagnosis_depth", "result": "4 of 5 runs passed.",
+                                              "analysis": {**ANALYSIS, "trusted": False}})
+    assert "too easy" in text and "Why the runs passed" not in text
+
+
+def test_easier_and_repair_revisions_get_their_own_guidance():
+    from generator import prompting
+    easier = prompting.render_revision_request({"operator": "localize_diagnosis", "result": "0 of 5 runs passed."})
+    assert "That is too hard." in easier and "How to make it easier" in easier
+    assert "How to make it harder" not in easier
+    repair = prompting.render_revision_request({"operator": "repair_ambiguity", "result": "2 of 5 runs passed."})
+    assert "the task itself is defective" in repair and "without changing the difficulty" in repair
+
+
+def test_revision_job_sends_the_new_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_stream", FakeModel(json.dumps(VALID)))
+    first = run_generate_job("t01-v1-create", {"origin": "initial", "prompt": "the prompt"}, tmp_path)
+    fake = FakeModel(json.dumps(draft_with(instruction=VALID["instruction"] + " Also report the mean.")))
+    monkeypatch.setattr(llm, "_stream", fake)
+    res = run_generate_job("t01-v2-revise", {"origin": "revision", "bundle_sha256": first["result"]["bundle_sha256"],
+                                             "operator": "increase_constraint_interaction", "direction": "harder",
+                                             "result": "5 of 5 runs passed.", "evidence": "- run 1: passed",
+                                             "analysis": ANALYSIS}, tmp_path)
+    assert res["outcome"] == "OK", res["error"]
+    assert "patch drain() locally" in fake.last_messages[-1]["content"]
+    meta = json.loads((tmp_path / "drafts" / f"{res['result']['bundle_sha256']}.json").read_text())["generation_meta"]
+    assert meta["direction"] == "harder" and meta["operator"] == "increase_constraint_interaction"
+
+
 def test_system_prompt_carries_the_rules_and_examples():
     text = (Path(config.PROMPTS_DIR) / "system.md").read_text()
     for must in ("Mistakes earlier drafts made", "BAD:", "GOOD:", "Requirements that restate the fix",
