@@ -4,7 +4,10 @@
               build + import sde-pipeline:local on every node (crictl-checked); install KEDA
     deploy    ship REF (default HEAD), rebuild + import the image, apply infra/k8s/overlays/aws,
               wait for the rollouts. `--overlay aws-prod`: the real stores and model from SSM
-              (Secret sde-secrets), the authoring image on every node, and an IMDS check
+              (Secret sde-secrets), the authoring image on every node, the dashboard, and an IMDS
+              check. `--only ui,api,…` (aws-prod): build, apply and roll just those components;
+              nothing else restarts. A deploy never restarts the tunnels, so their URLs stay.
+    public    the API's and the dashboard's public URLs (`api: …`, `dashboard: …`)
     status    nodes, pods, services
     logs SVC  last 100 lines: api|control|validate|executor|generation|postgres|redis|s3|bootstrap
     test ARGS run scripts/k8s_test.py ARGS on the server, from the last shipped release, as the
@@ -33,6 +36,12 @@ K3S_VERSION = "v1.35.5+k3s1"
 KEDA_URL = "https://github.com/kedacore/keda/releases/download/v2.16.1/keda-2.16.1.yaml"
 TOKEN_PARAM = "/sde/k3s_token"
 IMAGE = "sde-pipeline:local"
+UI_IMAGE = "sde-dashboard:local"  # the aws-prod overlays' dashboard, built on the server only
+# `deploy --only a,b`: component → the Deployments (app.kubernetes.io/name) it applies and rolls.
+COMPONENTS = {"ui": ("dashboard", "dashboard-tunnel"), "api": ("api",), "control": ("control",),
+              "validate": ("validate",), "executor": ("executor",), "generation": ("generation",)}
+# Quick tunnels: a restart gives a new URL, so a deploy restarts them only when their spec changes.
+TUNNELS = ("public-tunnel", "dashboard-tunnel")
 # aws-prod-mock: production stores and glue, but mock models and no authoring claims.
 OVERLAYS = ("aws", "aws-prod", "aws-prod-mock")
 NS = "sde"
@@ -77,7 +86,7 @@ def ensure_token() -> None:
     print(f"generated {TOKEN_PARAM} (SecureString)")
 
 
-def ship(ref: str) -> str:
+def ship(ref: str, server_only: bool = False) -> str:
     """Upload git REF as a release (as `aws_ops deploy` does) and unpack it on every runner."""
     out = outputs()
     sha = run(["git", "rev-parse", ref], cwd=REPO)
@@ -92,8 +101,12 @@ def ship(ref: str) -> str:
         f"if [ ! -d {release} ]; then tmp=$(mktemp -d /opt/sde/releases/.{sha}.XXXX)"
         f" && aws s3 cp --region {REGION} s3://{out['artifacts_bucket']}/{key} - | tar -xz -C $tmp"
         f" && mv $tmp {release}; fi",
-        f"ln -sfn {release} {CURRENT}",
     ]
+    if server_only:  # the UI-only deploy: the cluster's release (CURRENT) stays as it was
+        remote(runners()[0], unpack, timeout_s=600)
+        print(f"shipped {sha[:12]} to the server")
+        return release
+    unpack.append(f"ln -sfn {release} {CURRENT}")
     on_all(lambda i: remote(i, unpack, timeout_s=600), runners())
     print(f"shipped {sha[:12]} to every runner")
     return release
@@ -196,6 +209,18 @@ def authoring_image(release: str) -> str:
     return tag
 
 
+def dashboard_image(release: str) -> None:
+    """Build the dashboard (web/Dockerfile) on the server, where its pod is pinned, and import it
+    into K3s. Docker's layer cache makes an unchanged web/ a no-op rebuild."""
+    print(remote(runners()[0], [
+        f"cd {release} && docker build -q -t {UI_IMAGE} web >/dev/null",
+        f"docker save {UI_IMAGE} | k3s ctr -n k8s.io images import - >/dev/null",
+        f"k3s crictl images -q docker.io/library/{UI_IMAGE} | grep -q ."
+        f" || {{ echo \"image {UI_IMAGE} missing after import\" >&2; exit 1; }}",
+        f"echo \"{UI_IMAGE} imported on the server\"",
+    ], timeout_s=1800).strip())
+
+
 def prod_secret_cmds() -> list[str]:
     """Create or refresh Secret sde-secrets from SSM. The values exist only on the server, in a
     0600 temp file: never in the command text, its output, or kubectl's arguments."""
@@ -220,15 +245,62 @@ def prod_secret_cmds() -> list[str]:
     ]
 
 
-def cmd_deploy(ref: str = "HEAD", overlay: str = "aws") -> None:
+def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
+    """A scoped deploy: build only the images these components use, apply only their objects
+    (plus sde-config and the bootstrap Job for pipeline components), roll only their
+    Deployments. Everything else, the tunnels' URLs included, is left as it is.
+
+    Images: ui → sde-dashboard (web/, the server only); api / control / validate / executor →
+    sde-pipeline (every node); generation → sde-pipeline plus the authoring tarball."""
+    names = [n for c in only for n in COMPONENTS[c]]
+    pipeline = [n for n in names if n not in COMPONENTS["ui"]]
+    release = ship(ref, server_only=not pipeline)
+    if "ui" in only:
+        dashboard_image(release)
+    pre = [f"cd {release} && touch deploy/local.env"]
+    if pipeline:
+        build_and_import(release)
+        pre += prod_secret_cmds()
+    env = "infra/k8s/overlays/aws-prod/authoring.env"
+    if "generation" in only:
+        pre.append(f"echo SDE_AUTHORING_IMAGE={authoring_image(release)} > {env}")
+    else:
+        # Keep the live authoring tag: the tarball on the nodes is that one, and a pipeline pod
+        # restarted here must not point generation's next restart at another.
+        pre += [f"live=$({K} exec deploy/generation -c app -- printenv SDE_AUTHORING_IMAGE)",
+                f'[ -n "$live" ] || {{ echo "cannot read the live SDE_AUTHORING_IMAGE" >&2; exit 1; }}',
+                f"echo SDE_AUTHORING_IMAGE=$live > {env}"]
+    sel = names + (["sde-config", "bootstrap"] if pipeline else [])
+    rolled = [n for n in names if n not in TUNNELS]
+    print(f"deploying only {', '.join(names)} from {path}…", flush=True)
+    print(remote(runners()[0], [
+        *pre,
+        *([f"{K} delete job bootstrap --ignore-not-found"] if pipeline else []),
+        f"set -o pipefail; {KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path}"
+        f" | {KUBECTL} apply -l {shlex.quote('app.kubernetes.io/name in (' + ','.join(sel) + ')')} -f -",
+        *([f"{K} wait job/bootstrap --for=condition=complete --timeout=300s"] if pipeline else []),
+        f"{K} rollout restart " + " ".join(f"deploy/{n}" for n in rolled),
+        *(f"{K} rollout status deploy/{n} --timeout=300s" for n in names),
+    ], timeout_s=1800))
+    cmd_public()
+
+
+def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
     if overlay not in OVERLAYS:
         sys.exit(f"--overlay must be one of {', '.join(OVERLAYS)}")
     prod = overlay.startswith("aws-prod")
     path = f"infra/k8s/overlays/{overlay}"
+    if only:
+        parts = [p for p in only.split(",") if p]
+        bad = [p for p in parts if p not in COMPONENTS]
+        if bad or not parts or not prod:
+            sys.exit(f"--only takes a comma list of {', '.join(COMPONENTS)}, with an aws-prod overlay")
+        return cmd_deploy_only(ref, path, parts)
     release = ship(ref)
     build_and_import(release)
     pre = [f"cd {release} && touch deploy/local.env"]  # the base's optional settings file
     if prod:
+        dashboard_image(release)
         tag = authoring_image(release)
         # The overlay merges this into sde-config (agreed with K1); the file is gitignored.
         # aws-prod's configMapGenerator reads it, also when aws-prod-mock builds on aws-prod.
@@ -240,9 +312,12 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws") -> None:
         *pre,
         # Jobs are immutable: replace the bootstrap job so it runs again on every deploy.
         f"{K} delete job bootstrap --ignore-not-found",
-        f"{KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path} | {KUBECTL} apply -f -",
+        # pipefail: a rejected object fails the deploy here instead of being restarted on its
+        # old spec below (how 082166f's generation change went missing).
+        f"set -o pipefail; {KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path} | {KUBECTL} apply -f -",
         # Same tag, new image contents: restart so the pods pick up what was just imported.
-        f"{K} rollout restart deploy",
+        # Not the tunnels: their image is pinned, and a restart would change their public URL.
+        f"{K} rollout restart deploy -l {shlex.quote('app.kubernetes.io/name notin (' + ','.join(TUNNELS) + ')')}",
         f"for s in $({K} get statefulset -o name); do {K} rollout status $s --timeout=300s; done",
         f"if {K} get job/bootstrap >/dev/null 2>&1; then"
         f" {K} wait job/bootstrap --for=condition=complete --timeout=300s; fi",
@@ -268,10 +343,15 @@ def cmd_logs(svc: str = "executor") -> None:
 
 
 def cmd_public() -> None:
-    """The public HTTPS link of the API (the aws-prod overlays' Cloudflare quick tunnel)."""
-    out = remote(runners()[0], [f"{K} logs deploy/public-tunnel --tail=200 2>&1"
-                                " | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1"], timeout_s=120)
-    print(out.strip() or "no tunnel URL yet (is deploy/public-tunnel running?)")
+    """The public HTTPS links of the API and the dashboard (the aws-prod overlays' Cloudflare
+    quick tunnels), one `name: URL` line each."""
+    for name, tunnel in (("api", "public-tunnel"), ("dashboard", "dashboard-tunnel")):
+        # A just-started tunnel takes a few seconds to log its URL.
+        out = remote(runners()[0], [
+            f"for _ in $(seq 20); do u=$({K} logs deploy/{tunnel} --tail=200 2>/dev/null"
+            " | grep -o 'https://[a-z0-9-]*\\.trycloudflare\\.com' | tail -1);"
+            " [ -n \"$u\" ] && break; sleep 3; done; echo $u"], timeout_s=120)
+        print(f"{name}: {out.strip() or f'no URL yet (is deploy/{tunnel} running?)'}")
 
 
 def cmd_test(*args: str) -> None:
@@ -320,11 +400,18 @@ def main() -> None:
             sys.exit(f"--overlay takes one of {', '.join(OVERLAYS)}")
         overlay = args[i + 1]
         del args[i:i + 2]
+    only = ""
+    if "--only" in args:
+        i = args.index("--only")
+        if i + 1 >= len(args):
+            sys.exit(f"--only takes a comma list of {', '.join(COMPONENTS)}")
+        only = args[i + 1]
+        del args[i:i + 2]
     if not args or args[0] not in COMMANDS:
         sys.exit(__doc__)
     aws_ops.guard()
     if args[0] == "deploy":
-        cmd_deploy(*args[1:2], overlay=overlay)
+        cmd_deploy(*args[1:2], overlay=overlay, only=only)
     else:
         COMMANDS[args[0]](*args[1:])
 

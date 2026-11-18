@@ -65,6 +65,13 @@ $history
    point at the new failure or describe its schedule (the step sequence, the trigger
    input or time step, where a fault fires relative to the effects), and no
    documented crash hooks or stage names. Any symptom the system shows is realistic.
+   **Add no hints at all**: no new docs, docstrings, log lines, names or debug commands
+   (no show / dump / explain mode) that help find a bug, and no new interface text for
+   the instruction to repeat. Where the parent has such a hint, remove it.
+5. **Mutate the environment, mainly by adding bugs.** Change the code: add a second
+   defect that interacts with the first (each one masks or triggers the other, so fixing
+   one alone still fails), or move the existing one where reading alone won't find it.
+   The task keeps the same short user request; what changes is the world it describes.
 
 **If the strategy that passed was a local fix** (one file, one function, one guard),
 make a local fix insufficient, in this order of preference:

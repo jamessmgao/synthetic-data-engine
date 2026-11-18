@@ -10,6 +10,11 @@ make ui          # whatever web/.env.local points at, e.g. `make up` → SDE_URL
 open http://localhost:3100
 ```
 
+On the AWS cluster (aws-prod overlays) it also runs as a pod with its own public link, no
+password, read-only: `make aws-k8s-public` prints `api: …` and `dashboard: …`. UI changes ship
+alone with `make aws-k8s-deploy-ui` (only the `dashboard` pod restarts; both URLs stay).
+`make aws-k8s-deploy OVERLAY=aws-prod ONLY=api,control` scopes a pipeline deploy the same way.
+
 `web/.env.local` (see `.env.example`) holds `SDE_URL` and `SDE_API_KEY`. The browser calls
 `/api/sde/<path>`; `app/api/sde/[...path]/route.ts` forwards GETs only and adds the key on the
 server, so the key never reaches the browser and the UI can't change anything. The tunnel

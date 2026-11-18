@@ -14,14 +14,18 @@ namespace: sde
 resources:
   - ../../base
   - public-tunnel.yaml
+  - dashboard.yaml  # the dashboard (web/) and its own tunnel
 images:
   # Built and imported on every instance by scripts/k8s_aws.py, never pulled (the test
   # overlays get this tag from overlays/local; this one builds on the base directly).
   - {name: sde-pipeline, newName: sde-pipeline, newTag: local}
+  - {name: sde-dashboard, newName: sde-dashboard, newTag: local}  # built on the server only
 configMapGenerator:
   # Replaces the base's deploy/local.env (a dev file): code defaults for everything else.
   - name: sde-config
     behavior: replace
+    options:
+      labels: {app.kubernetes.io/name: sde-config}  # `deploy --only` applies it with the pipeline pods
     # SDE_AUTHORING_IMAGE=sde-authoring:<hash>, written by scripts/k8s_aws.py (gitignored).
     envs: [authoring.env]
     literals:

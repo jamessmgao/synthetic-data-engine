@@ -111,17 +111,19 @@ k8s-test:        ## chaos test on the k3d cluster (mock mode): kill an executor 
 # K3s across the runners instead of compose (scripts/k8s_aws.py; docs/K8S_PLAN.md).
 K8S_AWS := $(PYTHON) scripts/k8s_aws.py
 
-.PHONY: aws-k8s-up aws-k8s-deploy aws-k8s-status aws-k8s-logs aws-k8s-test aws-k8s-test-log aws-k8s-down
+.PHONY: aws-k8s-up aws-k8s-deploy aws-k8s-deploy-ui aws-k8s-status aws-k8s-logs aws-k8s-test aws-k8s-test-log aws-k8s-down
 
 aws-k8s-up:      ## stop compose; K3s server + agents; image on every node; KEDA
 	$(K8S_AWS) up $(or $(REF),HEAD)
-aws-k8s-deploy:  ## make aws-k8s-deploy [REF=<branch|sha>] [OVERLAY=aws|aws-prod]: ship, rebuild + import, apply
-	$(K8S_AWS) deploy $(or $(REF),HEAD) --overlay $(or $(OVERLAY),aws)
+aws-k8s-deploy:  ## make aws-k8s-deploy [REF=<branch|sha>] [OVERLAY=aws|aws-prod] [ONLY=ui,api,…]: ship, rebuild + import, apply (ONLY: just those components)
+	$(K8S_AWS) deploy $(or $(REF),HEAD) --overlay $(or $(OVERLAY),aws) $(if $(ONLY),--only $(ONLY))
+aws-k8s-deploy-ui: ## make aws-k8s-deploy-ui [REF=…]: only the dashboard (aws-prod); restarts nothing else
+	$(K8S_AWS) deploy $(or $(REF),HEAD) --overlay aws-prod --only ui
 aws-k8s-status:
 	$(K8S_AWS) status
 aws-k8s-logs:    ## make aws-k8s-logs SVC=api|control|validate|executor|generation|postgres|redis|s3
 	$(K8S_AWS) logs $(or $(SVC),executor)
-aws-k8s-public:  ## the API's public HTTPS link (Cloudflare quick tunnel; aws-prod overlays)
+aws-k8s-public:  ## the public HTTPS links, api: and dashboard: (Cloudflare quick tunnels; aws-prod overlays)
 	$(K8S_AWS) public
 aws-k8s-test:    ## make aws-k8s-test [ARGS="--tasks 2"]: scripts/k8s_test.py on the server (systemd unit)
 	$(K8S_AWS) test $(ARGS)
@@ -136,7 +138,7 @@ aws-k8s-down:    ## uninstall K3s on every runner (then `make aws-deploy` restor
 ui:              ## the dashboard on http://localhost:3100, reading web/.env.local (SDE_URL, SDE_API_KEY)
 	cd web && npm install --no-audit --no-fund && npm run dev
 ui-aws:          ## point the dashboard at the AWS cluster (tunnel URL + SSM key into web/.env.local), then run it
-	@url=$$($(K8S_AWS) public | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1); \
+	@url=$$($(K8S_AWS) public | grep '^api:' | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com'); \
 	key=$$(aws ssm get-parameter --region us-east-2 --name /sde/api_key --with-decryption --query Parameter.Value --output text); \
 	test -n "$$url" -a -n "$$key" || { echo "no tunnel URL or API key"; exit 1; }; \
 	printf 'SDE_URL=%s\nAQ_API_KEY=%s\n' "$$url" "$$key" > web/.env.local; echo "web/.env.local -> $$url"

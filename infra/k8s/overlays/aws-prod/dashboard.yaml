@@ -1,0 +1,73 @@
+# The dashboard (web/), public and read-only (the user's call, 2026-11-18: no password). Its
+# route forwards GETs only and adds the API key on the server, so the key never reaches a
+# browser; the pod gets that one key from sde-secrets, not the database or model secrets.
+# Built on the K3s server by scripts/k8s_aws.py (sde-dashboard:local) and pinned there, beside
+# api and its tunnel, so it takes nothing from the workers' nodes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  labels: {app.kubernetes.io/name: dashboard}  # `deploy --only ui` applies by this label
+spec:
+  selector: {app.kubernetes.io/name: dashboard}
+  ports: [{name: http, port: 3100}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  labels: {app.kubernetes.io/name: dashboard}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: dashboard}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: dashboard}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/control-plane: "true"}
+      containers:
+        - name: web
+          image: sde-dashboard
+          imagePullPolicy: Never
+          env:
+            - {name: SDE_URL, value: "http://api:8000"}
+            - name: SDE_API_KEY
+              valueFrom: {secretKeyRef: {name: sde-secrets, key: SDE_API_KEY}}
+          ports: [{containerPort: 3100}]
+          readinessProbe:
+            tcpSocket: {port: 3100}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+---
+# Its own Cloudflare quick tunnel, as public-tunnel is for the API: `scripts/k8s_aws.py public`
+# prints both URLs, and both change whenever their tunnel pod restarts.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-tunnel
+  labels: {app.kubernetes.io/name: dashboard-tunnel}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: dashboard-tunnel}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: dashboard-tunnel}
+    spec:
+      nodeSelector: {node-role.kubernetes.io/control-plane: "true"}
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.10.7
+          args: ["tunnel", "--no-autoupdate", "--url", "http://dashboard:3100"]
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false

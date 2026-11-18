@@ -23,7 +23,7 @@ $world_summary
 
 - **Repository** (`dockerfile`, `environment_files`): the world's `environment/`, defect
   included, without `repro/`, `world_fix/`, `world.json` or anything that walks through the
-  failure (a happy-path example is fine).
+  failure.
 - **Solution** (`solution_script`, `solution_files`): a genuine fix, from `world_fix/fix.sh`.
 - **Wrong fix** (`wrong_fix_script`): the world's plausible wrong fix, written as an engineer would.
 - **Spec**: `correctness_constraints` (the invariants and must-keep-working behaviors) and
@@ -43,34 +43,36 @@ executions:
 Random inputs obey every rule the instruction states (an acyclic graph, unique IDs, value
 ranges): assert it in the generator, and never require success on an input the instruction
 calls invalid (a real draft's generator could make a job its own prerequisite).
+Make the suite comprehensive: cover the request's plain meaning broadly (many seeds and input
+shapes, edge cases, restarts, every command it touches), so a fix that handles only the obvious
+case fails. Every assertion traces to the request's plain meaning or to behavior the environment
+documents (README, `--help`), never to a detail neither states (what each command optimizes).
+Assert outcomes; pin one answer among equally valid ones only if the tie-break is stated.
 Drive the system only through its interface (never import internals, never write its
 database tables or state files directly: a solver may change their schema); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
 under 60 s on 1 CPU. Timing assertions need a 5x margin; no test relies on wall-clock speed.
 
-**Instruction** (`instruction`): the symptom users saw, the guarantees that must hold (the
-invariants as observable outcomes), what must keep working, and the interface (every value,
-path, command and format the tests use). NEVER: the counterexample (its steps, schedule or
+**Instruction** (`instruction`): a short request in a user's voice, at most ~150 words, like a
+message to a colleague: what went wrong, and what must be true once it is fixed, in plain
+outcome terms ("an order is never charged twice, even if the service crashes"). Name only what
+a user would name: the command they run, the file or URL they read, the output format they
+expect. Never mention tools, modules, how the system is built or where to look: the
+agent gets the lay of the land and discovers the tools itself. No enumerated list of guarantees.
+Anything else the tests use must be discoverable in the environment (its README, `--help`,
+the code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
+board. It is currently white to move. Write the best move for white to play to /app/move.txt in
+the form [src][dst], for example, e2e4. If there are multiple winning moves, print them all, one
+per line." NEVER: the counterexample (its steps, schedule or
 trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
 that workers can be killed at any moment and restarted), the cause, the files to change, or
-the shape of the fix, in any words. The leak review rejects all of these. Each guarantee holds
-over all histories, and the symptom is what users saw, not the inputs or interleaving that
-caused it; never restate the counterexample's path as a symptom or a conditional guarantee
-(BAD: "if a charge is requested through the charge API and the order's queued delivery is
-then consumed by the worker, that request has exactly one debit"; GOOD: "each request ID is
-debited at most once, whichever path processes it").
+the shape of the fix. The leak review rejects all of these. The symptom is what
+users saw, never the inputs or interleaving that caused it, and an outcome holds whichever
+path produces it ("each request ID is debited at most once, whichever path processes it").
 
-Every event, field, file or output the tests rely on is stated as REQUIRED ("the worker emits
-`result_ready` before it commits"), never as optional: an agent may ignore a "may". BAD: "the
-worker may emit `result_ready`" (when a test waits for it). GOOD: "the worker emits
-`result_ready` on stdout when the reservation is cached, before the order is stored".
-
-BAD (a real draft): "The fault-injection hook `STOP_AFTER=inventory` makes a worker exit after
-the inventory update is durable and before its completion work. Use `tick --milliseconds
-30001` to expire a lease. Later deliveries of a request ID must reuse that exact durable result."
-GOOD: "A worker process can be killed at any moment and a new one started. Time advances only
-through `tick --milliseconds N`; a lease lasts 30000 ms. Each request ID consumes its quantity
-at most once, whatever the retries, crashes and lease expiries; stock never goes negative."
+Every event, field, file or output the tests rely on is REQUIRED wherever it is described (the
+request, or the environment's README / `--help`), never a "may" an agent can ignore (BAD: "the
+worker may emit `result_ready`" when a test waits for it).
 
 # Shape and difficulty
 
@@ -88,8 +90,8 @@ twice: a flaky test fails it), nop (reward 0) and the wrong fix (reward 0), and 
 test with its status. A nop or wrong run that fails only on setup errors (import, missing file,
 no reward) does not count: the counterexample test must be among nop's failures. Write files
 with one heredoc each or a Python script in `/tmp`; never nest heredocs sharing a delimiter.
-Keep each command under ~4 KB: write a large file in several appends, or with a short Python
-script you write in parts; one oversized heredoc can wedge the terminal for good.
+Keep each command under ~4 KB: write a large file in several appends (an oversized heredoc
+wedges the terminal).
 Your terminal is one interactive shell: never type `exit` or `set -e` at the prompt (they end
 the session); put multi-step checks in a script or `bash -c '…'`.
 Never weaken or delete a test to make a check pass.
@@ -108,6 +110,4 @@ sends a draft with any failing role back to you.
 
 While you fix the draft, check only the reference solution (`sde-task run … --as oracle`,
 about a third of the time) until it passes; run `--as all` once that's green.
-`sde-task run` takes minutes: while it runs, wait with `"duration": 60` (the maximum) per
-step, never short 10 s polls. Every step resends the whole conversation, so empty polls cost
-the most.
+While `sde-task run` runs, wait with `"duration": 60` per step, never 10 s polls.

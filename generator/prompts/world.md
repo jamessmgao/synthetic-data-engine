@@ -59,7 +59,9 @@ never `docker run -v` (paths here are not host paths): build with a context and 
 with `docker cp`. Label what you start by hand with `--label "$$SDE_DOCKER_LABEL"`. Clean up only
 your own containers (`docker ps --filter label=$$SDE_DOCKER_LABEL`): never kill, stop or remove
 containers you didn't start (the daemon is shared). If the terminal is stuck, press C-c once and
-wait; never kill all containers. Your terminal is one interactive shell: never type `exit` or
+wait; never kill all containers. Keep each command under ~4 KB: split any file over ~120 lines
+into 2+ writes (`cat > f <<'EOF'` for the first part, then `cat >> f <<'EOF'`), and never nest
+heredocs (fix.sh can copy corrected files kept beside it). Your terminal is one interactive shell: never type `exit` or
 `set -e` at the prompt (they end the session); put multi-step checks in a script or
 `bash -c '…'`. The world
 later runs as a non-root `agent` user with 1 CPU / 2 GB; install packages only in the
