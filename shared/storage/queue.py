@@ -83,12 +83,16 @@ class RedisQueue:
         self._remove(job_id)
 
     def missed(self, job_id: str) -> None:
-        # Keep the id only if it is still waiting for a slot; anything finished,
-        # dead, over its attempt limit or leased by a live worker leaves the set.
-        # (An expired lease is re-added by reconcile.)
+        # Keep the id only if it is still claimable later: READY (waiting for a slot)
+        # or a suspect (LEASED, its lease expired; it waits for an idle process, see
+        # sql.claim). Anything finished, dead, over its attempt limit or leased by a
+        # live worker leaves the set.
         job = self.store.job(job_id)
         task = self.store.task(job["task_id"]) if job else None
-        if (job is None or job["status"] != "READY" or job["attempts"] >= MAX_JOB_ATTEMPTS
+        claimable = job is not None and (
+            job["status"] == "READY"
+            or (job["status"] == "LEASED" and (job["lease_until"] or 0) < time.time()))
+        if (not claimable or job["attempts"] >= MAX_JOB_ATTEMPTS
                 or task["status"] in ("ACCEPTED", "REJECTED")):
             self._remove(job_id, job["type"] if job else None)
 

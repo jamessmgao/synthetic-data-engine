@@ -2,7 +2,7 @@
 
     sde-task schema
     sde-task check <draft.json> [--world <world_dir>]
-    sde-task run <draft.json | bundle_dir> --as oracle|nop|wrong [--world <world_dir>]
+    sde-task run <draft.json | bundle_dir> --as oracle|nop|wrong|oracle,nop,wrong|all [--world <world_dir>]
 
 `schema` prints the TaskDraft JSON schema: every field draft.json must have.
 
@@ -19,8 +19,13 @@ role's script as the `agent` user (oracle: solve.sh, wrong: wrong_fix.sh, nop:
 nothing), copy tests/ in and run test.sh as root, read the reward and the per-test
 results. nop and wrong must fail BECAUSE of the bug: a failure from a setup error
 (ImportError, a missing file or module, no verdict at all) doesn't count, and is
-reported as such. Prints {as, reward, expected, ok, tests, setup_errors, output_tail};
-exit 0 iff ok.
+reported as such. Prints {as, reward, expected, ok, tests, setup_errors, output_tail,
+image_reused} for one role, {ok, runs: [...]} for several; exit 0 iff ok.
+
+environment/ is built once: several roles run in fresh containers from one image, and
+inside an authoring trial ($SDE_DOCKER_LABEL set) the image is tagged by the content
+of environment/ and kept, so a later `sde-task run` on the same environment skips the
+build (the harness prunes labeled images after the trial).
 
 Everything built or started is labeled with $SDE_DOCKER_LABEL and removed after.
 Each check / run result is also saved to $SDE_ARTIFACTS_DIR/sde_task/<check|run-ROLE>.json
@@ -29,6 +34,7 @@ that the author self-checked.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -116,21 +122,60 @@ def _tests(ctrf: dict | None) -> list[dict]:
              "message": (t.get("message") or t.get("trace") or "")[:800]} for t in tests]
 
 
-def run_bundle(bundle: Path, role: str) -> dict:
-    """Run the bundle's verifier after the role's script; see the module docstring."""
+def env_digest(env_dir: Path) -> str:
+    """A content hash of environment/ (paths, bytes and the executable bit)."""
+    h = hashlib.sha256()
+    for p in sorted(env_dir.rglob("*")):
+        if p.is_file():
+            h.update(str(p.relative_to(env_dir)).encode() + b"\0" + bytes([os.access(p, os.X_OK)]))
+            h.update(p.read_bytes() + b"\0")
+    return h.hexdigest()[:16]
+
+
+def _keep_images() -> bool:
+    """Inside an authoring trial ($SDE_DOCKER_LABEL set) an image is kept for the next run of
+    the same environment/ (the harness prunes labeled images after the trial)."""
+    return bool(os.environ.get("SDE_DOCKER_LABEL"))
+
+
+def build_image(bundle: Path) -> tuple[str | None, str, bool]:
+    """(image, build output, reused): one image per environment/ content, built once and
+    reused by every role and every later `sde-task run` in the trial. None if the build fails."""
+    image = f"sde-task-env:{env_digest(bundle / 'environment')}" if _keep_images() \
+        else f"sde-task-{uuid.uuid4().hex[:10]}"
+    if _keep_images() and _docker(["image", "inspect", image], 60)[0] == 0:
+        return image, "", True
+    code, out = _docker(["build", "-q", *_labels(), "-t", image, str(bundle / "environment")])
+    return (image if code == 0 else None), out, False
+
+
+def run_roles(bundle: Path, roles: list[str]) -> list[dict]:
+    """Every role on one image: built once, a fresh container per role."""
+    image, out, reused = build_image(bundle)
+    try:
+        if image is None:
+            failed = {"reward": None, "ok": False, "tests": [], "output_tail": out[-OUTPUT_CHARS:],
+                      "setup_errors": ["environment/ does not build"], "image_reused": False}
+            return [{"as": r, "expected": EXPECTED[r], **failed} for r in roles]
+        return [{**run_bundle(bundle, r, image=image), "image_reused": reused or i > 0} for i, r in enumerate(roles)]
+    finally:
+        if image is not None and not _keep_images():
+            _docker(["rmi", "-f", image], 120)
+
+
+def run_bundle(bundle: Path, role: str, image: str | None = None) -> dict:
+    """Run the bundle's verifier after the role's script; see the module docstring. With
+    `image`, on that already built image (run_roles); else build one for this run."""
+    if image is None:
+        return run_roles(bundle, [role])[0]
     expected = EXPECTED[role]
-    image, cid = f"sde-task-{uuid.uuid4().hex[:10]}", None
+    cid = None
     result: dict = {"as": role, "reward": None, "expected": expected, "ok": False, "tests": [],
                     "setup_errors": [], "output_tail": ""}
     log: list[str] = []
     try:
         if role == "wrong" and not (bundle / "solution" / "wrong_fix.sh").is_file():
             result["setup_errors"] = ["the bundle has no solution/wrong_fix.sh (wrong_fix_script is empty)"]
-            return result
-        code, out = _docker(["build", "-q", *_labels(), "-t", image, str(bundle / "environment")])
-        if code != 0:
-            result["setup_errors"] = [f"environment/ does not build (exit {code})"]
-            log.append(out)
             return result
         code, out = _docker(["run", "-d", *RUN_LIMITS, *_labels(), "--entrypoint", "sleep", image, "infinity"])
         if code != 0:
@@ -168,7 +213,6 @@ def run_bundle(bundle: Path, role: str) -> dict:
         result["output_tail"] = "\n".join(log)[-OUTPUT_CHARS:]
         if cid:
             _docker(["rm", "-f", cid], 120)
-        _docker(["rmi", "-f", image], 120)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,7 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--world", type=Path, default=None)
     run = sub.add_parser("run", help="run the verifier after oracle / nop / wrong fix")
     run.add_argument("target", type=Path, help="draft.json or a materialized bundle dir")
-    run.add_argument("--as", dest="role", choices=sorted(EXPECTED), required=True)
+    run.add_argument("--as", dest="role", type=_roles, required=True,
+                     help="oracle, nop, wrong, a comma list (oracle,nop,wrong) or all: one image for every role")
     run.add_argument("--world", type=Path, default=None)
     args = parser.parse_args(argv)
     if args.cmd == "schema":
@@ -191,16 +236,31 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="sde-task-") as tmp:
         if args.cmd == "check":
             result = check_draft(args.draft, world, Path(tmp))
-        elif args.target.is_dir():
-            result = run_bundle(args.target, args.role)
-        else:
+            save("check.json", json.dumps(result, indent=1))
+            print(json.dumps(result, indent=1))
+            return 0 if result["ok"] else 1
+        bundle = args.target
+        if not bundle.is_dir():
             checked = check_draft(args.target, world, Path(tmp))
-            result = run_bundle(Path(checked["bundle_dir"]), args.role) if checked["ok"] else {
-                "as": args.role, "ok": False, "setup_errors": ["the draft fails `sde-task check`"], **checked}
-        text = json.dumps(result, indent=1)
-        save(f"{args.cmd}.json" if args.cmd == "check" else f"run-{args.role}.json", text)
-        print(text)
+            if not checked["ok"]:
+                runs = [{"as": r, "ok": False, "setup_errors": ["the draft fails `sde-task check`"], **checked}
+                        for r in args.role]
+            bundle = Path(checked["bundle_dir"]) if checked["ok"] else None
+        if bundle is not None:
+            runs = run_roles(bundle, args.role)
+        for r in runs:
+            save(f"run-{r['as']}.json", json.dumps(r, indent=1))
+        result = runs[0] if len(runs) == 1 else {"ok": all(r["ok"] for r in runs), "runs": runs}
+        print(json.dumps(result, indent=1))
     return 0 if result["ok"] else 1
+
+
+def _roles(value: str) -> list[str]:
+    roles = list(EXPECTED) if value == "all" else [r.strip() for r in value.split(",") if r.strip()]
+    bad = [r for r in roles if r not in EXPECTED]
+    if bad or not roles:
+        raise argparse.ArgumentTypeError(f"roles are {', '.join(EXPECTED)} or all, not {value!r}")
+    return list(dict.fromkeys(roles))
 
 
 def save(name: str, text: str) -> None:

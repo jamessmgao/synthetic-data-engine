@@ -96,6 +96,8 @@ resource "aws_instance" "runner" {
 
   lifecycle {
     # A newer AMI must not replace a running runner; recreate it deliberately.
-    ignore_changes = [ami, user_data]
+    # associate_public_ip_address reads false while a runner is stopped (no public
+    # IP then), which would otherwise force a replacement of every stopped runner.
+    ignore_changes = [ami, user_data, associate_public_ip_address]
   }
 }

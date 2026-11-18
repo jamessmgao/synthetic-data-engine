@@ -21,11 +21,13 @@ import json
 import os
 import socket
 import time
+from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
 from shared.storage import Backend
 from shared.storage.sql import Conn, claim as sql_claim, docker_load, insert_job, row_dict, utcnow
+from shared.storage.budget import PAID_JOB_TYPES, warn_if_exhausted
 from shared.contracts.models import DOCKER_JOB_TYPES, LEASE_TTL_S, JobStatus, JobType
 
 # (conn, settled job row) -> follow-up jobs; runs inside the settle transaction.
@@ -66,7 +68,7 @@ class JobQueue:
         process = process_prefix()
         mine = owner.startswith(process)
         host = f"{socket.gethostname()}:" if mine else None
-        types = self._unblocked(types, host, docker_slots, agent_slots)
+        types, docker_slots = self._unblocked(types, host, docker_slots, agent_slots)
         if not types:
             return None
         for candidate in self.queue.candidates(types):
@@ -80,28 +82,41 @@ class JobQueue:
                 return row
             if candidate:
                 self.queue.missed(candidate)
+        if any(t in PAID_JOB_TYPES for t in types):
+            warn_if_exhausted(self.store)  # paid claims stop at SDE_BUDGET_USD: say so, loudly
         return None
 
     def _unblocked(self, types: list[JobType], host: str | None, docker_slots: int | None,
-                   agent_slots: int | None) -> list[JobType]:
-        """Drop the types that can't be claimed right now because their slots are full.
+                   agent_slots: int | None) -> tuple[list[JobType], int | None]:
+        """The types worth trying now, and the Docker slot cap to claim with.
 
         Counted once per poll (outside the claim lock): with hour-long agent jobs
         holding the slots, trying every candidate in a locked claim transaction only
         to be refused would churn the database. Types that need Docker only for some
-        jobs (create / revise) stay: the claim itself still checks each job."""
+        jobs (create / revise) stay: the claim itself still checks each job.
+
+        The slots are a ceiling; the machine is the real limit. Below
+        SDE_MIN_FREE_MEMORY_PCT free memory, or above SDE_MAX_CPU_PCT CPU load, no new
+        Docker work is claimed (cap 0): a runner fills up to about 80% and stops there
+        instead of OOM-killing trials or starving the solver harness (terminus-2's
+        tmux send-keys timed out at 8 rollouts on 2 vCPU)."""
         if docker_slots is None and agent_slots is None:
-            return types
+            return types, docker_slots
+        free, cpu = free_memory_pct(), cpu_load_pct()
+        if docker_slots is not None and ((free is not None and free < MIN_FREE_MEMORY_PCT)
+                                         or (cpu is not None and cpu > MAX_CPU_PCT)):
+            return [t for t in types if t not in DOCKER_JOB_TYPES], 0
         load = docker_load(self.store.conn, host)
         if docker_slots is not None and load["docker"] >= docker_slots:
-            return [t for t in types if t not in DOCKER_JOB_TYPES]
+            return [t for t in types if t not in DOCKER_JOB_TYPES], docker_slots
         if agent_slots is not None and load["agent"] >= agent_slots:
-            return [t for t in types if t != JobType.WORLD]
-        return types
+            return [t for t in types if t != JobType.WORLD], docker_slots
+        return types, docker_slots
 
     def heartbeat(self, job_id: str, token: int, lease_sec: float = LEASE_TTL_S) -> bool:
-        """Extend the lease. False means another worker took the job over: stop work."""
-        cur = self.store.conn.execute(
+        """Extend the lease. False means another worker took the job over: stop work.
+        Uses the store's heartbeat connection, never queued behind the main pool."""
+        cur = self.store.heartbeat_conn.execute(
             "UPDATE jobs SET lease_until = ? WHERE id = ? AND lease_token = ? AND status = 'LEASED'",
             (time.time() + lease_sec, job_id, token),
         )
@@ -182,6 +197,32 @@ class JobQueue:
             f"SELECT id, type, due_at FROM jobs WHERE id IN ({marks})", job_ids
         ).fetchall()
         self.queue.publish(rows)
+
+
+MIN_FREE_MEMORY_PCT = float(os.environ.get("SDE_MIN_FREE_MEMORY_PCT", "20"))
+MAX_CPU_PCT = float(os.environ.get("SDE_MAX_CPU_PCT", "85"))
+
+
+def cpu_load_pct() -> float | None:
+    """The 1-minute load average as a percentage of the machine's CPUs (the host's,
+    from inside a container), or None where unknown."""
+    try:
+        return 100.0 * os.getloadavg()[0] / (os.cpu_count() or 1)
+    except (OSError, AttributeError):
+        return None
+
+
+def free_memory_pct(meminfo: str = "/proc/meminfo") -> float | None:
+    """Available memory as a percentage of the machine's, or None where unknown (not
+    Linux). Inside a container /proc/meminfo shows the host's memory, which is what
+    the task containers share."""
+    try:
+        fields = dict(line.split(":", 1) for line in Path(meminfo).read_text().splitlines() if ":" in line)
+        total = float(fields["MemTotal"].split()[0])
+        available = float(fields["MemAvailable"].split()[0])
+    except (OSError, KeyError, ValueError):
+        return None
+    return 100.0 * available / total if total else None
 
 
 def process_prefix() -> str:

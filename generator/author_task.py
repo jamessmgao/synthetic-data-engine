@@ -51,6 +51,7 @@ bundles are content-addressed, and the draft record and leak review are written 
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from string import Template
@@ -65,7 +66,8 @@ from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 from generator.worker import _repair_guard, _save_draft_record, format_validation_errors, load_draft_record
 
 PROMPTS = Path(config.PROMPTS_DIR)
-AUTHOR_TIMEOUT_SEC = 3600
+# The task author's time box (prompt: drafted by ~12 min, self-checked within 20).
+AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_CREATE_TIMEOUT_S", "1200"))
 DEFAULT_SHAPE, DEFAULT_DIAL = "fix", 2
 REVISE_ORIGINS = ("repair", "easier", "repair_ambiguity")
 
@@ -145,9 +147,15 @@ MUTATION_OPERATORS = {
 
 
 def _system_rules() -> str:
-    """system.md's rules and BAD/GOOD examples, with the pinned base images filled in."""
+    """system.md's rules and BAD/GOOD examples, with the pinned base images filled in;
+    without its one-shot output paragraph ("Return exactly one JSON object that matches
+    the provided schema…"): here there is no response schema, the draft is a file."""
     images = ", ".join(f"`{image}`" for image in sorted(BASE_IMAGES))
-    return (PROMPTS / "system.md").read_text().replace("{base_images}", images).strip()
+    text = (PROMPTS / "system.md").read_text().replace("{base_images}", images)
+    start, end = text.find("Return exactly one JSON object"), text.find("## How Harbor runs your task")
+    if 0 <= start < end:
+        text = text[:start] + text[end:]
+    return text.strip()
 
 
 def _bullets(items: list[str]) -> str:
@@ -273,14 +281,16 @@ def _authoring(trial: dict | None) -> dict | None:
     if trial is None:
         return None
     return {k: trial.get(k) for k in ("trial_dir", "steps", "duration_sec", "n_input_tokens", "n_output_tokens",
-                                      "gateway_cost_usd", "adopted", "exception_type")}
+                                      "gateway_cost_usd", "adopted", "exception_type", "instruction_size")}
 
 
 def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = None, *,
                    run_trial: Callable[..., dict] | None = None,
-                   leak_review: Callable[[Path, Path], Any] | None = None) -> dict:
+                   leak_review: Callable[[Path, Path], Any] | None = None,
+                   self_check: Callable[[Path, Path, Path], dict] | None = None) -> dict:
     """See the module docstring. `run_trial` defaults to the shared authoring harness,
-    `leak_review` to validator/gates.py's gate_leak."""
+    `leak_review` to validator/gates.py's gate_leak, `self_check` to
+    self_check.ensure_task_checked."""
     work_dir = Path(work_dir or config.WORK_DIR)
     try:
         origin = _origin(job_input)
@@ -346,6 +356,16 @@ def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = N
              "draft_path": str(record_path), "world_sha256": world_sha, "llm_calls": []}
     cost = trial.get("cost_usd") or 0.0
 
+    # Did the author self-check? Its saved `sde-task check` is used, or the check is run
+    # here (deterministic, free): a draft that fails it is repaired now, not after a
+    # validate job, and before the leak review spends a model call on it.
+    checked = (self_check or _ensure_task_checked)(draft_path, world_dir, Path(trial["artifacts_dir"]))
+    built["self_check"] = {"by": checked["by"], "runs": checked["result"].get("runs")}
+    if not checked["ok"]:
+        failed = _failed("author", checked["feedback"], world_sha, trial)
+        failed["result"].update(built, feedback=checked["feedback"])
+        return failed
+
     # The leak review (plan N6): one glm-5.1 call, no Docker, so it runs here instead of
     # holding a validate slot. It is recorded by bundle sha, so validate adopts it.
     try:
@@ -362,6 +382,12 @@ def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = N
             return failed
     return {"outcome": "OK", "error": None, "cost_usd": round(cost, 6),
             "result": {**built, "authoring": _authoring(trial), "leak": leak}}
+
+
+def _ensure_task_checked(draft_path: Path, world_dir: Path, artifacts_dir: Path) -> dict:
+    from generator.self_check import ensure_task_checked
+
+    return ensure_task_checked(draft_path, world_dir, artifacts_dir)
 
 
 def _leak_review(bundle_dir: Path, trace_dir: Path):

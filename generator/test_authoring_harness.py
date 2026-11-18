@@ -22,10 +22,15 @@ def fake_harbor(calls: list, *, exception=None, artifacts=("world/world.json",),
         calls.append({"cmd": cmd, "env": kw.get("env")})
         trace = Path(cmd[cmd.index("-o") + 1])
         trial = trace / cmd[cmd.index("--job-name") + 1] / "authoring__abc"
-        (trial / "artifacts").mkdir(parents=True)
+        # Harbor 0.26's real layout: /logs/artifacts is mirrored under artifacts/logs/artifacts,
+        # with a manifest saying so (tests that wrote artifacts/ directly hid a real bug).
+        copy = trial / "artifacts" / "logs" / "artifacts"
+        copy.mkdir(parents=True)
+        (trial / "artifacts" / "manifest.json").write_text(json.dumps(
+            [{"source": "/logs/artifacts", "destination": "artifacts/logs/artifacts", "status": "ok"}]))
         for rel in artifacts:
-            (trial / "artifacts" / rel).parent.mkdir(parents=True, exist_ok=True)
-            (trial / "artifacts" / rel).write_text("{}")
+            (copy / rel).parent.mkdir(parents=True, exist_ok=True)
+            (copy / rel).write_text("{}")
         (trial / "result.json").write_text(json.dumps({
             "agent_result": {"n_input_tokens": tokens[0], "n_output_tokens": tokens[1], "cost_usd": 5e-05,
                              "metadata": {"n_episodes": 42}},
@@ -82,6 +87,14 @@ def test_a_finished_trial_is_adopted_not_rerun(tmp_path, monkeypatch):
     assert len(runs) == 1 and again["adopted"] and again["artifacts_dir"] == first["artifacts_dir"]
 
 
+def test_every_trial_reports_its_instruction_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(ah.subprocess, "run", fake_harbor([]))
+    text = "Build a world. " * 100
+    ran = ah.run_authoring_trial("j", text, {}, tmp_path)
+    adopted = ah.run_authoring_trial("j", text, {}, tmp_path)
+    assert ran["instruction_size"] == adopted["instruction_size"] == {"chars": 1500, "tokens_est": 375}
+
+
 def test_a_half_finished_run_is_kept_aside_and_rerun(tmp_path, monkeypatch):
     stale = tmp_path / "traces" / "j" / "authoring" / "authoring__dead"
     stale.mkdir(parents=True)
@@ -117,3 +130,18 @@ def test_cleanup_runs_even_when_harbor_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr(ah.subprocess, "run", run)
     out = ah.run_authoring_trial("slow", "x", {}, tmp_path)
     assert out["exception_type"] == "NoTrialResult" and "docker image prune" in seen
+
+
+def test_artifacts_dir_follows_the_manifest_then_the_known_layouts(tmp_path):
+    trial = tmp_path / "trial"
+    (trial / "artifacts" / "elsewhere").mkdir(parents=True)
+    (trial / "artifacts" / "manifest.json").write_text(json.dumps(
+        [{"source": "/var/log/x", "destination": "artifacts/var"},
+         {"source": "/logs/artifacts/", "destination": "artifacts/elsewhere"}]))
+    assert ah.artifacts_dir(trial) == trial / "artifacts" / "elsewhere"
+    (trial / "artifacts" / "manifest.json").unlink()
+    (trial / "artifacts" / "logs" / "artifacts").mkdir(parents=True)
+    assert ah.artifacts_dir(trial) == trial / "artifacts" / "logs" / "artifacts"
+    other = tmp_path / "flat"
+    (other / "artifacts").mkdir(parents=True)
+    assert ah.artifacts_dir(other) == other / "artifacts"

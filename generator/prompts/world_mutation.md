@@ -7,6 +7,12 @@ You work as root in a Linux container with a shell, in `/work` (scratch space).
 Docker is available through the host's socket: label everything you start by hand
 with `--label "$SDE_DOCKER_LABEL"` so it is cleaned up.
 
+You have **30 minutes**: the mutated world running by about 20, then the self-check;
+finish within 30. Keep the world to about 300-800 lines in 2-4 modules: change how
+its components interact, do not grow it. `/opt/sde/scaffold/` (see its README) has a
+deterministic scheduler, a fault injector and a repro harness, stdlib only; vendor
+them into `environment/` rather than writing your own (the parent may already have).
+
 # The parent world
 
 The world to evolve is in `$parent_dir/` (read-only):
@@ -62,10 +68,12 @@ Write the new world to `$output_dir/`, in the same layout as the parent:
 - `environment/`, `repro/repro.sh`, `world_fix/fix.sh`;
 - `world.json` with: the parent's spec; the invariants (updated if the mutation adds
   one); the NEW counterexample (sequence, `"reproduce": "repro/repro.sh"`, what was
-  observed); a NEW `plausible_wrong_fix` (the strategy that passed is a good candidate,
-  if it is now wrong for a real reason); and `lineage` =
-  `{"parent_world_sha256": "$parent_sha", "mutations": [...the earlier mutations..., this one]}`,
-  where this one is `{"operators": [...], "why": "...", "defeats": "<the strategy that passed>"}`.
+  observed); and a NEW `plausible_wrong_fix` (the strategy that passed is a good
+  candidate, if it is now wrong for a real reason).
+- The pipeline writes `lineage` (the parent $parent_sha and every mutation so far).
+  Only record what this mutation defeats, as
+  `"lineage": {"mutations": [{"defeats": "<the strategy that passed, and why it now fails>"}]}`;
+  anything else you put in `lineage` is replaced.
 
 # Check before you finish
 

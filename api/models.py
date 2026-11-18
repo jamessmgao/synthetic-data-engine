@@ -78,6 +78,8 @@ class BatchRequest(Filters):
     batch_id: str | None = Field(None, pattern=TASK_ID_PATTERN)
     prompt: str | None = Field(None, min_length=1, max_length=20_000)
     spec: TaskSpec | None = None
+    # The most the batch's jobs may spend; past it none of its paid jobs is claimed.
+    budget_usd: float | None = Field(None, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def _one_source(self):

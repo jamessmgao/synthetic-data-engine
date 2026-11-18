@@ -293,6 +293,54 @@ def test_batch_validation_is_422(client, body):
     assert client.post("/v1/batches", json=body, headers=AUTH).status_code == 422
 
 
+def test_batch_budget_is_stored_reported_and_part_of_the_request(client, backend):
+    create_batch(client, count=2, batch_id="b-1", budget_usd=0.5)
+    row = backend.store.conn.execute("SELECT budget_usd FROM batches WHERE id = 'b-1'").fetchone()
+    assert row["budget_usd"] == 0.5
+    add_job(backend, "b-1-t01", 1, "rollout", "b-1-t01-paid", slot=9, cost_usd=0.5)
+    report = client.get("/v1/batches/b-1/report", headers=AUTH).json()
+    assert report["budget"] == {"cap_usd": 0.5, "spent_usd": 0.5, "leased_estimate_usd": 0.0,
+                                "remaining_usd": 0.0, "budget_exhausted": True}
+    assert report["pipeline_budget"]["cap_usd"] is None
+    # The same batch again with another budget is a different request.
+    assert client.post("/v1/batches", json={"count": 2, "batch_id": "b-1", "budget_usd": 5},
+                       headers=AUTH).status_code == 409
+    assert create_batch(client, count=2, batch_id="b-1", budget_usd=0.5)["created"] is False
+    assert client.post("/v1/batches", json={"count": 1, "budget_usd": -1}, headers=AUTH).status_code == 422
+
+
+def test_report_shows_the_instruction_size_per_authoring_step(client, backend):
+    create(client, task_id="t1")
+
+    def authored(type_, id, tokens, origin=None):
+        add_job(backend, "t1", 1, type_, id, input={"origin": origin} if origin else None,
+                result={"authoring": {"instruction_size": {"chars": tokens * 4, "tokens_est": tokens}}})
+
+    authored("world", "t1-v1-world", 2000, "initial")
+    authored("world", "t1-v1-world-repair1", 2200, "repair")
+    authored("world", "t1-v2-world", 1400, "mutation")
+    authored("create", "t1-v1-create-x", 4000)
+    authored("create", "t1-v2-create-x", 4400)
+    add_job(backend, "t1", 1, "validate", "t1-v1-validate-r0", result={"gates": {}})  # not an authoring trial
+    got = client.get("/v1/report", params={"task_id": "t1"}, headers=AUTH).json()["instruction_tokens"]
+    assert got == {"create": {"n": 2, "mean": 4200, "max": 4400}, "world": {"n": 1, "mean": 2000, "max": 2000},
+                   "world_mutation": {"n": 1, "mean": 1400, "max": 1400},
+                   "world_repair": {"n": 1, "mean": 2200, "max": 2200}}
+
+
+def test_health_and_report_show_the_pipeline_budget(client, backend, monkeypatch):
+    create(client, task_id="t1")
+    add_job(backend, "t1", 1, "rollout", "t1-paid", slot=9, cost_usd=2.0)
+    monkeypatch.delenv("SDE_BUDGET_USD", raising=False)
+    health = client.get("/healthz").json()
+    assert health["status"] == "ok" and health["budget"]["cap_usd"] is None
+    monkeypatch.setenv("SDE_BUDGET_USD", "2")
+    health = client.get("/healthz").json()
+    assert health["status"] == "budget_exhausted" and health["budget"]["spent_usd"] == 2.0
+    report = client.get("/v1/report", headers=AUTH).json()
+    assert report["budget"]["budget_exhausted"] is True and report["budget"]["remaining_usd"] == 0.0
+
+
 def test_unknown_batch_is_404(client):
     assert client.get("/v1/batches/nope", headers=AUTH).status_code == 404
     assert client.get("/v1/batches/nope/report", headers=AUTH).status_code == 404
@@ -325,4 +373,7 @@ def test_batch_report_matches_the_task_report(client, worked_real_batch):
     assert r["yield"] == {"candidates": 3, "functional": 2, "accepted": 1, "accepted_v1": 0,
                           "learnable_rate": 0.5}
     named = client.get("/v1/report", params={"task_id": worked_real_batch}, headers=AUTH).json()
-    assert {k: v for k, v in r.items() if k != "batch_id"} == named
+    # The same summary; only the budget is per batch (plus the pipeline's) there.
+    per_batch = ("batch_id", "budget", "pipeline_budget")
+    assert {k: v for k, v in r.items() if k not in per_batch} == {k: v for k, v in named.items() if k != "budget"}
+    assert r["pipeline_budget"] == named["budget"]

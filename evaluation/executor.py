@@ -55,6 +55,7 @@ from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import DOCKER_SLOTS, HEARTBEAT_S, LEASE_TTL_S, MAX_ROLLOUT_RETRIES, POLL_S, JobType
 
 log = logging.getLogger("executor")
+HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the normal interval
 
 
 def rollout_job(task_id: str, version: int, slot: int, bundle_sha256: str, retry: int = 0,
@@ -187,8 +188,21 @@ class Executor:
                  f" ({fields['error']})" if fields.get("error") else f" reward={fields['reward']}")
 
     def _heartbeat(self, job_id: str, token: int, cancel: threading.Event, lease_lost: threading.Event) -> None:
-        while not cancel.wait(self.heartbeat_sec):
-            if not self.queue.heartbeat(job_id, token, self.lease_sec):
+        # A heartbeat that raises (the store out of connections, a failover) is retried:
+        # a dead heartbeat thread lets the lease lapse under a running trial, which is
+        # then run again elsewhere. Only a refused heartbeat means the lease is gone.
+        wait, failing_since = self.heartbeat_sec, None
+        while not cancel.wait(wait):
+            try:
+                held = self.queue.heartbeat(job_id, token, self.lease_sec)
+            except Exception as e:
+                failing_since = failing_since or time.monotonic()
+                log.warning("%s: heartbeat failed for %.0fs (lease %.0fs): %s: %s", job_id,
+                            time.monotonic() - failing_since, self.lease_sec, type(e).__name__, str(e)[:200])
+                wait = min(self.heartbeat_sec, HEARTBEAT_RETRY_S)
+                continue
+            wait, failing_since = self.heartbeat_sec, None
+            if not held:
                 lease_lost.set()
                 cancel.set()
                 return

@@ -46,7 +46,8 @@ from shared.taskformat.world_check import _check_structure  # noqa: E402
 
 PROMPTS = Path(config.PROMPTS_DIR)
 WORLD_OUT = "world"  # under the trial's artifacts dir (/logs/artifacts/world/ in the container)
-AUTHOR_TIMEOUT_SEC = 3600
+# The world author's time box (prompt: written by ~20 min, finished within 30).
+AUTHOR_TIMEOUT_SEC = float(os.environ.get("SDE_WORLD_TIMEOUT_S", "1800"))
 MAX_WORLD_BYTES = 50_000_000
 MAX_WORLD_FILES = 5_000
 
@@ -97,7 +98,7 @@ def _authoring(trial: dict | None) -> dict | None:
     if trial is None:
         return None
     keys = ("trial_dir", "steps", "duration_sec", "n_input_tokens", "n_output_tokens", "gateway_cost_usd",
-            "exception_type", "adopted")
+            "exception_type", "adopted", "instruction_size")
     return {k: trial.get(k) for k in keys}
 
 

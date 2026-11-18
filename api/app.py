@@ -14,6 +14,7 @@ import os
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from shared.storage import budget
 from shared.storage import Backend, describe, from_env
 from api.submit import BatchConflict, TaskConflict, create_batch, create_task
 from shared.taxonomy.taxonomy import families_listing
@@ -68,7 +69,8 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     def post_batch(body: BatchRequest):
         spec = body.spec.model_dump(exclude_none=True) if body.spec else None
         batch_id, task_ids, created = create_batch(backend, body.count, batch_id=body.batch_id,
-                                                   prompt=body.prompt, spec=spec, **body.filter_kwargs())
+                                                   prompt=body.prompt, spec=spec, budget_usd=body.budget_usd,
+                                                   **body.filter_kwargs())
         return {"batch_id": batch_id, "task_ids": task_ids, "created": created}
 
     @v1.get("/batches", response_model=list[BatchSummary])
@@ -92,7 +94,9 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
             store.conn.execute("SELECT 1 FROM tasks LIMIT 1").fetchall()
         except Exception as e:  # sqlite3 or psycopg error
             return JSONResponse({"status": "error", "db": type(e).__name__}, status_code=503)
-        return {"status": "ok", "db": "ok", "backends": describe(backend)}
+        spend = budget.status(store.conn)  # SDE_BUDGET_USD: when exhausted no paid job is claimed
+        return {"status": "budget_exhausted" if spend["budget_exhausted"] else "ok", "db": "ok",
+                "budget": spend, "backends": describe(backend)}
 
     @app.exception_handler(service.NotFound)
     def not_found(_: Request, exc: service.NotFound):

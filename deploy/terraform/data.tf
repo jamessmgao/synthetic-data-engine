@@ -16,7 +16,7 @@ resource "aws_db_instance" "main" {
   identifier     = "${var.name}-db"
   engine         = "postgres"
   engine_version = "16.13"
-  instance_class = "db.t4g.micro"
+  instance_class = var.db_instance_class
 
   allocated_storage = 20
   storage_type      = "gp3"
@@ -95,4 +95,23 @@ resource "aws_ssm_parameter" "s3_bucket" {
   name  = "/sde/s3_bucket"
   type  = "String"
   value = aws_s3_bucket.artifacts.bucket
+}
+
+# Per-runner pipeline settings, read by deploy/remote-deploy.sh into runtime.env.
+resource "aws_ssm_parameter" "agent_slots" {
+  name  = "/sde/agent_slots"
+  type  = "String"
+  value = tostring(var.agent_slots)
+}
+
+resource "aws_ssm_parameter" "agent_lease_ttl_s" {
+  name  = "/sde/agent_lease_ttl_s"
+  type  = "String"
+  value = tostring(var.agent_lease_ttl_s)
+}
+
+resource "aws_ssm_parameter" "budget_usd" {
+  name  = "/sde/budget_usd"
+  type  = "String"
+  value = tostring(var.budget_usd)
 }

@@ -47,6 +47,8 @@ COPY config/ /opt/sde/config/
 COPY generator/ /opt/sde/generator/
 COPY validator/ /opt/sde/validator/
 COPY authoring/ /opt/sde/authoring/
-RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/local/bin/
+RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/local/bin/ \
+ && ln -s /opt/sde/authoring/scaffold /opt/sde/scaffold
+# /opt/sde/scaffold: stdlib-only helpers a world vendors (scheduler, faults, repro harness).
 
 WORKDIR /work

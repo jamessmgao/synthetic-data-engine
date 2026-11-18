@@ -118,8 +118,23 @@ def _is_running(pid: int, job_id: str) -> bool:
         os.kill(pid, 0)
     except (ProcessLookupError, PermissionError):
         return False
-    ps = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
-    return job_id in ps.stdout
+    return job_id in _command_line(pid)
+
+
+def _command_line(pid: int) -> str:
+    """The process's command line. /proc on Linux (the runner image has no `ps`: on AWS
+    the old call raised FileNotFoundError and a reclaimed rollout came out INVALID);
+    `ps` elsewhere (macOS); "" if neither can tell."""
+    proc = Path(f"/proc/{pid}/cmdline")
+    if proc.parent.is_dir():
+        try:
+            return proc.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            return ""
+    try:
+        return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    except OSError:
+        return ""
 
 
 def _live_pid(pid_file: Path, job_id: str) -> int | None:

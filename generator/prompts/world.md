@@ -23,7 +23,7 @@ $family_brief
 
 # How to build it (in this order)
 
-1. **Build the system first.** Several modules with real responsibilities (an API or
+1. **Build the system first.** 2-4 modules with real responsibilities (an API or
    CLI, state, persistence, a worker or scheduler, ...), not one file. It must run.
 2. **State its invariants** before looking for a failure: the guarantees a correct
    implementation must preserve (durability of acknowledged writes, no oversell,
@@ -32,6 +32,7 @@ $family_brief
 3. **Find the counterexample by EXECUTING the system.** Drive it with a deterministic
    scheduler, fault injector or crafted input until an invariant is violated, and
    record the exact sequence. Do not just reason about it: run it and watch it break.
+   Use the scaffolds below for this instead of writing your own.
 4. **Make the reproduction deterministic.** `repro/repro.sh` replays the sequence and
    exits 1 when the invariant is violated, 0 when it holds. It must give the same
    answer every run (no sleeps-as-synchronization, no wall-clock races, fixed seeds).
@@ -41,6 +42,36 @@ $family_brief
    make first, which makes the visible symptom go away but still violates an
    invariant (e.g. a process-local dedup set where the guarantee must survive
    restarts). Check that it really fails on your world.
+
+# Scaffolds: use these instead of writing your own
+
+`/opt/sde/scaffold/` has small, tested, stdlib-only Python helpers (read its
+`README.md`; a minute well spent). Copy the ones you use into `environment/` so the
+world does not depend on this container:
+
+- `sde_sched.py`: deterministic interleavings. Actors are generators that `yield` at
+  each point another may run; a seed or a recorded schedule picks the order, and
+  `explore(build, check, seeds)` returns the first schedule that breaks an invariant.
+- `sde_fault.py`: planned faults: a crash at a named point (on its Nth hit), a dropped
+  or duplicated message, a torn write, from a plan in `SDE_FAULTS`.
+- `sde_repro.py`: the repro harness: replays `repro/sequence.json`, checks your
+  invariants, exits 1 violated / 0 holds / 2 harness broken.
+
+For C or Go worlds the README shows the same patterns to write inline (a crash point
+read from the environment, goroutines released one step at a time). The scaffolds are
+plumbing for the counterexample; the difficulty stays in the system's own components.
+
+# Time and scope
+
+You have **30 minutes**. Have the system written and running by about 10 minutes, the
+counterexample replaying by about 20, then run the self-check and fix what it finds;
+finish within 30. A world that runs out of time is lost.
+
+Keep it to **about 300-800 lines of code in 2-4 modules**. Difficulty comes from
+components that interact and from hidden dependents (code whose correctness relies on
+another module's behavior, a caller that a naive fix breaks), never from size: earlier
+worlds with large codebases and readable defects were solved anyway, and more code only
+costs time.
 
 # What the world must NOT be
 

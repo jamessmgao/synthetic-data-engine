@@ -219,8 +219,12 @@ def create_task(backend: Backend, prompt: str | None = None, spec: dict[str, Any
 
 def create_batch(backend: Backend, count: int, batch_id: str | None = None, prompt: str | None = None,
                  spec: dict[str, Any] | None = None, area: Any = None, mechanism: str | None = None,
-                 environment: str | None = None, dial: int | None = None) -> tuple[str, list[str], bool]:
+                 environment: str | None = None, dial: int | None = None,
+                 budget_usd: float | None = None) -> tuple[str, list[str], bool]:
     """Create `count` tasks labelled with one batch id. Returns (batch_id, task_ids, created).
+
+    `budget_usd` caps what the batch's jobs may spend (shared/storage/budget.py): no paid job of
+    the batch is claimed once its spend would pass it.
 
     One transaction: the batch exists whole or not at all. Tasks are `<batch_id>-tNN`.
     Each task's spec is made separately, spread across every task so far plus those
@@ -231,6 +235,8 @@ def create_batch(backend: Backend, count: int, batch_id: str | None = None, prom
     """
     if not 1 <= count <= MAX_BATCH:
         raise ValueError(f"count must be 1-{MAX_BATCH}")
+    if budget_usd is not None and budget_usd < 0:
+        raise ValueError("budget_usd must be >= 0")
     filters = filters_for(area, mechanism, environment, dial)
     _check_request(prompt, spec, filters)
     batch_id = batch_id or new_batch_id()
@@ -238,12 +244,16 @@ def create_batch(backend: Backend, count: int, batch_id: str | None = None, prom
     with backend.store.tx() as conn:
         rows = conn.execute("SELECT id, slot FROM tasks WHERE batch_id = ? ORDER BY id", (batch_id,)).fetchall()
         if rows:
-            if len(rows) != count or not all(_same_request(_slot(r), prompt, spec, filters) for r in rows):
+            had = conn.execute("SELECT budget_usd FROM batches WHERE id = ?", (batch_id,)).fetchone()
+            if (len(rows) != count or not all(_same_request(_slot(r), prompt, spec, filters) for r in rows)
+                    or (had["budget_usd"] if had else None) != budget_usd):
                 raise BatchConflict(f"batch {batch_id!r} already exists with a different request")
             return batch_id, [r["id"] for r in rows], False
         marks = ",".join("?" * count)
         if conn.execute(f"SELECT 1 FROM tasks WHERE id IN ({marks})", task_ids).fetchone():
             raise BatchConflict(f"a task id of batch {batch_id!r} is already taken")
+        conn.execute("INSERT INTO batches (id, budget_usd, created_at) VALUES (?, ?, ?)",
+                     (batch_id, budget_usd, utcnow()))
         existing = _slots(conn)
         jids = []
         for tid in task_ids:

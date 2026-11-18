@@ -1,7 +1,10 @@
 """author_task: run_create_job against a fake authoring harness (no Harbor, no model)."""
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -84,10 +87,16 @@ def clean_review(bundle_dir, trace_dir):
     return FakeGate()
 
 
-def create(work, harness=None, leak_review=clean_review, **job_input):
+def checked(draft_path, world_dir, artifacts_dir):
+    """A self-check the author ran and passed (the real guard: tests at the end)."""
+    return {"ok": True, "by": "author", "feedback": "", "result": {"check": {"ok": True}, "runs": {"oracle": True}}}
+
+
+def create(work, harness=None, leak_review=clean_review, self_check=checked, **job_input):
     harness = harness or FakeHarness()
     job_input = {"origin": "initial", "world_sha256": "w1", "shape": "fix", "dial": 2, **job_input}
-    return at.run_create_job("t-1-v1-create", job_input, work, run_trial=harness, leak_review=leak_review), harness
+    return at.run_create_job("t-1-v1-create", job_input, work, run_trial=harness, leak_review=leak_review,
+                             self_check=self_check), harness
 
 
 # --- the initial create ------------------------------------------------------------------
@@ -107,7 +116,7 @@ def test_initial_create_writes_a_bundle_from_the_world(work):
     files = harness.calls[0]["files"]
     assert set(files) == {"world/world.json", "world/environment/Dockerfile", "world/repro/repro.sh",
                           "world/world_fix/fix.sh"}
-    assert harness.calls[0]["timeout_sec"] == 3600
+    assert harness.calls[0]["timeout_sec"] == at.AUTHOR_TIMEOUT_SEC == 1200
 
 
 def test_instruction_carries_the_world_the_shape_and_the_rules(work):
@@ -119,10 +128,33 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    "Shape: implement", "level 3 of 3", at.FORMS["many_rules"]["dial"][3],
                    "Mistakes earlier drafts made", "python:3.12-slim-bookworm",  # system.md, images filled in
                    "# plausible_wrong_fix: <the plausible_wrong_fix text>", "setup_errors",
-                   "the test that replays the world's counterexample MUST be among the failures"):
+                   "the test that replays the world's counterexample MUST be among the failures",
+                   "sde-task schema", "--as all", "20 minutes", "absolute paths (`/app/...`)",
+                   "## How Harbor runs your task"):
         assert needle in text, needle
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]  # every template slot filled
     assert "{base_images}" not in text and "This is a revision" not in text
+    # system.md's one-shot output contract does not apply: there is no response schema here.
+    assert "Return exactly one JSON object that matches the provided schema" not in text
+
+
+def test_the_world_instruction_has_the_scaffolds_and_the_time_box():
+    from generator import author
+
+    text = author.render_world_instruction(WORLD["spec"])
+    for needle in ("/opt/sde/scaffold/", "sde_sched.py", "sde_fault.py", "sde_repro.py", "30 minutes",
+                   "300-800 lines of code in 2-4 modules", "never from size"):
+        assert needle in text, needle
+    for name in ("sde_sched.py", "sde_fault.py", "sde_repro.py"):  # the files it names exist
+        assert (Path(__file__).resolve().parent.parent / "authoring" / "scaffold" / name).is_file()
+
+
+def test_every_family_brief_names_its_scaffolds_and_the_scope():
+    from generator.families import FAMILY_BRIEFS, brief_for
+
+    for family in FAMILY_BRIEFS:
+        brief = brief_for(family)
+        assert "Scaffolds (/opt/sde/scaffold): sde_" in brief and "300-800 lines in 2-4 modules" in brief
 
 
 def test_every_shape_and_dial_renders(work):
@@ -194,7 +226,8 @@ def parent(work):
 
 def revise(work, harness=None, **job_input):
     harness = harness or FakeHarness(draft=draft_with(wrong_fix_script=WRONG_FIX, description="revised"))
-    return at.run_create_job("t-1-v2-revise", job_input, work, run_trial=harness, leak_review=clean_review), harness
+    return at.run_create_job("t-1-v2-revise", job_input, work, run_trial=harness, leak_review=clean_review,
+                             self_check=checked), harness
 
 
 def test_repair_carries_the_gate_feedback_and_the_previous_draft(work, parent):
@@ -326,8 +359,9 @@ def test_world_mutation_instruction():
     for needle in ("keep a process-local set", at.MUTATION_OPERATORS["add_persistent_state"],
                    at.MUTATION_OPERATORS["remove_cues"], "one file, symptom next to cause", '"dedupe in memory"',
                    "generate_counterexample", "/input/parent/", "/logs/artifacts/world/",
-                   '"parent_world_sha256": "w1"', "sde-world check /logs/artifacts/world",
-                   "confirmed reservations never exceed stock", "counterfactual_failure"):
+                   "the parent w1", '"lineage": {"mutations": [{"defeats":', "sde-world check /logs/artifacts/world",
+                   "confirmed reservations never exceed stock", "counterfactual_failure",
+                   "30 minutes", "300-800 lines", "/opt/sde/scaffold/"):
         assert needle in text, needle
     assert "the fix was process-local" in text
     assert text.count('"operators": ["add_persistent_state"]') == 0  # this mutation isn't listed as history
@@ -338,3 +372,83 @@ def test_world_mutation_instruction():
 def test_world_mutation_rejects_unknown_operators(operators):
     with pytest.raises(ValueError, match="mutation operators"):
         at.render_world_mutation_instruction({"mutation": {"operators": operators}}, WORLD)
+
+
+# --- the end-of-trial self-check guard (generator/self_check.py, the real one) -------------
+
+
+TAGGED = "# plausible_wrong_fix: check-then-insert inside one transaction at READ COMMITTED\n" + WRONG_FIX
+
+
+def _real_guard(draft_path, world_dir, artifacts_dir):
+    from generator.self_check import ensure_task_checked
+
+    return ensure_task_checked(draft_path, world_dir, artifacts_dir)
+
+
+def test_a_draft_that_fails_sde_task_check_is_sent_back_with_its_bundle(work):
+    """The fixture draft does not quote the world's plausible wrong fix: the guard runs
+    `sde-task check` itself, fails the job as the author's, and keeps the bundle so
+    after_generation routes it to a repair. The leak review is not paid for."""
+    reviews = []
+    out, _ = create(work, self_check=_real_guard, leak_review=lambda b, t: reviews.append(b) or FakeGate())
+    assert out["outcome"] == "FAILED" and out["result"]["failure_kind"] == "author"
+    assert "finished without running `sde-task check`" in out["result"]["feedback"]
+    assert "plausible_wrong_fix" in out["result"]["feedback"]
+    assert out["result"]["bundle_sha256"] and out["result"]["self_check"]["by"] == "pipeline"
+    assert reviews == []
+
+
+def test_a_draft_that_passes_the_check_goes_on(work):
+    out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED)), self_check=_real_guard)
+    assert out["outcome"] == "OK", out["error"]
+    assert out["result"]["self_check"] == {"by": "pipeline", "runs": {}}
+
+
+def test_the_authors_saved_check_and_runs_are_used_not_repeated(work):
+    class Saved(FakeHarness):
+        def __call__(self, job_id, *a, **kw):
+            out = super().__call__(job_id, *a, **kw)
+            evidence = Path(out["artifacts_dir"]) / "sde_task"
+            evidence.mkdir()
+            (evidence / "check.json").write_text('{"ok": true, "errors": []}')
+            (evidence / "run-nop.json").write_text('{"as": "nop", "ok": true}')
+            return out
+
+    out, _ = create(work, Saved(), self_check=_real_guard)  # the untagged draft: the saved check is trusted
+    assert out["outcome"] == "OK" and out["result"]["self_check"] == {"by": "author", "runs": {"nop": True}}
+
+
+# --- time boxes --------------------------------------------------------------------------
+
+
+def test_the_instruction_size_reaches_the_result(work):
+    class Sized(FakeHarness):
+        def __call__(self, job_id, instruction, *a, **kw):
+            return {**super().__call__(job_id, instruction, *a, **kw),
+                    "instruction_size": {"chars": len(instruction), "tokens_est": round(len(instruction) / 4)}}
+
+    out, harness = create(work, Sized())
+    size = out["result"]["authoring"]["instruction_size"]
+    assert size["chars"] == len(harness.calls[0]["instruction"]) and 2000 < size["tokens_est"] < 8000
+
+
+def test_the_task_author_is_time_boxed_at_20_minutes(work):
+    _, harness = create(work)
+    assert harness.calls[0]["timeout_sec"] == 1200
+
+
+@pytest.mark.parametrize("module,var,default", [("author_task", "SDE_CREATE_TIMEOUT_S", 1200.0),
+                                                ("author", "SDE_WORLD_TIMEOUT_S", 1800.0)])
+def test_authoring_time_boxes_are_env_overridable(module, var, default):
+    root = Path(__file__).resolve().parent.parent
+    code = (f"import sys; sys.path[:0] = [{str(root / 'generator')!r}, {str(root / 'validator')!r}]; "
+            f"import {module}; print({module}.AUTHOR_TIMEOUT_SEC)")
+    env = {k: v for k, v in os.environ.items() if k != var}
+
+    def timeout(extra):
+        out = subprocess.run([sys.executable, "-c", code], env={**env, **extra}, capture_output=True,
+                             text=True, check=True).stdout
+        return float(out.strip().splitlines()[-1])
+
+    assert timeout({}) == default and timeout({var: "900"}) == 900.0

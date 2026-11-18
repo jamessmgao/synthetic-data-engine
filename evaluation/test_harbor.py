@@ -140,3 +140,19 @@ def test_a_reused_pid_is_not_mistaken_for_the_jobs_harbor_run(fake):
     (traces / "t1-v1-rollout1-r0.pid").write_text(json.dumps({"pid": os.getpid(), "host": socket.gethostname()}))
     found = run(traces)
     assert not found.adopted and n_calls() == 1
+
+
+def test_liveness_check_needs_no_ps_binary(monkeypatch):
+    """The AWS runner image has no `ps`: the check must not raise without it (it did, and a
+    reclaimed rollout came out INVALID with FileNotFoundError: 'ps')."""
+    real_run = subprocess.run
+
+    def no_ps(cmd, *a, **kw):
+        if cmd and cmd[0] == "ps":
+            raise FileNotFoundError(2, "No such file or directory", "ps")
+        return real_run(cmd, *a, **kw)
+
+    monkeypatch.setattr(harbor.subprocess, "run", no_ps)
+    assert harbor._is_running(os.getpid(), "no-such-job") is False  # never raises
+    if Path("/proc/self/cmdline").exists():  # Linux: read from /proc, no ps needed
+        assert harbor._is_running(os.getpid(), Path(sys.argv[0]).name)

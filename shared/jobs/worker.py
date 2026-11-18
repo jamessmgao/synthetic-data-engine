@@ -389,7 +389,9 @@ def main() -> None:
 
     if args.role in ("generation", "generate"):
         log.info("author mode: %s", AUTHOR_MODE)
-        default = DOCKER_SLOTS if AUTHOR_MODE == "agent" else 2
+        # Threads, not slots: one-shot drafts are model calls (no Docker slot), and agent
+        # jobs are capped by the Docker / agent slot counts in the claim itself.
+        default = int(os.environ.get("SDE_GENERATION_CONCURRENCY", "8"))
         serve_generation(backend, generation_fns(backend), concurrency=args.concurrency or default,
                          stop=stop)
     else:

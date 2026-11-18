@@ -357,3 +357,14 @@ def test_one_shot_task_view_has_no_world(client, backend):
     t = post_task(client)
     add_job(backend, t, 1, "validate", job_id(t, 1, "validate"), outcome="OK", result={"gates": {}})
     assert client.get(f"/v1/tasks/{t}", headers=AUTH).json()["versions"][0]["world"] is None
+
+
+P1_FAMILIES = ["distributed_concurrency", "database_consistency", "algorithmic_constraints"]
+
+
+@pytest.mark.parametrize("n", range(20))
+def test_a_batch_over_a_list_of_areas_gives_each_task_its_own_family(client, backend, agent_mode, n):
+    """P1: a 3-task batch over 3 families gets one task per family, whatever the batch id."""
+    body = batch(client, count=3, batch_id=f"p1-{n}", area=P1_FAMILIES, budget_usd=15)
+    assert sorted(s["family"] for s in slots(backend, body["task_ids"])) == sorted(P1_FAMILIES)
+    assert {first_job(backend, t)["type"] for t in body["task_ids"]} == {"world"}

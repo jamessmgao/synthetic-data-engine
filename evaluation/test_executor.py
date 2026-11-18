@@ -185,6 +185,28 @@ def test_harbor_crash_is_invalid_and_retried(backend):
     assert by_id["t1-v1-rollout1-r1"]["outcome"] == VALID_PASS
 
 
+def test_a_heartbeat_that_raises_keeps_the_trial_running_and_settles(backend):
+    """Seen on AWS: RDS out of connections made heartbeats raise, which killed the
+    heartbeat thread; the lease lapsed under a running trial and it was run again."""
+    seed(backend, runs=1)
+    jq = JobQueue(backend)
+    job = jq.claim(JobType.ROLLOUT, "w", 0.3)
+    ex = make(backend, FakeHarbor(delay=0.8), lease_sec=0.3)
+    real, calls = ex.queue.heartbeat, []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise ConnectionError("FATAL: remaining connection slots are reserved")
+        return real(*a, **kw)
+
+    ex.queue.heartbeat = flaky
+    ex.process(job)
+    assert len(calls) > 3
+    row = jobs(backend)[0]
+    assert row["status"] == "DONE" and row["outcome"] == VALID_PASS
+
+
 def test_a_worker_that_lost_its_lease_records_nothing(backend):
     seed(backend, runs=1)
     jq = JobQueue(backend)

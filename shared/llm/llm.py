@@ -104,6 +104,10 @@ def complete(messages: list[dict], response_format: dict, *, llm_dir: str | Path
     round), so two different jobs with identical prompts still get separate
     responses, while a retry of the same job reuses its own.
     """
+    from shared.llm import mock
+
+    if mock.ENABLED:  # load tests: a short sleep and a schema-valid answer, never cached, cost 0
+        return mock.complete(messages, response_format)
     # The token cap is a client limit, not part of the logical request: raising
     # it must not invalidate finished calls (a truncated one is re-asked anyway).
     request = {"model": config.MODEL, "messages": messages, "response_format": response_format}

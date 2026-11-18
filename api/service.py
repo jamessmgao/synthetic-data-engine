@@ -19,6 +19,7 @@ from typing import Any
 
 from evaluation.calibration import eval_config, in_band
 from evaluation.verdict import decision_text, pass_pattern, version_input
+from shared.storage import budget
 from shared.storage.sql import SqlStore, row_dict
 from shared.contracts.models import (
     GENERATION_TYPES,
@@ -191,7 +192,7 @@ def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None
         raise NotFound(f"unknown task ids: {missing}")
     if not tasks:
         raise NotFound("no tasks match")
-    return _summary(store, tasks)
+    return {**_summary(store, tasks), "budget": budget.status(store.conn)}
 
 
 def _summary(store: SqlStore, tasks: list[dict]) -> dict:
@@ -253,10 +254,27 @@ def _summary(store: SqlStore, tasks: list[dict]) -> dict:
         },
         "wall_clock_s": wall_clock,
         "config_hash": hashes[0] if len(hashes) == 1 else (hashes or None),
+        "instruction_tokens": _instruction_tokens(all_jobs),
         "by_family": _breakdown(tasks, jobs_by_task, "family"),
         "by_mechanism": _breakdown(tasks, jobs_by_task, "mechanism"),
     }
     return {**summary, "yield": _yield(summary)}
+
+
+def _instruction_tokens(jobs) -> dict[str, dict]:
+    """The rendered instruction's size per authoring step (result.authoring.instruction_size,
+    an estimate): the context every agent step of that trial starts from. {step: {n, mean, max}}."""
+    sizes: dict[str, list[int]] = {}
+    for j in jobs:
+        tokens = (((j["result"] or {}).get("authoring") or {}).get("instruction_size") or {}).get("tokens_est")
+        if tokens is None:
+            continue
+        step = j["type"]
+        if step == JobType.WORLD:
+            origin = (j["input"] or {}).get("origin") or "initial"
+            step = {"mutation": "world_mutation", "repair": "world_repair"}.get(origin, "world")
+        sizes.setdefault(str(step), []).append(tokens)
+    return {step: {"n": len(v), "mean": round(sum(v) / len(v)), "max": max(v)} for step, v in sorted(sizes.items())}
 
 
 def _breakdown(tasks: list[dict], jobs_by_task: dict[str, list[dict]], key: str) -> dict[str, dict]:
@@ -329,4 +347,5 @@ def get_batch(store: SqlStore, batch_id: str) -> dict:
 
 def batch_report(store: SqlStore, batch_id: str) -> dict:
     """summary.json over one batch's tasks."""
-    return {"batch_id": batch_id, **_summary(store, _batch_tasks(store, batch_id))}
+    return {"batch_id": batch_id, **_summary(store, _batch_tasks(store, batch_id)),
+            "budget": budget.status(store.conn, batch_id), "pipeline_budget": budget.status(store.conn)}

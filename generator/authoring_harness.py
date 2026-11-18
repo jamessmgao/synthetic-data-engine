@@ -12,7 +12,8 @@ before a reclaimed job runs, so a finished trial is adopted, never paid twice):
 
     <work>/traces/<job_id>/task/        the rendered authoring task
     <work>/traces/<job_id>/authoring/   Harbor's job dir (-o traces/<job_id> --job-name authoring)
-        <trial>/artifacts/              what the agent wrote to /logs/artifacts/
+        <trial>/artifacts/logs/artifacts/   what the agent wrote to /logs/artifacts/
+                                            (Harbor 0.26's layout, per artifacts/manifest.json)
 
 The rendered task:
 - environment/Dockerfile: FROM $SDE_AUTHORING_IMAGE, plus COPY of `files` to /input/;
@@ -40,6 +41,10 @@ from harbor.models.task.config import TaskConfig
 
 JOB_NAME = "authoring"
 DEFAULT_IMAGE = "sde-authoring:dev"
+# The authoring container itself; the worlds it builds run in their own containers,
+# capped by sde-world / sde-task at the evaluation's 1 CPU / 2 GB.
+AUTHORING_CPUS = int(os.environ.get("SDE_AUTHORING_CPUS", "1"))
+AUTHORING_MEMORY_MB = int(os.environ.get("SDE_AUTHORING_MEMORY_MB", "2048"))
 
 COMPOSE = """\
 # The authoring agent builds and runs worlds through the host's Docker daemon.
@@ -87,7 +92,8 @@ def _task_toml(job_id: str, timeout_sec: float) -> str:
         "agent": {"timeout_sec": float(timeout_sec)},
         # The agent's worlds run in their own containers (through the socket), so
         # the authoring container itself needs little.
-        "environment": {"build_timeout_sec": config.BUILD_TIMEOUT_SEC, "cpus": 2, "memory_mb": 4096,
+        "environment": {"build_timeout_sec": config.BUILD_TIMEOUT_SEC, "cpus": AUTHORING_CPUS,
+                        "memory_mb": AUTHORING_MEMORY_MB,
                         # sde-world / sde-task label everything they start with it; so must the agent.
                         "env": {"SDE_DOCKER_LABEL": docker_label(job_id)}},
     }).model_dump_toml()
@@ -127,6 +133,27 @@ def _finished_trial(job_dir: Path) -> tuple[Path | None, dict | None]:
     return trials[0], json.loads((trials[0] / "result.json").read_text())
 
 
+def artifacts_dir(trial_dir: Path) -> Path:
+    """Where the trial's copy of the container's /logs/artifacts/ is.
+
+    Harbor 0.26 mirrors it to <trial>/artifacts/logs/artifacts/ and records the
+    destination (relative to the trial dir) in <trial>/artifacts/manifest.json.
+    Read the manifest; fall back to the known layouts if it's missing."""
+    root = trial_dir / "artifacts"
+    try:
+        entries = json.loads((root / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        entries = []
+    for e in entries if isinstance(entries, list) else []:
+        if (isinstance(e, dict) and str(e.get("source", "")).rstrip("/") == "/logs/artifacts"
+                and e.get("destination") and (trial_dir / e["destination"]).is_dir()):
+            return trial_dir / e["destination"]
+    for candidate in (root / "logs" / "artifacts", root):
+        if candidate.is_dir():
+            return candidate
+    return root
+
+
 def _seconds(start: str | None, end: str | None) -> float | None:
     try:
         return (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
@@ -146,7 +173,7 @@ def summarize(trial_dir: Path | None, result: dict | None, adopted: bool) -> dic
     execution = result.get("agent_execution") or {}
     return {
         "trial_dir": str(trial_dir),
-        "artifacts_dir": str(trial_dir / "artifacts"),
+        "artifacts_dir": str(artifacts_dir(trial_dir)),
         "cost_usd": round(n_in / 1e6 * config.GENERATOR_PRICE_IN_PER_M
                           + n_out / 1e6 * config.GENERATOR_PRICE_OUT_PER_M, 6),
         "gateway_cost_usd": agent.get("cost_usd"),
@@ -162,13 +189,14 @@ def summarize(trial_dir: Path | None, result: dict | None, adopted: bool) -> dic
 
 
 def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
-                        work_dir: str | Path | None = None, timeout_sec: float = 3600) -> dict:
+                        work_dir: str | Path | None = None, timeout_sec: float = 1800) -> dict:
     """Run (or adopt) the job's authoring trial; see the module docstring."""
+    size = instruction_size(instruction)
     trace = Path(work_dir or config.WORK_DIR) / "traces" / job_id
     job_dir = trace / JOB_NAME
     trial_dir, result = _finished_trial(job_dir)
     if result is not None:
-        return summarize(trial_dir, result, adopted=True)
+        return {**summarize(trial_dir, result, adopted=True), "instruction_size": size}
     if job_dir.exists():  # a run that died before its result.json: keep it for the audit
         n = 1
         while job_dir.with_name(f"{JOB_NAME}.abandoned-{n}").exists():
@@ -188,4 +216,11 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
     finally:
         cleanup_docker(job_id)
     trial_dir, result = _finished_trial(job_dir)
-    return summarize(trial_dir, result, adopted=False)
+    return {**summarize(trial_dir, result, adopted=False), "instruction_size": size}
+
+
+def instruction_size(instruction: str) -> dict:
+    """The rendered instruction's size: the context every agent step starts from.
+    `tokens_est` is characters / 4 (a stdlib estimate, near cl100k on this English and
+    code mix; the worker images have no tokenizer)."""
+    return {"chars": len(instruction), "tokens_est": round(len(instruction) / 4)}

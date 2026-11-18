@@ -51,13 +51,17 @@ class FakeDocker:
     """Answers docker calls; the verifier 'writes' `reward` and `ctrf`."""
 
     def __init__(self, reward="0", tests=(("test_median_even", "failed", "assert 2 == 2.5"),), build=0):
-        self.reward, self.build, self.calls = reward, build, []
+        self.reward, self.build, self.calls, self.images = reward, build, [], set()
         self.ctrf = {"results": {"tests": [{"name": f"t.py::{n}", "status": s, "message": m} for n, s, m in tests]}}
 
     def __call__(self, args, timeout=0):
         self.calls.append(args)
         if args[0] == "build":
+            if self.build == 0:
+                self.images.add(args[args.index("-t") + 1])
             return self.build, "" if self.build == 0 else "error"
+        if args[:2] == ["image", "inspect"]:
+            return (0 if args[2] in self.images else 1), ""
         if args[0] == "run":
             return 0, "cid123\n"
         if args[0] == "exec" and args[-1] == "/logs/verifier/reward.txt":
@@ -120,6 +124,51 @@ def test_labels_go_on_every_build_and_run(bundle, monkeypatch):
     for c in fake.calls:
         if c[0] in ("build", "run"):
             assert c[c.index("--label") + 1] == "sde.job=t1-v1-create"
+
+
+def kinds(fake, kind):
+    return [c for c in fake.calls if c[0] == kind]
+
+
+def test_all_roles_run_on_one_build_in_fresh_containers(bundle, monkeypatch):
+    monkeypatch.delenv("SDE_DOCKER_LABEL", raising=False)
+    fake = FakeDocker(reward="0")
+    monkeypatch.setattr(sde_task, "_docker", fake)
+    runs = sde_task.run_roles(bundle, ["oracle", "nop", "wrong"])
+    assert [r["as"] for r in runs] == ["oracle", "nop", "wrong"]
+    assert len(kinds(fake, "build")) == 1 and len(kinds(fake, "run")) == 3 and len(kinds(fake, "rm")) == 3
+    assert [r["image_reused"] for r in runs] == [False, True, True]
+    assert fake.calls[-1][0] == "rmi"  # outside a trial nothing is left behind
+
+
+def test_inside_a_trial_the_image_is_kept_for_the_next_run(bundle, monkeypatch):
+    monkeypatch.setenv("SDE_DOCKER_LABEL", "sde.job=t1-v1-create")
+    fake = FakeDocker(reward="0")
+    monkeypatch.setattr(sde_task, "_docker", fake)
+    first = sde_task.run_bundle(bundle, "nop")
+    second = sde_task.run_bundle(bundle, "wrong")  # a later `sde-task run`: same environment/, no build
+    assert len(kinds(fake, "build")) == 1 and not kinds(fake, "rmi")
+    assert first["image_reused"] is False and second["image_reused"] is True
+    tag = kinds(fake, "build")[0][kinds(fake, "build")[0].index("-t") + 1]
+    assert tag == f"sde-task-env:{sde_task.env_digest(bundle / 'environment')}"
+    (bundle / "environment" / "extra.txt").write_text("changed")  # another environment/: a new build
+    sde_task.run_bundle(bundle, "nop")
+    assert len(kinds(fake, "build")) == 2
+
+
+def test_cli_runs_several_roles_and_saves_each(tmp_path, monkeypatch, capsys):
+    arts = tmp_path / "artifacts"
+    arts.mkdir()
+    monkeypatch.setenv("SDE_ARTIFACTS_DIR", str(arts))
+    d, w = write(tmp_path, draft_with(wrong_fix_script=WRONG))
+    monkeypatch.setattr(sde_task, "_docker", FakeDocker(reward="0"))
+    assert sde_task.main(["run", str(d), "--as", "nop,wrong", "--world", str(w)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and [r["as"] for r in out["runs"]] == ["nop", "wrong"]
+    assert {p.name for p in (arts / "sde_task").iterdir()} == {"run-nop.json", "run-wrong.json"}
+    assert sde_task.main(["run", str(d), "--as", "all", "--world", str(w)]) == 1  # oracle gets 0
+    with pytest.raises(SystemExit):
+        sde_task.main(["run", str(d), "--as", "oracle,bogus", "--world", str(w)])
 
 
 def test_cli_exit_codes(tmp_path, monkeypatch, capsys):

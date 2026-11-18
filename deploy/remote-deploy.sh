@@ -57,21 +57,26 @@ umask 077
   echo "SDE_DOCKER_SLOTS=$slots"
   echo "SDE_RELEASE=$sha"
   echo "SDE_AUTHOR_MODE=$author_mode"
+  echo "SDE_AGENT_SLOTS=$(param_or /sde/agent_slots 1)"
+  echo "SDE_AGENT_LEASE_TTL_S=$(param_or /sde/agent_lease_ttl_s 1800)"
+  echo "SDE_BUDGET_USD=$(param_or /sde/budget_usd 40)"
+  # db.t4g.micro (the Free plan's only class) has ~80 connections: ~27 processes
+  # across 8 runners × 2 each stays well inside it.
+  echo "SDE_DB_POOL_MAX=$(param_or /sde/db_pool_max 2)"
   echo "SDE_AUTHORING_IMAGE=$authoring_image"
   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
-  # worker-control always runs the one reconciler. The Generation Service runs next
-  # to it in oneshot mode, and on every runner's worker-runner in agent mode (each
-  # world / create / revise job is a Harbor trial there, holding a Docker slot).
-  if [ ! -e "$release/generator/worker.py" ]; then
-    echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
-    echo "SDE_RUNNER_GENERATION_CMD="
-  elif [ "$author_mode" = agent ]; then
-    echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
+  # worker-control runs the one reconciler. The Generation Service runs on EVERY
+  # runner's worker-runner, in both modes: on the control runner alone (2 at a time)
+  # a batch's create jobs queued for a median 21 minutes. One-shot drafts hold no
+  # Docker slot, so they run SDE_GENERATION_CONCURRENCY at a time per runner; agent
+  # jobs are further capped by SDE_AGENT_SLOTS.
+  echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
+  if [ -e "$release/generator/worker.py" ]; then
     echo "SDE_RUNNER_GENERATION_CMD=python -m generator.service generation"
   else
-    echo "SDE_GENERATION_CMD=python -m generator.service generation --with-reconciler"
     echo "SDE_RUNNER_GENERATION_CMD="
   fi
+  echo "SDE_GENERATION_CONCURRENCY=$(param_or /sde/generation_concurrency 8)"
   cmd evaluation/trace_parser_service.py SDE_TRACE_PARSER_CMD "python -m evaluation.trace_parser_service"
   cmd validator/gates.py SDE_VALIDATE_CMD "python -m validator.service validate"
   cmd evaluation/executor.py SDE_EXECUTOR_CMD "python -m evaluation.executor"

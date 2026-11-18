@@ -71,6 +71,67 @@ def test_docker_slots_are_per_machine(backend, jq, monkeypatch):
     assert jq.claim("rollout", f"runner-c:{pid}:0", docker_slots=2) is not None
 
 
+def test_free_memory_is_read_from_meminfo(tmp_path):
+    from shared.jobs.jobqueue import free_memory_pct
+
+    m = tmp_path / "meminfo"
+    m.write_text("MemTotal:  8000000 kB\nMemFree:  100000 kB\nMemAvailable:  2000000 kB\n")
+    assert free_memory_pct(str(m)) == 25.0
+    assert free_memory_pct(str(tmp_path / "missing")) is None
+
+
+def test_high_cpu_load_stops_new_docker_work(backend, jq, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT)
+    monkeypatch.setattr(jqmod, "free_memory_pct", lambda: 60.0)
+    monkeypatch.setattr(jqmod, "cpu_load_pct", lambda: 97.0)
+    assert jq.claim("rollout", "w1", docker_slots=5) is None
+    monkeypatch.setattr(jqmod, "cpu_load_pct", lambda: 40.0)
+    assert jq.claim("rollout", "w1", docker_slots=5) is not None
+
+
+def test_a_suspect_is_not_starved_by_a_busy_process(backend, jq, monkeypatch):
+    """An executor always holds a rollout, so crash isolation alone never let it take
+    an abandoned one; after the wait cap it may (still isolated)."""
+    import os
+    import socket
+
+    import shared.storage.sql as sql
+
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT, n=2)
+    me = f"{socket.gethostname()}:{os.getpid()}:"
+    dead = jq.claim("rollout", "dead-worker", lease_sec=0.01)  # its worker dies
+    mine = jq.claim("rollout", me + "0")  # this process stays busy with the other one
+    assert dead and mine
+    time.sleep(0.05)
+    jq.queue.reconcile()
+    monkeypatch.setattr(sql, "SUSPECT_MAX_WAIT_S", 3600)
+    assert jq.claim("rollout", me + "1") is None  # isolation: wait for an idle process
+    monkeypatch.setattr(sql, "SUSPECT_MAX_WAIT_S", 0)
+    got = jq.claim("rollout", me + "1")
+    assert got["id"] == dead["id"] and got["isolated"] == 1
+
+
+def test_low_memory_stops_new_docker_work_but_not_the_rest(backend, jq, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT)
+    enqueue(backend, jq, t, JobType.CREATE, input={"origin": "initial", "world_sha256": "w"})
+    enqueue(backend, jq, t, JobType.ANALYZE)
+    monkeypatch.setattr(jqmod, "free_memory_pct", lambda: 12.0)
+    monkeypatch.setattr(jqmod, "cpu_load_pct", lambda: 10.0)
+    types = ["rollout", "create", "analyze"]
+    got = jq.claim(types, "w1", docker_slots=5)
+    assert got["type"] == "analyze"  # needs no Docker
+    assert jq.claim(types, "w1", docker_slots=5) is None  # rollout and agent create wait for memory
+    monkeypatch.setattr(jqmod, "free_memory_pct", lambda: 60.0)
+    assert {jq.claim(types, "w1", docker_slots=5)["type"] for _ in range(2)} == {"rollout", "create"}
+
+
 def test_expired_lease_is_taken_over_and_old_owner_is_fenced(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
@@ -251,6 +312,78 @@ def test_a_column_added_by_another_process_does_not_break_old_connections(env, b
         c.execute("ALTER TABLE jobs ADD COLUMN added_by_newer_release TEXT")
     rows = backend.store.task_jobs(t)  # the old connection still works
     assert "added_by_newer_release" in rows[0]
+
+
+def test_many_threads_never_exceed_the_connection_pool(env, monkeypatch):
+    """Worker loops, heartbeats and settles in one process share a bounded pool: 16
+    threads working 64 jobs hold at most POOL_MAX connections (RDS ran out before)."""
+    if "DATABASE_URL" not in env:
+        return
+    import psycopg
+
+    import shared.storage.sql as sql
+
+    monkeypatch.setattr(sql, "POOL_MAX", 3)  # a fresh pool: each test has its own database
+    backend = from_env(env)
+    t = add_task(backend)
+    jq = JobQueue(backend)
+    ids = enqueue(backend, jq, t, n=64)
+    db = env["DATABASE_URL"].rsplit("/", 1)[1]
+    peak, hb_peak, stop = [0], [0], threading.Event()
+
+    def watch() -> None:
+        q = "SELECT count(*) FROM pg_stat_activity WHERE datname = %s AND application_name = %s"
+        with psycopg.connect(env["DATABASE_URL"], autocommit=True) as c:
+            while not stop.wait(0.01):
+                peak[0] = max(peak[0], c.execute(q, (db, "sde-pipeline")).fetchone()[0])
+                hb_peak[0] = max(hb_peak[0], c.execute(q, (db, "sde-pipeline-heartbeat")).fetchone()[0])
+
+    def work(n: int) -> None:
+        while (j := jq.claim("create", f"w{n}")) is not None:
+            assert jq.heartbeat(j["id"], j["lease_token"])
+            assert jq.settle(j["id"], j["lease_token"], {"outcome": "OK"})
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(16)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    stop.set()
+    watcher.join()
+    assert all(backend.store.job(i)["status"] == "DONE" for i in ids)
+    assert 1 <= peak[0] <= 3 and hb_peak[0] <= 1  # the main pool, plus one heartbeat connection
+
+
+def test_heartbeats_go_through_while_the_main_pool_is_exhausted(env, monkeypatch):
+    """Every main-pool connection is busy (long transactions): a heartbeat still lands."""
+    if "DATABASE_URL" not in env:
+        return
+    import shared.storage.sql as sql
+
+    monkeypatch.setattr(sql, "POOL_MAX", 1)
+    monkeypatch.setattr(sql, "POOL_TIMEOUT_S", 0.5)
+    backend = from_env(env)
+    t = add_task(backend)
+    jq = JobQueue(backend)
+    enqueue(backend, jq, t)
+    job = jq.claim("create", "w1")
+    hold, held = threading.Event(), threading.Event()
+
+    def busy() -> None:
+        with backend.store.tx():
+            held.set()
+            hold.wait(5)
+
+    th = threading.Thread(target=busy)
+    th.start()
+    held.wait(5)
+    try:
+        assert jq.heartbeat(job["id"], job["lease_token"])  # the heartbeat pool, not the busy one
+    finally:
+        hold.set()
+        th.join()
 
 
 def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):

@@ -14,6 +14,8 @@ Readers (`sde status`) never take the lock.
 """
 
 import json
+import logging
+import os
 import re
 import sqlite3
 import threading
@@ -24,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from shared.storage.budget import claim_filter as claim_budget_filter
 from shared.contracts.models import (
     AGENT_JOB_TYPES,
     DOCKER_JOB_TYPES,
@@ -83,6 +86,12 @@ SCHEMA = [
         started_at    TEXT,
         finished_at   TEXT
     )""",
+    # A batch's own settings (POST /v1/batches); its tasks carry its id in tasks.batch_id.
+    """CREATE TABLE IF NOT EXISTS batches (
+        id          TEXT PRIMARY KEY,
+        budget_usd  DOUBLE PRECISION,
+        created_at  TEXT NOT NULL
+    )""",
     "CREATE INDEX IF NOT EXISTS jobs_claim ON jobs (type, status, priority, due_at)",
     "CREATE INDEX IF NOT EXISTS jobs_task ON jobs (task_id, version)",
     # At most one scored rollout per (version, slot): a retried or concurrently
@@ -133,25 +142,103 @@ class _SqliteConn:
         self._c.execute("COMMIT")
 
 
-class _PostgresConn:
-    def __init__(self, url: str):
-        import psycopg
-        from psycopg.rows import dict_row
+def _pg_sql(sql: str) -> str:
+    # psycopg's placeholder is %s, so a literal % (LIKE 'x%') must become %%.
+    return sql.replace("%", "%%").replace("?", "%s")
 
-        # prepare_threshold=None: no server-side prepared statements. A prepared
-        # `SELECT * FROM jobs` breaks ("cached plan must not change result type")
-        # once another process adds a column, e.g. during a rolling deploy.
-        self._c = psycopg.connect(url, autocommit=True, row_factory=dict_row, prepare_threshold=None)
+
+class _Result:
+    """A statement's result, read in full before its pooled connection goes back."""
+
+    def __init__(self, cur: Any):
+        self.rowcount = cur.rowcount
+        self.description = cur.description
+        self._rows = cur.fetchall() if cur.description else []
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+
+class _PostgresTx:
+    """One pooled connection, held for one transaction."""
+
+    def __init__(self, c: Any):
+        self._c = c
 
     def execute(self, sql: str, params: tuple | list = ()) -> Any:
-        # psycopg's placeholder is %s, so a literal % (LIKE 'x%') must become %%.
-        return self._c.execute(sql.replace("%", "%%").replace("?", "%s"), params)
+        return self._c.execute(_pg_sql(sql), params)
+
+
+# One bounded pool per process and database: every thread (worker loops, heartbeats,
+# the reconciler, API requests) borrows a connection for one statement or one
+# transaction, so a process never holds more than SDE_DB_POOL_MAX connections. With
+# a connection per thread, a few busy runners exhausted a small RDS instance.
+_POOLS: dict[str, Any] = {}
+_POOLS_LOCK = threading.Lock()
+POOL_MAX = int(os.environ.get("SDE_DB_POOL_MAX", "4"))
+POOL_TIMEOUT_S = float(os.environ.get("SDE_DB_POOL_TIMEOUT_S", "60"))
+
+
+POOL_WARN_S = float(os.environ.get("SDE_DB_POOL_WARN_S", "2"))
+# How long a suspect (expired lease) waits for an idle process before any may take it.
+SUSPECT_MAX_WAIT_S = float(os.environ.get("SDE_SUSPECT_MAX_WAIT_S", "600"))
+log = logging.getLogger("store")
+
+
+def _pool(url: str, role: str = "main") -> Any:
+    """The process's pool for `role`: "main" (POOL_MAX connections) for everything, and
+    "heartbeat" (1 connection) for lease heartbeats only, so a pool busy with long
+    transactions can never make a lease lapse under a running job."""
+    with _POOLS_LOCK:
+        pool = _POOLS.get((url, role))
+        if pool is None:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+
+            # prepare_threshold=None: no server-side prepared statements. A prepared
+            # `SELECT * FROM jobs` breaks ("cached plan must not change result type")
+            # once another process adds a column, e.g. during a rolling deploy.
+            pool = ConnectionPool(
+                url, min_size=1, max_size=POOL_MAX if role == "main" else 1, timeout=POOL_TIMEOUT_S,
+                open=True, name=f"sde-{os.getpid()}-{role}",
+                kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": None,
+                        "application_name": "sde-pipeline" if role == "main" else f"sde-pipeline-{role}"},
+            )
+            _POOLS[(url, role)] = pool
+        return pool
+
+
+@contextmanager
+def _borrow(pool: Any) -> Iterator[Any]:
+    """A pooled connection; a long wait for one is logged (pool contention)."""
+    start = time.monotonic()
+    with pool.connection() as c:
+        waited = time.monotonic() - start
+        if waited >= POOL_WARN_S:
+            stats = pool.get_stats()
+            log.warning("waited %.1fs for a database connection (pool %s: size %s, waiting %s)",
+                        waited, pool.name, stats.get("pool_size"), stats.get("requests_waiting"))
+        yield c
+
+
+class _PostgresConn:
+    """The Postgres side of the store, over one of the process's connection pools."""
+
+    def __init__(self, url: str, role: str = "main"):
+        self._pool = _pool(url, role)
+
+    def execute(self, sql: str, params: tuple | list = ()) -> Any:
+        with _borrow(self._pool) as c:
+            return _Result(c.execute(_pg_sql(sql), params))
 
     @contextmanager
-    def tx(self) -> Iterator["_PostgresConn"]:
-        with self._c.transaction():
-            self._c.execute("SELECT pg_advisory_xact_lock(%s)", (_PG_LOCK_KEY,))
-            yield self
+    def tx(self) -> Iterator[_PostgresTx]:
+        with _borrow(self._pool) as c, c.transaction():
+            c.execute("SELECT pg_advisory_xact_lock(%s)", (_PG_LOCK_KEY,))
+            yield _PostgresTx(c)
 
 
 # --- row helpers (run inside the caller's transaction) ----------------------
@@ -275,21 +362,29 @@ def claim(
     if agent_slots is not None:
         filters += f" AND (needs_docker = 0 OR type NOT IN ({a_marks}) OR ({held} AND type IN ({a_marks})) < ?)"
         extra += [*map(str, AGENT_JOB_TYPES), now, *host_args, *map(str, AGENT_JOB_TYPES), agent_slots]
+    budget, budget_params = claim_budget_filter("j")  # SDE_BUDGET_USD and the batch's cap
+    filters += budget
+    extra += budget_params
     if only_id:
         filters += " AND id = ?"
         extra.append(only_id)
     if process:
+        # A suspect (an expired lease) goes to a process holding no other lease, so a
+        # crash during its run is charged to it alone. But a busy process (an executor
+        # always holds a rollout) never qualifies, so after SUSPECT_MAX_WAIT_S any
+        # process may take it: still isolated, and MAX_JOB_ATTEMPTS still dead-letters
+        # a real poison job. Without this an abandoned job waited for hours.
         mine = "SELECT 1 FROM jobs WHERE status = 'LEASED' AND lease_until >= ? AND substr(lease_owner, 1, ?) = ?"
         filters += f""" AND NOT EXISTS ({mine} AND isolated = 1)
-                   AND (status = 'READY' OR NOT EXISTS ({mine}))"""
-        extra += [now, len(process), process, now, len(process), process]
+                   AND (j.status = 'READY' OR NOT EXISTS ({mine}) OR j.lease_until < ?)"""
+        extra += [now, len(process), process, now, len(process), process, now - SUSPECT_MAX_WAIT_S]
     row = conn.execute(
         f"""UPDATE jobs SET lease_owner = ?, lease_until = ?,
                    lease_token = lease_token + 1, attempts = attempts + 1,
                    isolated = CASE WHEN status = 'LEASED' THEN 1 ELSE 0 END,
                    status = 'LEASED', started_at = COALESCE(started_at, ?)
              WHERE id = (
-                SELECT id FROM jobs
+                SELECT j.id FROM jobs j
                  WHERE type IN ({t_marks}) AND due_at <= ?
                    AND (status = 'READY' OR (status = 'LEASED' AND lease_until < ?))
                    AND attempts < ?
@@ -423,6 +518,17 @@ class SqlStore:
 
     def tx(self):
         return self.conn.tx()
+
+    @property
+    def heartbeat_conn(self) -> _SqliteConn | _PostgresConn:
+        """Postgres: a dedicated 1-connection pool (created on first use, so only
+        processes that heartbeat hold it). SQLite: the thread's own connection."""
+        if self.url.startswith(("postgresql://", "postgres://")):
+            conn = getattr(self._local, "hb", None)
+            if conn is None:
+                conn = self._local.hb = _PostgresConn(self.url, "heartbeat")
+            return conn
+        return self.conn
 
     # --- reads -----------------------------------------------------------------
 
