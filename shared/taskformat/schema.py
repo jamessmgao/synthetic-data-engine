@@ -48,7 +48,7 @@ MAX_TOTAL_BYTES = 2_000_000
 # Paths the pipeline writes itself; a draft that supplies them is rejected.
 RESERVED_ENV_PATHS = {"Dockerfile"}
 RESERVED_TEST_PATHS = {"test.sh", "test_outputs.py"}
-RESERVED_SOLUTION_PATHS = {"solve.sh"}
+RESERVED_SOLUTION_PATHS = {"solve.sh", "wrong_fix.sh"}
 
 # Strings that would leak grading mechanics into the agent-facing instruction.
 INSTRUCTION_LEAKS = ("/tests", "test_outputs", "/solution", "solve.sh", "test.sh")
@@ -136,6 +136,13 @@ class TaskDraft(_Strict):
     solution_files: list[FileEntry] = Field(
         description="Extra files the solution uses (e.g. patches), paths relative to solution/. "
         "Available at /solution/<path> while solve.sh runs."
+    )
+    wrong_fix_script: str = Field(
+        default="",
+        description="Body of solution/wrong_fix.sh, without a shebang: the plausible but WRONG fix a capable "
+        "engineer would likely make (it fixes the visible symptom but breaks a stated requirement). The tests "
+        "must reject it; the pipeline runs it like the reference solution and requires a failing verdict. "
+        "Empty string if the task has none.",
     )
     test_outputs: str = Field(description="tests/test_outputs.py: pytest tests over the final container state.")
     test_support_files: list[FileEntry] = Field(
@@ -297,10 +304,14 @@ def _check_python_syntax(d: TaskDraft) -> list[str]:
 
 def _check_shell_syntax(d: TaskDraft) -> list[str]:
     scripts = [("solution/solve.sh", d.solution_script)]
+    if d.wrong_fix_script.strip():
+        scripts.append(("solution/wrong_fix.sh", d.wrong_fix_script))
     for prefix, group in (("environment", d.environment_files), ("solution", d.solution_files),
                           ("tests", d.test_support_files)):
         scripts += [(f"{prefix}/{f.path}", f.content) for f in group if f.path.endswith(".sh")]
     errors = []
+    if d.wrong_fix_script.strip() and d.wrong_fix_script.strip() == d.solution_script.strip():
+        errors.append("wrong_fix_script is identical to solution_script; it must be a plausible WRONG fix")
     for path, source in scripts:
         result = subprocess.run(["bash", "-n"], input=source, capture_output=True, text=True)
         if result.returncode != 0:

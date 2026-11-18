@@ -1,0 +1,3 @@
+#!/bin/sh
+# sde-task check <draft.json> | run <draft.json|bundle> --as oracle|nop|wrong (JSON out).
+exec python3 /opt/sde/authoring/sde_task.py "$@"

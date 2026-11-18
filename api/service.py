@@ -35,6 +35,11 @@ class NotFound(Exception):
     pass
 
 
+# Evaluation spend: the runs and the Trace Parser's reviews. Everything else (world,
+# world_check, create/revise, the gates) is authoring.
+_EVALUATED = (JobType.ROLLOUT, JobType.ANALYZE)
+
+
 def _jobs_by_task(store: SqlStore, tasks: list[dict]) -> dict[str, list[dict]]:
     """The tasks' jobs, grouped by task id, in creation order."""
     jobs_by_task: dict[str, list[dict]] = defaultdict(list)
@@ -116,12 +121,31 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
         "origin": first_input.get("origin"),
         "operator": first_input.get("operator"),
         "state": state,
+        "world": _world_view(vjobs),
         "bundle_sha256": built[-1]["bundle_sha256"] if built else None,
         "repairs": sum((j["input"] or {}).get("origin") == "repair" for j in generates),
         "gates": (validates[-1]["result"] or {}).get("gates") if validates else None,
         "pass_count": pass_count if len(scored) == n_runs else None,
         "pass_pattern": pass_pattern(jobs, version, n_runs),
         "cost_usd": _sum_cost(vjobs),
+    }
+
+
+def _world_view(vjobs: list[dict]) -> dict | None:
+    """The version's world (agent mode, plan §3.3): the world job's sha and lineage, or
+    the world a create/revise job reports it was built on. None in one-shot mode."""
+    worlds = [j for j in vjobs if j["type"] == JobType.WORLD]
+    built_on = [j for j in vjobs if j["type"] in GENERATION_TYPES and (j["result"] or {}).get("world_sha256")]
+    if not worlds and not built_on:
+        return None
+    done = [j for j in worlds if j["outcome"] == Outcome.OK]
+    result = (done[-1]["result"] if done else None) or {}
+    sha = result.get("world_sha256") or ((built_on[-1]["result"] or {}).get("world_sha256") if built_on else None)
+    return {
+        "world_sha256": sha,
+        "lineage": result.get("lineage"),
+        "status": worlds[-1]["status"] if worlds else None,
+        "outcome": worlds[-1]["outcome"] if worlds else None,
     }
 
 
@@ -185,9 +209,8 @@ def _summary(store: SqlStore, tasks: list[dict]) -> dict:
 
     rollouts = [j for j in all_jobs if j["type"] == JobType.ROLLOUT]
     # Authoring: drafting and the gates. Evaluation: the runs and the Trace Parser's reviews.
-    evaluated = (JobType.ROLLOUT, JobType.ANALYZE)
-    authoring = _sum_cost(j for j in all_jobs if j["type"] not in evaluated)
-    evaluation = _sum_cost(j for j in all_jobs if j["type"] in evaluated)
+    authoring = _sum_cost(j for j in all_jobs if j["type"] not in _EVALUATED)
+    evaluation = _sum_cost(j for j in all_jobs if j["type"] in _EVALUATED)
     total = None if authoring is None and evaluation is None else round((authoring or 0) + (evaluation or 0), 6)
     accepted = [t for t in tasks if t["status"] == TaskStatus.ACCEPTED]
 
@@ -217,15 +240,54 @@ def _summary(store: SqlStore, tasks: list[dict]) -> dict:
         "valid_rollouts": sum(j["outcome"] in SCORED_OUTCOMES for j in rollouts),
         "invalid_rollouts": sum(j["outcome"] == Outcome.INVALID or j["status"] == JobStatus.DEAD for j in rollouts),
         "cost_usd": {
+            # Authoring: world, world_check, create/revise and the gates (agent mode's
+            # authoring trials dominate spend). Evaluation: the runs and their reviews.
             "authoring": authoring,
             "evaluation": evaluation,
             "total": total,
+            "authoring_per_task": round(authoring / len(tasks), 6) if authoring is not None else None,
+            "evaluation_per_task": round(evaluation / len(tasks), 6) if evaluation is not None else None,
             "per_accepted": round(total / len(accepted), 6) if accepted and total is not None else None,
         },
         "wall_clock_s": wall_clock,
         "config_hash": hashes[0] if len(hashes) == 1 else (hashes or None),
+        "by_family": _breakdown(tasks, jobs_by_task, "family"),
+        "by_mechanism": _breakdown(tasks, jobs_by_task, "mechanism"),
     }
     return {**summary, "yield": _yield(summary)}
+
+
+def _breakdown(tasks: list[dict], jobs_by_task: dict[str, list[dict]], key: str) -> dict[str, dict]:
+    """Counts and pass rates per value of a spec v2 field (family or mechanism). Tasks
+    without one (v1 specs, raw prompts) are left out. `pass_rate` is passes over valid
+    rollouts across every version; `learnable_rate` is accepted over finished tasks."""
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for t in tasks:
+        value = (t.get("slot") or {}).get(key)
+        if value:
+            groups[value].append(t)
+    out = {}
+    for value, group in sorted(groups.items()):
+        rollouts = [j for t in group for j in jobs_by_task[t["id"]]
+                    if j["type"] == JobType.ROLLOUT and j["outcome"] in SCORED_OUTCOMES]
+        passes = sum(j["outcome"] == Outcome.VALID_PASS for j in rollouts)
+        finished = [t for t in group if t["status"] in (TaskStatus.ACCEPTED, TaskStatus.REJECTED)]
+        accepted = sum(t["status"] == TaskStatus.ACCEPTED for t in group)
+        group_jobs = [j for t in group for j in jobs_by_task[t["id"]]]
+        authoring = _sum_cost(j for j in group_jobs if j["type"] not in _EVALUATED)
+        evaluation = _sum_cost(j for j in group_jobs if j["type"] in _EVALUATED)
+        out[value] = {
+            "candidates": len(group),
+            "finished": len(finished),
+            "accepted": accepted,
+            "rejected": len(finished) - accepted,
+            "learnable_rate": round(accepted / len(finished), 4) if finished else None,
+            "valid_rollouts": len(rollouts),
+            "pass_rate": round(passes / len(rollouts), 4) if rollouts else None,
+            "cost_usd": {"authoring": authoring, "evaluation": evaluation,
+                         "authoring_per_task": round(authoring / len(group), 6) if authoring is not None else None},
+        }
+    return out
 
 
 def _yield(summary: dict) -> dict:

@@ -153,7 +153,7 @@ class TraceParserService:
         mutation, history = None, _mutation_history(jobs)
         if action == "revise":
             chosen = (calibration.choose_mutations(passes, enriched, analysis, history) if not blamed_task
-                      else {"operators": [], "why": [], "target_fix": None})
+                      else {"operators": [], "why": [], "rules": [], "target_fix": None})
             mutation = {"version": n + 1, "from_version": n, "pass_count": passes, "direction": direction,
                         **chosen}
         summary = (f"{passes}/{self.n_runs} passed" + (f"; task blamed by {blamed_task}" if blamed_task else "")

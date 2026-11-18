@@ -182,6 +182,10 @@ def render_files(draft: TaskDraft, generation_meta: dict) -> dict[str, str]:
         "README.md": _readme(draft),
         "environment/Dockerfile": _render_dockerfile(draft),
         "solution/solve.sh": _with_newline(_stamp_shell(draft.solution_script)),
+        # The plausible wrong fix, for the wrong_fix gate. Lives in solution/, so
+        # it is never in the agent's image (Harbor uploads solution/ only to the oracle).
+        **({"solution/wrong_fix.sh": _with_newline(_stamp_shell(draft.wrong_fix_script))}
+           if draft.wrong_fix_script.strip() else {}),
         "tests/test.sh": TEST_SH,
         "tests/test_outputs.py": _with_newline(_stamp_python(draft.test_outputs)),
     }

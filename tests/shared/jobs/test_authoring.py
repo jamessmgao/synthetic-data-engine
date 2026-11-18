@@ -246,6 +246,50 @@ def test_worlds_drafts_and_trials_follow_the_job_across_machines(tmp_path, backe
     assert authoring[-1]["trial_adopted"] is True
 
 
+def test_agent_mode_picks_the_draft_function_per_job(backend, authoring, monkeypatch):
+    """Raw prompts, v1 specs and tasks in flight when the mode switched have no world:
+    they run one-shot even in agent mode; only jobs from a world run the authoring trial."""
+    oneshot = []
+
+    def run_generate_job(job_id, job_input, work_dir=None):
+        oneshot.append(job_id)
+        return {"outcome": "FAILED", "error": "no draft", "cost_usd": 0.01, "result": {}}
+
+    monkeypatch.setitem(sys.modules, "worker", types.SimpleNamespace(run_generate_job=run_generate_job))
+    t = add_task(backend)
+    draft = worker.draft_fn(backend, "agent")
+    fields = draft({"id": f"{t}-v1-create", "bundle_sha256": None, "input": {"origin": "initial", "prompt": "x"}})
+    assert oneshot == [f"{t}-v1-create"] and "trace_uri" not in fields and not authoring
+    revised = draft({"id": f"{t}-v2-revise", "bundle_sha256": None,
+                     "input": {"origin": "revision", "operator": "increase_diagnosis_depth"}})
+    assert oneshot[-1] == f"{t}-v2-revise" and revised["outcome"] == "FAILED"
+
+    world = worker.world_fn(backend)({"id": f"{t}-w", "input": {"spec": {}}})["result"]["world_sha256"]
+    fields = draft({"id": f"{t}-v3-create", "bundle_sha256": None,
+                    "input": {"origin": "initial", "world_sha256": world}})
+    assert authoring[-1]["fn"] == "create" and fields["result"]["world_sha256"] == world
+    assert len(oneshot) == 2  # the world job did not go one-shot
+
+
+def test_a_world_task_keeps_its_world_through_validate_and_repair(backend):
+    """The repair of a task written from a world must also run from that world."""
+    from shared.jobs import handoffs
+
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'GENERATING' WHERE id = ?", (t,))
+        [validate] = handoffs.after_generation(backend)(c, {
+            "id": f"{t}-v1-create", "task_id": t, "version": 1, "outcome": "OK", "bundle_sha256": "b1",
+            "input": {"origin": "initial", "world_sha256": "w1"}, "result": {"world_sha256": "w1"}})
+    assert validate["input"]["world_sha256"] == "w1"
+    with backend.store.tx() as c:
+        [repair] = handoffs.after_validate(backend)(c, {
+            "id": validate["id"], "task_id": t, "version": 1, "outcome": "FAILED", "bundle_sha256": "b1",
+            "input": validate["input"], "result": {"feedback": "the tests accept the plausible wrong fix"},
+            "error": None})
+    assert repair["input"]["origin"] == "repair" and repair["input"]["world_sha256"] == "w1"
+
+
 def test_oneshot_create_is_unchanged(backend, monkeypatch):
     calls = []
 

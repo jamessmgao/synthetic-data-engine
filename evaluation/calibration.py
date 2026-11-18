@@ -95,75 +95,131 @@ def evidence(rollouts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# World mutation operators (docs/AGENTIC_AUTHORING_PLAN.md §3.5, WORLD_CONSTRUCTION.md §8).
+
+# World mutation operators (docs/AGENTIC_AUTHORING_PLAN.md §3.6, WORLD_CONSTRUCTION.md §8),
+# plus remove_cues: rewrite the instruction or code sentences that point at the fix, at the
+# interface level, with the world unchanged.
 MUTATION_OPERATORS = [
     "add_concurrent_execution", "inject_partial_failure", "introduce_global_invariant",
     "generate_counterexample", "tighten_resource_bound", "add_persistent_state",
     "extend_cross_component_dependency", "add_semantic_edge_case", "add_realistic_distractor",
-    "compose_failure_modes", "expand_state_space", "introduce_temporal_constraint",
+    "compose_failure_modes", "expand_state_space", "introduce_temporal_constraint", "remove_cues",
 ]
 MAX_MUTATIONS = 2
 
-# What the passing agents' fix or strategy looked like → the mutation that defeats it.
-# Matched against the pass review's fix_applied/simple_strategy and the passing runs'
-# commands, in this order.
-_FIX_RULES: list[tuple[tuple[str, ...], str, str]] = [
-    (("process-local", "in-memory", "in memory", "set()", "seen set", "module-level", "global variable",
-      "class attribute", "dict of processed"),
-     "add_persistent_state", "the passing fix kept state in one process; a restart must defeat it"),
-    (("greedy", "first-fit", "first fit", "sort by", "sorted(", "heuristic", "locally"),
-     "generate_counterexample", "a locally reasonable strategy passed; add an input where it is globally wrong"),
-    (("lock", "mutex", "synchronized", "serializ", "single thread", "sequential"),
-     "inject_partial_failure",
-     "serializing the work passed; a crash or timeout inside the critical section must break it"),
-    (("retry", "sleep", "timeout", "backoff"),
-     "introduce_temporal_constraint", "the fix leaned on timing; the order of operations must matter"),
-    (("special-case", "special case", "hardcod", "edge case"),
-     "add_semantic_edge_case", "a special case passed; the rule must hold across cases it doesn't name"),
+# How the passing agents won → the mutations that defeat it (docs/ANALYSIS.md §5). Each
+# rule: (name, phrases in the pass review's fix_applied / simple_strategy, code patterns
+# in the passing runs' commands, operators, why). Commands are matched only on specific
+# code patterns: plain words like "set" or "lock" appear in ordinary commands.
+_FIX_RULES: list[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], str]] = [
+    ("process_local_guard",
+     ("process-local", "in-memory", "in memory", "seen set", "set of", "dict of", "flag", "module-level",
+      "global variable", "class attribute", "cache"),
+     ("= set()", "= {}  #", "processed = set", "seen = set", "_seen", "global "),
+     ("add_persistent_state", "inject_partial_failure"),
+     "the passing fix kept a guard in one process; a restart or crash must defeat it"),
+    ("local_reorder_or_serialize",
+     ("reorder", "serializ", "lock", "mutex", "single thread", "sequential", "moved the", "swap"),
+     ("threading.Lock(", "asyncio.Lock(", "sync.Mutex", "synchronized(", "with lock"),
+     ("add_concurrent_execution", "compose_failure_modes"),
+     "a local reorder or lock passed; concurrent paths or a second failure must defeat it"),
+    ("self_checking_agent",
+     ("fuzz", "differential", "property", "brute force", "brute-force", "random test", "own test",
+      "exhaustive"),
+     ("import hypothesis", "random.randint", "random.choice", "itertools.permutations", "for seed in"),
+     ("introduce_global_invariant", "generate_counterexample"),
+     "the agents tested their own fix and self-corrected; add a requirement their self-check can't see"),
+    ("locally_plausible_strategy",
+     ("greedy", "first-fit", "first fit", "heuristic", "locally", "sort by"),
+     ("sorted(", ".sort("),
+     ("generate_counterexample",),
+     "a locally reasonable strategy passed; add an input where it is globally wrong"),
+    ("timing_dependent",
+     ("retry", "sleep", "timeout", "backoff"),
+     ("time.sleep(",),
+     ("introduce_temporal_constraint",),
+     "the fix leaned on timing; the order of operations must matter"),
+    ("special_case",
+     ("special-case", "special case", "hardcod", "edge case"),
+     (),
+     ("add_semantic_edge_case",),
+     "a special case passed; the rule must hold across cases it doesn't name"),
 ]
+
+# The pass review's suggestions[].technique (prompting.HARDENING_TECHNIQUES) → operator;
+# used only after the rules, to break ties.
+TECHNIQUE_OPERATORS = {
+    "interacting_requirements": "introduce_global_invariant",
+    "counterfactual_failure": "generate_counterexample",
+    "state_and_history": "add_persistent_state",
+    "partial_observability": "add_realistic_distractor",
+    "nonlocal_cause": "extend_cross_component_dependency",
+    "adversarial_edge_cases": "add_semantic_edge_case",
+    "locally_correct_globally_wrong": "generate_counterexample",
+    "dependent_subproblems": "compose_failure_modes",
+    "preserve_guarantees": "extend_cross_component_dependency",
+    "genuine_tradeoff": "tighten_resource_bound",
+}
 
 
 def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | None,
                      history: list[dict]) -> dict[str, Any]:
     """Which world mutations the next version applies, from the evidence (fixed rules, no model).
 
-    Returns {"operators": [...], "why": [...], "target_fix": str | None}. Too easy: up to
-    MAX_MUTATIONS operators aimed at the strategy the passing agents used, and target_fix is
-    that strategy. Otherwise no operators (the revision eases or repairs the world) and
-    target_fix is the fix that failed. Operators already in `history` come last, so
-    successive versions try something new."""
+    Returns {"operators", "why", "rules", "target_fix"}: `rules` says, per operator, which
+    rule fired on what evidence, so we can measure which rules move the pass rate. Too easy:
+    up to MAX_MUTATIONS operators aimed at the strategy that passed; cues in the pass review
+    mean the instruction leaks, so remove_cues comes first. Otherwise no operators (the
+    revision eases or repairs the task) and target_fix is the fix that failed. Operators
+    already in `history` come last, so successive versions try something new; the defaults
+    favor hidden dependents and global invariants over size."""
     if not too_easy(pass_count):
         failed = [(r.get("failure") or {}).get("explanation") for r in sorted(rollouts, key=lambda r: r["slot"])
                   if r["outcome"] != Outcome.VALID_PASS]
-        return {"operators": [], "why": [], "target_fix": next((f for f in failed if f), None)}
+        return {"operators": [], "why": [], "rules": [], "target_fix": next((f for f in failed if f), None)}
 
     analysis = analysis if (analysis or {}).get("trusted") else {}
     passing = [r for r in rollouts if r["outcome"] == Outcome.VALID_PASS]
-    commands = " ".join(c.get("input", "") for r in passing
-                        for c in (r.get("trace_metrics") or {}).get("tool_calls") or [])
-    text = " ".join(filter(None, [analysis.get("fix_applied"), analysis.get("simple_strategy"),
-                                  commands])).lower()
+    commands = "\n".join(c.get("input", "") for r in passing
+                         for c in (r.get("trace_metrics") or {}).get("tool_calls") or [])
+    said = " ".join(filter(None, [analysis.get("fix_applied"), analysis.get("simple_strategy")])).lower()
 
-    hits = [(op, why) for needles, op, why in _FIX_RULES if any(n in text for n in needles)]
+    hits: list[dict[str, str]] = []  # {operator, why, rule, evidence}
+
+    def hit(operators, why, rule, evidence):
+        hits.extend({"operator": op, "why": why, "rule": rule, "evidence": evidence} for op in operators)
+
+    if analysis.get("cues"):
+        quotes = "; ".join(f'"{c.get("quote")}"' for c in analysis["cues"][:3])
+        hit(("remove_cues",), "the instruction points at the fix; rewrite those sentences at the interface level",
+            "cues_found", f"pass review cues: {quotes}")
+    for rule, phrases, patterns, operators, why in _FIX_RULES:
+        phrase = next((p for p in phrases if p in said), None)
+        pattern = next((p for p in patterns if p in commands), None)
+        if phrase or pattern:
+            hit(operators, why, rule, f'pass review said "{phrase}"' if phrase else f"command contained `{pattern}`")
     touched = [len(f) for r in passing if (f := (r.get("trace_metrics") or {}).get("files_modified")) is not None]
     if touched and median(touched) <= 1:
-        hits.append(("extend_cross_component_dependency",
-                     "the passing runs edited one file; the fix must span modules"))
-    if analysis.get("cues"):
-        hits.append(("add_realistic_distractor",
-                     "the instruction's wording pointed at the fix; add a plausible wrong lead"))
+        hit(("extend_cross_component_dependency",), "the passing runs edited one file; the fix must span modules",
+            "one_file_patch", f"median files edited {median(touched):g}")
     steps = [s for r in passing if (s := (r.get("trace_metrics") or {}).get("llm_calls"))]
-    if steps and median(steps) <= 8:
-        hits.append(("compose_failure_modes", f"passing runs took a median of {median(steps):.0f} steps; "
-                                              "a second independent failure must be found too"))
-    hits += [("introduce_global_invariant", "make independently valid actions interact"),
-             ("expand_state_space", "add entities or inputs that change the behavior")]
+    if steps and median(steps) <= 8 and not analysis.get("cues"):
+        hit(("add_realistic_distractor",), "the agents went straight to the right place; add a plausible wrong lead",
+            "straight_to_the_fix", f"median {median(steps):g} agent steps")
+    for s in analysis.get("suggestions") or []:
+        if (op := TECHNIQUE_OPERATORS.get(s.get("technique"))):
+            hit((op,), s.get("change") or f"suggested: {s['technique']}", "pass_review_suggestion",
+                f"technique {s['technique']}")
+    hit(("introduce_global_invariant",), "make independently valid actions interact", "default", "no specific rule")
+    hit(("generate_counterexample",), "add an input where the plausible fix is wrong", "default", "no specific rule")
 
     used = {op for m in history for op in m.get("operators") or []}
-    chosen: list[tuple[str, str]] = []
+    chosen: list[dict[str, str]] = [h for h in hits[:1] if h["operator"] == "remove_cues"]  # a leak first, always
     for fresh in (True, False):
-        for op, why in hits:
-            if len(chosen) < MAX_MUTATIONS and (op not in used) == fresh and op not in dict(chosen):
-                chosen.append((op, why))
-    return {"operators": [op for op, _ in chosen], "why": [why for _, why in chosen],
+        for h in hits:
+            if (len(chosen) < MAX_MUTATIONS and (h["operator"] not in used) == fresh
+                    and h["operator"] not in {c["operator"] for c in chosen}):
+                chosen.append(h)
+    return {"operators": [h["operator"] for h in chosen], "why": [h["why"] for h in chosen],
+            "rules": [{"operator": h["operator"], "rule": h["rule"], "evidence": h["evidence"]} for h in chosen],
             "target_fix": analysis.get("fix_applied") or analysis.get("simple_strategy")}

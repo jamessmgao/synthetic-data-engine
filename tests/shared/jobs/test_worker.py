@@ -56,6 +56,33 @@ def test_lost_lease_drops_the_result(backend, jq):
     assert row["status"] == "LEASED" and row["lease_owner"] == "w2"
 
 
+def test_a_heartbeat_that_raises_is_retried_and_the_job_still_settles(backend, jq, monkeypatch):
+    """A transient store error in a heartbeat must not kill the heartbeat thread: the lease
+    would lapse under a running job and another worker would run it again."""
+    jid = one_job(backend, jq)
+    job = jq.claim("validate", "w1", lease_sec=0.3)
+    real, calls = jq.heartbeat, []
+
+    def flaky(*a, **kw):
+        calls.append(time.monotonic())
+        if len(calls) <= 2:
+            raise ConnectionError("server closed the connection unexpectedly")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(jq, "heartbeat", flaky)
+
+    def outlives_its_lease(j):
+        time.sleep(0.8)  # well past the 0.3s lease: only working heartbeats keep it
+        jq.queue.reconcile()
+        assert jq.claim("validate", "w2") is None  # nobody could take it
+        return {"outcome": "OK"}
+
+    assert run_one(jq, job, outlives_its_lease, lease_sec=0.3, heartbeat_sec=0.05)
+    assert len(calls) > 3
+    row = backend.store.job(jid)
+    assert row["status"] == "DONE" and row["outcome"] == "OK"
+
+
 def test_serve_respects_docker_slots_and_stops(backend, jq):
     t = add_task(backend)
     ids = [f"{t}-v1-validate-r{i}" for i in range(6)]

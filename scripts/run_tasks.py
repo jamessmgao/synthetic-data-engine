@@ -9,6 +9,11 @@ its yield block.
 
     SDE_API_KEY=... python scripts/run_tasks.py --count 10 [--url http://localhost:8000]
                                                [--prompt "..."] [--batch run-1]
+                                               [--area database_consistency [--area ...]]
+                                               [--mechanism M] [--environment E] [--dial 1-3]
+
+`--area` limits every task to one or more problem families (GET /v1/families lists
+them); without it the whole taxonomy is sampled.
 
 Rerunning the same command (same --batch and --count) after a crash or Ctrl-C
 creates nothing new and picks up where the tasks are.
@@ -47,6 +52,10 @@ def main() -> None:
     parser.add_argument("--url", default=os.environ.get("SDE_API_URL", "http://localhost:8000"))
     parser.add_argument("--prompt", default=None, help="seed every task with this idea (default: sampled specs)")
     parser.add_argument("--batch", default=f"run-{datetime.now(UTC):%Y%m%d-%H%M}", help="batch id")
+    parser.add_argument("--area", action="append", help="problem family to sample within (repeatable)")
+    parser.add_argument("--mechanism", help="only this mechanism")
+    parser.add_argument("--environment", help="only this environment")
+    parser.add_argument("--dial", type=int, choices=(1, 2, 3), help="only this difficulty dial")
     parser.add_argument("--poll", type=float, default=30.0, help="seconds between status checks")
     parser.add_argument("--timeout", type=float, default=6 * 3600)
     args = parser.parse_args()
@@ -55,6 +64,11 @@ def main() -> None:
     body = {"count": args.count, "batch_id": args.batch}
     if args.prompt:
         body["prompt"] = args.prompt
+    if args.area:
+        body["area"] = args.area[0] if len(args.area) == 1 else args.area
+    for key_ in ("mechanism", "environment", "dial"):
+        if getattr(args, key_) is not None:
+            body[key_] = getattr(args, key_)
     created = call(args.url, key, "POST", "/v1/batches", body)
     batch = created["batch_id"]
     print(f"{batch}: {len(created['task_ids'])} tasks {'created' if created['created'] else 'already exist'}",

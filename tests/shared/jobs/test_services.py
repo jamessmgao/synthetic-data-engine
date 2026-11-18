@@ -362,15 +362,20 @@ def test_too_easy_revisions_mutate_the_world_and_keep_its_history(backend, tmp_p
     build(backend, 1, "sha1")
     score(backend, parser, 1, "11111")
     v2 = backend.store.job(job_id(T, 2, "revise"))["input"]
-    assert v2["mutation_operators"] == ["add_persistent_state", "add_realistic_distractor"]
+    # Cues mean the instruction leaks: remove them first, then defeat the in-memory guard.
+    assert v2["mutation_operators"] == ["remove_cues", "add_persistent_state"]
     assert v2["target_fix"] == "a process-local set of processed job ids"
     assert [m["version"] for m in v2["mutations"]] == [2]
+    assert [r["rule"] for r in v2["mutations"][0]["rules"]] == ["cues_found", "process_local_guard"]
+    assert v2["mutations"][0]["rules"][1]["evidence"] == 'pass review said "process-local"'
 
     build(backend, 2, "sha2")
     score(backend, parser, 2, "11110")
     v3 = backend.store.job(job_id(T, 3, "revise"))["input"]
     assert [m["version"] for m in v3["mutations"]] == [2, 3]
-    assert not set(v3["mutation_operators"]) & set(v2["mutation_operators"])  # something new
+    # Still leaking: remove_cues again; the other operator is one not tried yet.
+    assert v3["mutation_operators"][0] == "remove_cues"
+    assert v3["mutation_operators"][1] not in v2["mutation_operators"]
     decision = next(j for j in backend.store.task_jobs(T) if j["type"] == "analyze" and j["version"] == 2
                     and (j["result"] or {}).get("action") == "revise")
     assert decision["result"]["mutation"]["operators"] == v3["mutation_operators"]
@@ -460,8 +465,27 @@ def test_choose_mutations_reads_the_passing_strategy():
     # Untrusted analysis is ignored; one-file, few-step passes still say what to change.
     local = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)] + [{"slot": 5, "outcome": "VALID_FAIL"}],
                              {"trusted": False, "fix_applied": "a lock"}, [])
-    assert local["operators"] == ["extend_cross_component_dependency", "compose_failure_modes"]
+    assert local["operators"] == ["extend_cross_component_dependency", "add_realistic_distractor"]
+    assert local["rules"][0] == {"operator": "extend_cross_component_dependency", "rule": "one_file_patch",
+                                 "evidence": "median files edited 1"}
     assert local["target_fix"] is None
+    # Commands match only code patterns: the word "lock" in a grep doesn't fire, a Lock() does.
+    plain = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["grep -n lock app.py"])], None, [])
+    assert "add_concurrent_execution" not in plain["operators"]
+    coded = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["cat >> app.py <<EOF\nl = threading.Lock()\nEOF"])],
+                             None, [])
+    assert coded["operators"][0] == "add_concurrent_execution"
+    assert coded["rules"][0]["evidence"] == "command contained `threading.Lock(`"
+    # Nothing specific: global invariants and counterexamples, not size; suggestions break ties.
+    assert plain["operators"] == ["introduce_global_invariant", "generate_counterexample"]
+    tip = choose_mutations(5, [run(1, ["a.py", "b.py"], 30)],
+                           {"trusted": True, "suggestions": [{"technique": "genuine_tradeoff", "change": "c"}]}, [])
+    assert tip["operators"][0] == "tighten_resource_bound" and tip["rules"][0]["rule"] == "pass_review_suggestion"
+    # Agents that fuzzed their own fix: a requirement their self-check can't see.
+    fuzz = choose_mutations(5, [run(1, ["a.py", "b.py"], 30)],
+                            {"trusted": True, "simple_strategy": "wrote a differential fuzzer and iterated"}, [])
+    assert fuzz["operators"] == ["introduce_global_invariant", "generate_counterexample"]
+    assert fuzz["rules"][0]["rule"] == "self_checking_agent"
     # Already applied operators go last; everything chosen is from the contract's list.
     again = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)], None,
                              [{"operators": ["extend_cross_component_dependency"]}])

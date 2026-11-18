@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from shared.storage import Backend, describe, from_env
 from api.submit import BatchConflict, TaskConflict, create_batch, create_task
+from shared.taxonomy.taxonomy import families_listing
 
 from . import service
 from .models import BatchCreated, BatchRequest, BatchSummary, TaskCreated, TaskRequest, TaskSummary
@@ -41,8 +42,14 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     def post_task(body: TaskRequest):
         spec = body.spec.model_dump(exclude_none=True) if body.spec else None
         task_id, created = create_task(backend, prompt=body.prompt, spec=spec, task_id=body.task_id,
-                                       raw_prompt=body.raw_prompt)
+                                       raw_prompt=body.raw_prompt, **body.filter_kwargs())
         return {"task_id": task_id, "created": created}
+
+    @v1.get("/families")
+    def list_families():
+        """The problem families a request's `area` may name, with each one's mechanisms,
+        environments, verification methods and shapes."""
+        return families_listing()
 
     @v1.get("/tasks", response_model=list[TaskSummary])
     def list_tasks(status: str | None = None, since: str | None = None):
@@ -61,7 +68,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     def post_batch(body: BatchRequest):
         spec = body.spec.model_dump(exclude_none=True) if body.spec else None
         batch_id, task_ids, created = create_batch(backend, body.count, batch_id=body.batch_id,
-                                                   prompt=body.prompt, spec=spec)
+                                                   prompt=body.prompt, spec=spec, **body.filter_kwargs())
         return {"batch_id": batch_id, "task_ids": task_ids, "created": created}
 
     @v1.get("/batches", response_model=list[BatchSummary])

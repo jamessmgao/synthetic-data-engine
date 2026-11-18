@@ -1,0 +1,3 @@
+#!/bin/sh
+# sde-world check <world_dir>: run the pipeline's world_check on a world (JSON out).
+exec python3 /opt/sde/authoring/sde_world.py "$@"

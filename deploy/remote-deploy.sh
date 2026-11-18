@@ -31,14 +31,16 @@ param_or() { param "$1" 2>/dev/null || echo "$2"; }
 # Author mode (docs/AGENTIC_AUTHORING_PLAN.md), set with `aws_ops.py author-mode`.
 author_mode=$(param_or /sde/author_mode oneshot)
 
-# The authoring image, when this release has one: built into each runner's Docker,
-# tagged by its content so a change rebuilds it and an unchanged one is reused.
+# The authoring image, when this release has one: built into each runner's Docker
+# (context = the release root: it bakes in generator/ and validator/), tagged by the
+# content of those dirs so a change rebuilds it and an unchanged one is reused.
 authoring_image=""
 if [ -f "$release/authoring/Dockerfile" ]; then
-  tag=$(cd "$release/authoring" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
+  tag=$(cd "$release" && find authoring generator validator -type f ! -path '*/__pycache__/*' -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
   authoring_image="sde-authoring:$tag"
   docker image inspect "$authoring_image" >/dev/null 2>&1 \
-    || docker build -q -t "$authoring_image" "$release/authoring" >/dev/null
+    || docker build -q -f "$release/authoring/Dockerfile" -t "$authoring_image" "$release" >/dev/null
 fi
 # Run a component only if its code is in this release.
 cmd() { if [ -e "$release/$1" ]; then echo "$2=$3"; else echo "$2="; fi; }

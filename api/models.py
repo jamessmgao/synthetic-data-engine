@@ -8,12 +8,21 @@ TASK_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
 
 
 class TaskSpec(BaseModel):
-    """An explicit spec. Unknown keys are passed through to the generator unchanged."""
+    """An explicit spec: v1 (`taxonomy` / `difficulty`) or v2 (a `family`, with any of
+    the other v2 fields; missing ones are sampled within the family). Unknown keys are
+    passed through to the generator unchanged."""
 
     model_config = {"extra": "allow"}
 
     taxonomy: dict[str, str] | None = None
     difficulty: dict | None = None
+    family: str | None = None
+    mechanism: str | None = None
+    shape: str | None = None
+    environment: str | None = None
+    verification: str | None = None
+    dial: int | None = Field(None, ge=1, le=3)
+    seed: str | None = Field(None, min_length=1, max_length=20_000)
     # Free-form authoring requirements, one per line (generator/prompting.py reads them).
     design: list[str] | None = Field(None, max_length=40)
 
@@ -24,9 +33,24 @@ class TaskSpec(BaseModel):
         return self
 
 
-class TaskRequest(BaseModel):
-    """One task: from a free-text idea, an explicit spec, a complete raw user prompt,
-    or none of them (sampled)."""
+class Filters(BaseModel):
+    """Limit sampling to an area (one problem family, or a list; GET /v1/families) and,
+    optionally, one mechanism, environment or dial. Unknown values are a 422 that lists
+    the valid ones."""
+
+    area: str | list[str] | None = None
+    mechanism: str | None = None
+    environment: str | None = None
+    dial: int | None = Field(None, ge=1, le=3)
+
+    def filter_kwargs(self) -> dict:
+        return {"area": self.area, "mechanism": self.mechanism, "environment": self.environment,
+                "dial": self.dial}
+
+
+class TaskRequest(Filters):
+    """One task: from a free-text idea (it becomes the spec's seed), an explicit spec, a
+    complete raw user prompt, or none of them (sampled, within the filters if given)."""
 
     prompt: str | None = Field(None, min_length=1, max_length=20_000)
     spec: TaskSpec | None = None
@@ -41,9 +65,14 @@ class TaskRequest(BaseModel):
         return self
 
 
-class BatchRequest(BaseModel):
-    """N tasks under one batch id. A prompt or spec applies to every task;
-    with neither, each task samples its own spec, spread across the taxonomy."""
+class BatchRequest(Filters):
+    """N tasks under one batch id. Each task samples its own spec, spread across the
+    taxonomy (or within `area` and the filters), with a prompt as every task's seed. A
+    v1 spec applies to every task as given.
+
+        {"count": 10, "area": "database_consistency"}
+        {"count": 10, "area": ["compilers_parsers", "algorithmic_constraints"]}
+        {"count": 10}                                   # the whole taxonomy"""
 
     count: int = Field(10, ge=1, le=50)
     batch_id: str | None = Field(None, pattern=TASK_ID_PATTERN)

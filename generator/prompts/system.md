@@ -72,6 +72,13 @@ rejected.
   container. Prove concurrency correctness with invariants under concurrent
   load, not with speed.
 - `test_outputs` defines at least 3 test functions.
+- `wrong_fix_script` is the plausible but wrong fix a capable engineer would
+  most likely write first: it makes the visible symptom go away but breaks a
+  stated requirement (for example a process-local dedup set where the
+  requirement survives restarts, or a local reorder that breaks a dependent
+  module). The pipeline runs it exactly like the reference solution and
+  rejects the task if the tests accept it. It must differ from
+  `solution_script`.
 - Every constraint in `spec.correctness_constraints` appears in `coverage`
   with the exact names of the test functions that verify it.
 - `instruction` never mentions tests, grading, `/tests`, `/solution`,

@@ -71,10 +71,13 @@ def after_generation(backend: Backend):
             fields["name"] = name
         if not tasks.cas(conn, tid, version=n, stages=(Stage.QUEUED, Stage.GENERATING), **fields):
             return []
+        # A task written from a world keeps it through validate, so its repairs are too.
+        world = (job["result"] or {}).get("world_sha256") or (job["input"] or {}).get("world_sha256")
         return [{
             "id": job_id(tid, n, "validate", k), "type": JobType.VALIDATE, "task_id": tid, "version": n,
             "bundle_sha256": sha,
-            "input": {"bundle_sha256": sha, "bundle_dir": str(backend.artifacts.bundle_path(sha)), "round": k},
+            "input": {"bundle_sha256": sha, "bundle_dir": str(backend.artifacts.bundle_path(sha)), "round": k,
+                      **({"world_sha256": world} if world else {})},
         }]
 
     return handoff
@@ -197,9 +200,11 @@ def after_validate(backend: Backend):
         if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.GENERATING):
             return []
         feedback = (job["result"] or {}).get("feedback") or job["error"] or "a gate failed"
+        world = (job["input"] or {}).get("world_sha256")
         return [{
             "id": job_id(tid, n, "repair", k + 1), "type": JobType.REVISE, "task_id": tid, "version": n,
-            "input": {"origin": "repair", "bundle_sha256": sha, "feedback": feedback},
+            "input": {"origin": "repair", "bundle_sha256": sha, "feedback": feedback,
+                      **({"world_sha256": world} if world else {})},
         }]
 
     return handoff

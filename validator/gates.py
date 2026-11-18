@@ -5,6 +5,8 @@ Functional gates for a task bundle: the `validate` job of PRD §6.3.
     lint        harbor lint --json; config.LINT_BLOCKING_RULES block, the rest warn
     oracle1/2   reference solution: reward 1, twice (catches flaky tests)
     nop         untouched container: reward exactly 0, with a real verdict
+    wrong_fix   the author's plausible wrong fix, run as the oracle: reward exactly 0
+    leak        a glm-5.1 review: the instruction must not reveal the hidden cause or fix
 
 Gates run cheapest first and stop at the first failure. Each failure carries
 ``feedback``: the exact evidence (failing tests and assertion messages, verifier
@@ -21,6 +23,7 @@ Usage: python gates.py <bundle_dir> <trace_dir>
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -29,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generator"))
 from shared.contracts import config  # noqa: E402
 from validator.validate import validate_task  # noqa: E402
+from shared.taskformat.world_check import run_world_check_job  # noqa: E402,F401  (the world_check job, re-exported)
 
 TAIL_CHARS = 3000
 
@@ -181,6 +185,47 @@ def gate_nop(bundle_dir: Path, trace_dir: Path) -> Gate:
     return Gate("nop", False, detail, feedback)
 
 
+def _wrong_fix_bundle(bundle_dir: Path, trace_dir: Path) -> Path:
+    """A copy of the bundle whose solve.sh is the wrong fix, under the job's trace dir."""
+    variant = trace_dir / "wrong_fix_bundle"
+    if not variant.exists():
+        tmp = trace_dir / ".wrong_fix_bundle.tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(bundle_dir, tmp)
+        wrong = tmp / "solution" / "wrong_fix.sh"
+        (tmp / "solution" / "solve.sh").write_text(wrong.read_text())
+        (tmp / "solution" / "solve.sh").chmod(0o755)
+        wrong.unlink()
+        tmp.rename(variant)
+    return variant
+
+
+def gate_wrong_fix(bundle_dir: Path, trace_dir: Path) -> Gate:
+    """The plausible wrong fix must FAIL the tests (PRD decision D3).
+
+    oracle + nop prove the tests pass the right fix and fail no fix; this proves
+    they also reject the fix a capable agent would most likely write first.
+    """
+    wrong = bundle_dir / "solution" / "wrong_fix.sh"
+    if not wrong.exists():
+        return Gate("wrong_fix", True, {"skipped": "the bundle has no solution/wrong_fix.sh"})
+    o = run_harbor_step(_wrong_fix_bundle(bundle_dir, trace_dir), "oracle", trace_dir, "wrong_fix")
+    detail = asdict(o)
+    if o.exception_type is None and o.reward == 0.0:
+        return Gate("wrong_fix", True, detail)
+    script = wrong.read_text()[-1500:]
+    if o.reward == 1.0:
+        feedback = ("The tests ACCEPT the plausible wrong fix (solution/wrong_fix.sh), so a capable agent's "
+                    "first, incomplete fix would pass. Make the tests detect what this fix breaks (a stated "
+                    "requirement it violates), stating that requirement in the instruction if it is not "
+                    "already there, while the reference solution keeps passing.\n\nThe wrong fix:\n" + script)
+    else:
+        feedback = ("The plausible wrong fix (solution/wrong_fix.sh) did not produce a clean verdict, so it "
+                    "cannot show the tests reject it. It must run to completion like solve.sh and leave the "
+                    "system in a state the tests can judge.\n" + _trial_evidence(o, True))
+    return Gate("wrong_fix", False, detail, feedback)
+
+
 # --- leak review ---------------------------------------------------------------
 # One glm-5.1 call after the functional gates: does the instruction the agent
 # reads give away the hidden root cause or the fix? In the pilots, prompt rules
@@ -314,6 +359,7 @@ def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:
         lambda: gate_oracle(bundle_dir, trace_dir, "oracle1"),
         lambda: gate_oracle(bundle_dir, trace_dir, "oracle2"),
         lambda: gate_nop(bundle_dir, trace_dir),
+        lambda: gate_wrong_fix(bundle_dir, trace_dir),
         lambda: gate_leak(bundle_dir, trace_dir),
     ]
     gates: dict[str, dict] = {}

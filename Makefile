@@ -32,8 +32,8 @@ test-infra: deps-up  ## the same tests on SQLite, Postgres and Postgres+Redis, p
 up:              ## the whole stack, workers included (oneshot authoring)
 	$(COMPOSE) --profile app up -d --build
 
-authoring-image: ## build the agent-mode authoring image into the local Docker
-	docker build -t $${SDE_AUTHORING_IMAGE:-sde-authoring:dev} authoring/
+authoring-image: ## build the agent-mode authoring image into the local Docker (context: the repo)
+	docker build -f authoring/Dockerfile -t $${SDE_AUTHORING_IMAGE:-sde-authoring:dev} .
 
 up-agent: authoring-image  ## the whole stack with SDE_AUTHOR_MODE=agent (generation on worker-runner)
 	SDE_AUTHOR_MODE=agent SDE_GENERATION_CMD="python -m shared.jobs.reconciler" \

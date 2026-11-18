@@ -214,7 +214,8 @@ def test_report_over_named_tasks(client, worked_batch):
     assert r["rejected"] == {"invalid": 1} and r["in_progress"] == 1
     assert r["pass_count_histogram"] == {"0": 0, "1": 0, "2": 1, "3": 0, "4": 0, "5": 1}
     assert (r["valid_rollouts"], r["invalid_rollouts"]) == (11, 1)
-    assert r["cost_usd"] == {"authoring": 0.5, "evaluation": 0.05, "total": 0.55, "per_accepted": 0.55}
+    assert r["cost_usd"] == {"authoring": 0.5, "evaluation": 0.05, "total": 0.55, "per_accepted": 0.55,
+                             "authoring_per_task": 0.166667, "evaluation_per_task": 0.016667}
     assert r["config_hash"] == "cfg1"
     assert r["wall_clock_s"] is not None
     # One finished candidate of two accepted; t-03 is still running.
@@ -228,7 +229,8 @@ def test_report_over_named_tasks(client, worked_batch):
 def test_fresh_report_has_nulls_not_zeros(client):
     ids = [create(client)["task_id"] for _ in range(2)]
     r = client.get("/v1/report", params={"task_id": ids}, headers=AUTH).json()
-    assert r["cost_usd"] == {"authoring": None, "evaluation": None, "total": None, "per_accepted": None}
+    assert r["cost_usd"] == {"authoring": None, "evaluation": None, "total": None, "per_accepted": None,
+                             "authoring_per_task": None, "evaluation_per_task": None}
     assert r["wall_clock_s"] is None and r["config_hash"] is None
     assert r["yield"]["learnable_rate"] is None  # nothing has finished
 

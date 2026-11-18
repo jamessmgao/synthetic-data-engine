@@ -467,6 +467,227 @@ def test_revision_job_sends_the_new_request(tmp_path, monkeypatch):
     assert meta["direction"] == "harder" and meta["operator"] == "increase_constraint_interaction"
 
 
+# --- the wrong-fix gate (TB1) ---------------------------------------------------
+
+WRONG_FIX = "cat > /app/stats.py <<'EOF'\ndef median(xs):\n    xs = sorted(xs)\n    return xs[len(xs) // 2 - 1]\nEOF\n"
+
+
+def test_old_drafts_without_a_wrong_fix_still_load_and_materialize_without_one(tmp_path):
+    draft = TaskDraft.model_validate(VALID)  # VALID predates wrong_fix_script
+    assert draft.wrong_fix_script == ""
+    task_dir = materialize(draft, tmp_path / "t")
+    assert not (task_dir / "solution" / "wrong_fix.sh").exists()
+
+
+def test_wrong_fix_is_materialized_into_solution_only(tmp_path):
+    task_dir = materialize(TaskDraft.model_validate(draft_with(wrong_fix_script=WRONG_FIX)), tmp_path / "t")
+    wrong = task_dir / "solution" / "wrong_fix.sh"
+    assert wrong.read_text().startswith("#!/bin/bash\n") and os.access(wrong, os.X_OK)
+    assert "len(xs) // 2 - 1" in wrong.read_text()
+    assert "wrong_fix" not in (task_dir / "environment" / "Dockerfile").read_text()
+
+
+def test_wrong_fix_must_differ_from_the_solution_and_parse():
+    assert "identical to solution_script" in errors_of(draft_with(wrong_fix_script=VALID["solution_script"]))
+    assert "wrong_fix.sh has a bash syntax error" in errors_of(draft_with(wrong_fix_script="if then fi\n"))
+    files = [{"path": "wrong_fix.sh", "content": "echo x\n"}]
+    assert "must not contain ['wrong_fix.sh']" in errors_of(draft_with(solution_files=files))
+
+
+def test_response_schema_requires_the_wrong_fix():
+    schema = RESPONSE_FORMAT["json_schema"]["schema"]
+    assert "wrong_fix_script" in schema["required"]
+
+
+def _outcome(reward, exc=None):
+    return gates.TrialOutcome(trial_dir=None, reward=reward, exception_type=exc, exception_message=None,
+                              tests=[], adopted=False)
+
+
+def test_wrong_fix_gate_skips_bundles_without_one(tmp_path):
+    bundle = materialize(TaskDraft.model_validate(VALID), tmp_path / "b")
+    gate = gates.gate_wrong_fix(bundle, tmp_path / "trace")
+    assert gate.passed and "no solution/wrong_fix.sh" in gate.detail["skipped"]
+
+
+def test_wrong_fix_gate_runs_the_wrong_fix_as_the_oracle(tmp_path, monkeypatch):
+    bundle = materialize(TaskDraft.model_validate(draft_with(wrong_fix_script=WRONG_FIX)), tmp_path / "b")
+    seen = {}
+
+    def fake_step(bundle_dir, agent, trace_dir, step):
+        seen.update(agent=agent, step=step, solve=(bundle_dir / "solution" / "solve.sh").read_text(),
+                    has_wrong=(bundle_dir / "solution" / "wrong_fix.sh").exists())
+        return _outcome(0.0)
+
+    monkeypatch.setattr(gates, "run_harbor_step", fake_step)
+    gate = gates.gate_wrong_fix(bundle, tmp_path / "trace")
+    assert gate.passed
+    assert seen["agent"] == "oracle" and seen["step"] == "wrong_fix" and not seen["has_wrong"]
+    assert "len(xs) // 2 - 1" in seen["solve"]
+    assert (bundle / "solution" / "solve.sh").read_text() != seen["solve"], "the real bundle is untouched"
+
+
+def test_wrong_fix_gate_fails_when_the_tests_accept_it(tmp_path, monkeypatch):
+    bundle = materialize(TaskDraft.model_validate(draft_with(wrong_fix_script=WRONG_FIX)), tmp_path / "b")
+    monkeypatch.setattr(gates, "run_harbor_step", lambda *a: _outcome(1.0))
+    gate = gates.gate_wrong_fix(bundle, tmp_path / "trace")
+    assert not gate.passed and "ACCEPT the plausible wrong fix" in gate.feedback and "len(xs)" in gate.feedback
+
+
+def test_wrong_fix_gate_fails_without_a_clean_verdict(tmp_path, monkeypatch):
+    bundle = materialize(TaskDraft.model_validate(draft_with(wrong_fix_script=WRONG_FIX)), tmp_path / "b")
+    monkeypatch.setattr(gates, "run_harbor_step", lambda *a: _outcome(None, "RewardFileNotFoundError"))
+    gate = gates.gate_wrong_fix(bundle, tmp_path / "trace")
+    assert not gate.passed and "did not produce a clean verdict" in gate.feedback
+
+
+def test_validate_job_runs_wrong_fix_after_nop_and_before_leak(tmp_path, monkeypatch):
+    order = []
+    ok = lambda name: (order.append(name), gates.Gate(name, True, {}))[1]  # noqa: E731
+    monkeypatch.setattr(gates, "gate_structural", lambda b: ok("structural"))
+    monkeypatch.setattr(gates, "gate_lint", lambda b: ok("lint"))
+    monkeypatch.setattr(gates, "gate_oracle", lambda b, t, step: ok(step))
+    monkeypatch.setattr(gates, "gate_nop", lambda b, t: ok("nop"))
+    monkeypatch.setattr(gates, "gate_wrong_fix", lambda b, t: ok("wrong_fix"))
+    monkeypatch.setattr(gates, "gate_leak", lambda b, t: ok("leak"))
+    res = gates.run_validate_job(tmp_path, tmp_path / "trace")
+    assert res["outcome"] == "OK" and order == ["structural", "lint", "oracle1", "oracle2", "nop", "wrong_fix", "leak"]
+
+
+# --- the world_check gate (TB1) --------------------------------------------------
+
+def make_world(root: Path, **over) -> Path:
+    """A tiny world: a dedup helper that keeps duplicates; repro exits 1 while it does."""
+    w = root / "w0rld"
+    files = {
+        "environment/Dockerfile": "FROM python:3.12-slim-bookworm\nWORKDIR /app\nCOPY dedup.py /app/\n",
+        "environment/dedup.py": "def dedup(xs):\n    return list(xs)\n",
+        "repro/repro.sh": "cd /app && python3 -c 'import sys, dedup; sys.exit(0 if dedup.dedup([1, 1]) == [1] else 1)'\n",
+        "world_fix/fix.sh": "printf 'def dedup(xs):\\n    return list(dict.fromkeys(xs))\\n' > /app/dedup.py\n",
+        "world.json": json.dumps({"spec": {}, "invariants": ["dedup output has no duplicates"],
+                                  "counterexample": {"sequence": ["dedup([1, 1])", "returns [1, 1]"],
+                                                     "reproduce": "repro/repro.sh"},
+                                  "plausible_wrong_fix": "drop only adjacent duplicates",
+                                  "lineage": {"parent_world_sha256": None, "mutations": []}}),
+    }
+    files.update(over)
+    for rel, content in files.items():
+        if content is None:
+            continue
+        p = w / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    return w
+
+
+class FakeDocker:
+    def __init__(self, build=0, unfixed=(1, 1), fixed=(0, 0)):
+        self.build, self.unfixed, self.fixed = build, list(unfixed), list(fixed)
+        self.calls = []
+        self.argv = []
+
+    def __call__(self, args, timeout):
+        self.calls.append(args[0])
+        self.argv.append(list(args))
+        if args[0] == "build":
+            return self.build, "" if self.build == 0 else "COPY failed: dedup.py not found"
+        if args[0] == "run":
+            queue = self.fixed if "world_fix/fix.sh &&" in args[-1] else self.unfixed
+            return queue.pop(0), "repro output"
+        return 0, ""
+
+
+def test_world_check_passes_a_real_fixable_counterexample(tmp_path, monkeypatch):
+    from shared.taskformat import world_check
+    fake = FakeDocker()
+    monkeypatch.setattr(world_check, "_docker", fake)
+    res = world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    assert res["outcome"] == "OK", res["feedback"]
+    checks = res["result"]["checks"]
+    assert checks["repro_fails"]["exit_codes"] == [1, 1] and checks["repro_passes_with_fix"]["exit_codes"] == [0, 0]
+    assert fake.calls.count("run") == 4 and fake.calls[-1] == "rmi"
+    # No host bind mounts (the check also runs through a Docker socket inside the
+    # authoring container): the scripts are baked into a derived check image.
+    runs = [a for a in fake.argv if a[0] == "run"]
+    image = [a for a in fake.argv if a[0] == "build"][0][3]  # build -q -t <image>
+    assert image.startswith("sde-world-w0rld-") and len(image) > len("sde-world-w0rld-")
+    assert all("-v" not in a for a in runs) and all(a[-4] == f"{image}-check" for a in runs)
+    assert all(a[2:6] == ["--cpus", "1", "--memory", "2g"] for a in runs)
+    world = make_world(tmp_path)
+    check_build = [a for a in fake.argv if a[0] == "build"][1]
+    assert check_build[-1] == str(world) and "Dockerfile.check" in check_build[check_build.index("-f") + 1]
+    check_df = (tmp_path / "trace" / "Dockerfile.check").read_text()
+    assert check_df.startswith(f"FROM {image}\n") and "COPY repro /world/repro" in check_df
+    rmi = [a for a in fake.argv if a[0] == "rmi"][-1]
+    assert f"{image}-check" in rmi and image in rmi
+    pinned = (tmp_path / "trace" / "Dockerfile.pinned").read_text()
+    assert f"python:3.12-slim-bookworm@{BASE_IMAGES['python:3.12-slim-bookworm']}" in pinned
+
+
+def test_inside_an_authoring_run_everything_is_labeled_with_the_job(tmp_path, monkeypatch):
+    from shared.taskformat import world_check
+    monkeypatch.setenv("SDE_DOCKER_LABEL", "sde.job=t1-v1-world")
+    fake = FakeDocker()
+    monkeypatch.setattr(world_check, "_docker", fake)
+    world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    for a in fake.argv:
+        if a[0] in ("build", "run"):
+            assert a[a.index("--label") + 1] == "sde.job=t1-v1-world", a
+
+
+def test_concurrent_checks_of_one_world_use_distinct_images(tmp_path, monkeypatch):
+    from shared.taskformat import world_check
+    tags = {world_check._image_tag(make_world(tmp_path)) for _ in range(5)}
+    assert len(tags) == 5
+
+
+def test_world_check_is_adopted_on_retry(tmp_path, monkeypatch):
+    from shared.taskformat import world_check
+    fake = FakeDocker()
+    monkeypatch.setattr(world_check, "_docker", fake)
+    world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    again = world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    # The world image and its check image were built once; the retry adopts the record.
+    assert again["outcome"] == "OK" and again["adopted"] and fake.calls.count("build") == 2
+
+
+@pytest.mark.parametrize("unfixed, fixed, failed", [
+    ((0, 0), (0, 0), "repro_fails"),            # the counterexample does not reproduce
+    ((1, 0), (0, 0), "repro_fails"),            # flaky
+    ((2, 2), (0, 0), "repro_fails"),            # the script itself errors
+    ((1, 1), (1, 1), "repro_passes_with_fix"),  # the world fix does not fix it
+])
+def test_world_check_rejects_unreal_flaky_or_unfixable_worlds(tmp_path, monkeypatch, unfixed, fixed, failed):
+    from shared.taskformat import world_check
+    monkeypatch.setattr(world_check, "_docker", FakeDocker(unfixed=unfixed, fixed=fixed))
+    res = world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    assert res["outcome"] == "FAILED" and res["failed_check"] == failed and res["feedback"]
+
+
+def test_world_check_rejects_a_world_that_does_not_build(tmp_path, monkeypatch):
+    from shared.taskformat import world_check
+    monkeypatch.setattr(world_check, "_docker", FakeDocker(build=1))
+    res = world_check.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    assert res["failed_check"] == "build" and "does not build" in res["feedback"]
+
+
+@pytest.mark.parametrize("over, expect", [
+    ({"repro/repro.sh": None}, "missing required files"),
+    ({"world.json": json.dumps({"invariants": [], "counterexample": {}})}, "non-empty list of invariants"),
+    ({"environment/Dockerfile": "FROM alpine:3\nCOPY dedup.py /app/\n"}, "not an allowed base image"),
+])
+def test_world_check_rejects_bad_structure_before_docker(tmp_path, monkeypatch, over, expect):
+    from shared.taskformat import world_check
+    fake = FakeDocker()
+    monkeypatch.setattr(world_check, "_docker", fake)
+    res = world_check.run_world_check_job(make_world(tmp_path, **over), tmp_path / "trace")
+    assert res["failed_check"] == "structure" and expect in res["feedback"] and fake.calls == []
+
+
+def test_world_check_is_exported_by_gates():
+    assert gates.run_world_check_job.__module__ == "world_check"
+
+
 def test_system_prompt_carries_the_rules_and_examples():
     text = (Path(config.PROMPTS_DIR) / "system.md").read_text()
     for must in ("Mistakes earlier drafts made", "BAD:", "GOOD:", "Requirements that restate the fix",

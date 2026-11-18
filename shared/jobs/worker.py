@@ -30,6 +30,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -53,6 +54,10 @@ log = logging.getLogger("worker")
 JobFn = Callable[[dict[str, Any]], dict[str, Any]]
 OnStart = Callable[[dict[str, Any]], None]
 FAILURE_BACKOFF_S = 60.0
+HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the normal interval
+# Agent jobs are hour-long authoring trials: a lease long enough to ride out a database
+# outage, so a transient error never makes another worker re-run (and re-pay) one.
+AGENT_LEASE_TTL_S = float(os.environ.get("SDE_AGENT_LEASE_TTL_S", "1800"))
 
 
 def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | None = None,
@@ -64,8 +69,22 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | Non
     lost = threading.Event()
 
     def beat() -> None:
-        while not done.wait(heartbeat_sec):
-            if not jq.heartbeat(job_id, token, lease_sec):
+        # A heartbeat that raises (a dropped connection, a failover) is retried, never
+        # fatal: a dead heartbeat thread lets the lease lapse under a running job, and the
+        # job is then run twice. Only a refused heartbeat (another owner holds the lease)
+        # means lost; settle is fenced by the lease token either way.
+        wait, failing_since = heartbeat_sec, None
+        while not done.wait(wait):
+            try:
+                held = jq.heartbeat(job_id, token, lease_sec)
+            except Exception as e:
+                failing_since = failing_since or time.monotonic()
+                log.warning("%s: heartbeat failed for %.0fs (lease %.0fs): %s: %s", job_id,
+                            time.monotonic() - failing_since, lease_sec, type(e).__name__, str(e)[:200])
+                wait = min(heartbeat_sec, HEARTBEAT_RETRY_S)
+                continue
+            wait, failing_since = heartbeat_sec, None
+            if not held:
                 lost.set()
                 return
 
@@ -99,6 +118,7 @@ def serve(
     concurrency: int = 1,
     docker_slots: int | None = None,
     stop: threading.Event | None = None,
+    lease_sec: float = LEASE_TTL_S,
 ) -> None:
     """Run `concurrency` claim loops until `stop` is set."""
     stop = stop or threading.Event()
@@ -108,11 +128,11 @@ def serve(
 
     def loop(owner: str) -> None:
         while not stop.is_set():
-            job = jq.claim(types, owner, LEASE_TTL_S, docker_slots)
+            job = jq.claim(types, owner, lease_sec, docker_slots)
             if job is None:
                 stop.wait(POLL_S)
                 continue
-            run_one(jq, job, fn, handoff, on_start)
+            run_one(jq, job, fn, handoff, on_start, lease_sec=lease_sec)
 
     threads = [threading.Thread(target=loop, args=(f"{base}:{i}",), name=f"{name}-{i}")
                for i in range(concurrency)]
@@ -152,6 +172,7 @@ def serve_generation(backend: Backend, fn: JobFns, **kw: Any) -> None:
     types = AGENT_GENERATION_TYPES if agent else GENERATION_TYPES
     if agent:
         kw.setdefault("docker_slots", DOCKER_SLOTS)
+        kw.setdefault("lease_sec", AGENT_LEASE_TTL_S)
     drafts = {"handoff": handoffs.after_generation(backend), "start": handoffs.generation_started(backend)}
     world = {"handoff": handoffs.after_world(backend), "start": handoffs.world_started(backend)}
     per_type = {t: (world if t == JobType.WORLD else drafts) for t in types}
@@ -196,26 +217,30 @@ def _agent_trial(backend: Backend, job_id: str, fields: dict[str, Any]) -> None:
 
 
 def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
-    """create / revise. oneshot: run_generate_job. agent: run_create_job, from a world
-    (same signature and result shape plus result.world_sha256, plan §3.4).
+    """create / revise, chosen per job: a job from a world (input.world_sha256, agent mode)
+    runs run_create_job (plan §3.4: run_generate_job's result shape plus world_sha256);
+    any other job runs one-shot run_generate_job, even in agent mode. Raw prompts, v1
+    specs and tasks in flight when the mode switched have no world.
 
     A job may run on another machine than the one that wrote its inputs, so the
     parent bundle, its draft record and the world are made local first; the new
     bundle and draft record are registered after."""
     _import_task_builder()
-    if mode == "agent":
-        from generator.author import run_create_job as draft  # generator/author.py
-    else:
-        from generator.worker import run_generate_job as draft  # generator/worker.py
+    from generator.worker import run_generate_job  # generator/worker.py
 
     def run(job: dict[str, Any]) -> dict[str, Any]:
         inp = job["input"] or {}
+        agent = mode == "agent" and bool(inp.get("world_sha256"))
+        if agent:
+            from generator.author import run_create_job as draft  # generator/author.py
+        else:
+            draft = run_generate_job
         if parent := inp.get("bundle_sha256"):
             backend.artifacts.bundle_path(parent)  # downloads it in S3 mode
             backend.artifacts.fetch_file(f"drafts/{parent}.json")
         if world := inp.get("world_sha256"):
             backend.artifacts.world_path(world)
-        if mode == "agent":
+        if agent:
             backend.artifacts.fetch_trace(job["id"])
         out = draft(job["id"], inp, backend.work_dir)
         fields = _settled(out)
@@ -224,7 +249,7 @@ def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
             if (backend.work_dir / "drafts" / f"{sha}.json").is_file():
                 backend.artifacts.register_file(f"drafts/{sha}.json")
             fields["bundle_sha256"] = sha
-        if mode == "agent":
+        if agent:
             _agent_trial(backend, job["id"], fields)
         return fields
 

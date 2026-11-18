@@ -46,9 +46,19 @@ from generator.prompting import (OPERATORS, REPAIR_REQUEST, continuation, render
                        revision_direction)
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 
+def strict_schema(schema: dict) -> dict:
+    """Strict JSON-schema mode needs every property listed as required. Fields
+    with a default (so older records still load, e.g. wrong_fix_script) are
+    required of the model all the same."""
+    for obj in [schema, *schema.get("$defs", {}).values()]:
+        if "properties" in obj:
+            obj["required"] = list(obj["properties"])
+    return schema
+
+
 RESPONSE_FORMAT = {
     "type": "json_schema",
-    "json_schema": {"name": "task_draft", "strict": True, "schema": TaskDraft.model_json_schema()},
+    "json_schema": {"name": "task_draft", "strict": True, "schema": strict_schema(TaskDraft.model_json_schema())},
 }
 
 FIX_REQUEST = """Your task draft was rejected by the pipeline's checks:
