@@ -9,7 +9,8 @@ import pytest
 from job_service.service import BatchConflict, JobService
 from job_service.taxonomy import UNIQUE_DIMENSIONS, sample_specs
 from shared.storage import from_env
-from shared.storage.sql import job_id, rollout_job_id
+from shared.storage.sql import insert_job, job_id, rollout_job_id
+from shared.contracts.models import JobType
 
 T = "b-1-t01"
 
@@ -44,6 +45,11 @@ def settle(svc, id, **fields):
 
 def task(svc, id=T):
     return svc.store.task(id)
+
+
+def published(svc) -> list[str]:
+    """Published task dirs (the artifact store stages copies under .staging/)."""
+    return sorted(p.name for p in svc.accepted_dir.iterdir() if p.name != ".staging")
 
 
 def job_ids(svc, id=T):
@@ -157,7 +163,7 @@ def test_publish_is_retried_after_a_crash_and_never_holds_the_lock(svc, monkeypa
     svc.reconcile()
     assert "ACCEPTED: v1 passed 1/5" in (svc.accepted_dir / "queue-drain-bug" / "verdict.md").read_text()
     svc.reconcile()  # already published: nothing is copied again
-    assert sorted(p.name for p in svc.accepted_dir.iterdir()) == ["queue-drain-bug"]
+    assert published(svc) == ["queue-drain-bug"]
 
 
 def test_two_accepted_tasks_with_one_name_both_publish(svc):
@@ -172,7 +178,7 @@ def test_two_accepted_tasks_with_one_name_both_publish(svc):
         for slot, mark in enumerate("10000", start=1):
             settle(svc, rollout_job_id(tid, 1, slot, 0), outcome="VALID_PASS" if mark == "1" else "VALID_FAIL")
         svc.reconcile()
-    assert sorted(p.name for p in svc.accepted_dir.iterdir()) == ["same-name", "same-name-b-1-t02"]
+    assert published(svc) == ["same-name", "same-name-b-1-t02"]
 
 
 def test_reconcile_is_a_no_op_when_nothing_changed(svc):
@@ -289,6 +295,27 @@ def test_invalid_rollouts_are_retried_then_unresolved(svc):
             assert task(svc)["stage"] == "EVALUATING"
     t = task(svc)
     assert (t["status"], t["reason"], t["stage"]) == ("REJECTED", "infra_unresolved", "UNRESOLVED")
+
+
+def test_rejecting_a_task_cancels_its_open_jobs(svc):
+    """Slot 1 is out of retries while slots 2–5 are still queued or running:
+    the task is rejected and the rest of its work is cancelled, not left orphaned."""
+    svc.submit_batch(1, "b-1")
+    build(svc, 1, "sha1")
+    settle(svc, rollout_job_id(T, 1, 2, 0), status="LEASED")  # a worker is mid-trial
+    with svc.store.tx() as conn:
+        for retry in (1, 2, 3):
+            insert_job(conn, id=rollout_job_id(T, 1, 1, retry), task_id=T, version=1,
+                       type=JobType.ROLLOUT, slot=1, retry=retry)
+    for retry in range(4):
+        settle(svc, rollout_job_id(T, 1, 1, retry), outcome="INVALID", error="AgentTimeoutError")
+    svc.reconcile()
+    assert (task(svc)["status"], task(svc)["reason"]) == ("REJECTED", "infra_unresolved")
+    for slot in (2, 3, 4, 5):
+        j = svc.store.job(rollout_job_id(T, 1, slot, 0))
+        assert (j["status"], j["error"]) == ("DEAD", "cancelled: task REJECTED (infra_unresolved)")
+    assert svc.store.open_job_counts() == {"ready": 0, "leased": 0, "expired": 0}
+    assert svc.store.unhandled() == []
 
 
 def test_retry_already_created_by_executor_is_not_duplicated(svc):

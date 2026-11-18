@@ -180,6 +180,19 @@ def test_concurrent_claims_never_share_a_job(env, backend):
     assert all(j["attempts"] == 1 and j["status"] == "DONE" for j in backend.store.task_jobs(t))
 
 
+def test_a_column_added_by_another_process_does_not_break_old_connections(env, backend, jq):
+    """Rolling deploy: an old process keeps querying while a new one migrates."""
+    t = add_task(backend)
+    enqueue(backend, jq, t)
+    for _ in range(8):  # psycopg would auto-prepare after 5 runs
+        assert backend.store.task_jobs(t)
+    newer = from_env(env)  # another process, with a newer schema
+    with newer.store.tx() as c:
+        c.execute("ALTER TABLE jobs ADD COLUMN added_by_newer_release TEXT")
+    rows = backend.store.task_jobs(t)  # the old connection still works
+    assert "added_by_newer_release" in rows[0]
+
+
 def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):
     if "REDIS_URL" not in env:
         return

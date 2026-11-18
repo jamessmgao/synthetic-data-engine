@@ -1,9 +1,10 @@
 """
 Executor workers: claim ``rollout`` jobs, run one Harbor trial each, report the result.
 
-This is the "Executor (rollouts)" box in docs/PRD.md §5. An executor never
+This is the "Executor workers" box in docs/PRD.md §5. An executor never
 decides whether a task is accepted; it turns one job into one measurement and
-settles it. The Job Service aggregates five valid measurements.
+settles it. The Analysis service reads the five valid measurements and their
+traces, explains the failures (evaluation/trace_parser.py) and decides.
 
 For each claimed job:
 
@@ -11,8 +12,10 @@ For each claimed job:
    worker took the job over), Harbor is stopped and nothing is recorded;
 2. ``harbor.run_trial`` runs, or recovers after a crash, the job's single
    trial, against the immutable bundle named by the job's ``bundle_sha256``;
-3. ``classify`` turns its ``result.json`` into VALID_PASS / VALID_FAIL / INVALID;
-4. the job is settled with outcome, reward, cost and trace location. An
+3. the trace is uploaded to the artifact store at once, so if this worker dies
+   another machine adopts the finished trial instead of rerunning it;
+4. ``classify`` turns its ``result.json`` into VALID_PASS / VALID_FAIL / INVALID;
+5. the job is settled with outcome, reward, cost and trace location. An
    INVALID rollout (timeout, infra or API error) also enqueues a retry of
    the same slot in the same transaction, with backoff, up to
    MAX_ROLLOUT_RETRIES; it is never scored as a failure.
@@ -21,7 +24,7 @@ Queue, leases and fencing come from ``shared.jobs.jobqueue.JobQueue``; bundles a
 traces from the backend's artifact store. A job whose workers keep dying is
 not claimed again past MAX_JOB_ATTEMPTS and is dead-lettered by the reconciler.
 
-Rollout job contract (what the Job Service enqueues, see ``rollout_job``):
+Rollout job contract (what the validate worker enqueues, see ``rollout_job``):
 
     id             shared.storage.sql.rollout_job_id(task_id, version, slot, retry)
     type           "rollout"
@@ -183,16 +186,25 @@ class Executor:
         checks the agent config Harbor actually ran against the pinned one.
         """
         fields: dict = {}
+        job_id = job["id"]
         try:
             if job.get("bundle_sha256"):
                 task_dir = self.artifacts.bundle_path(job["bundle_sha256"])  # downloads in S3 mode
             else:
                 task_dir = Path(job["input"]["task_dir"])
-            run = self.run_trial(task_dir, job["id"], self.agent, cancel, traces_dir=self.traces_dir)
+            # A worker on another machine may have finished this trial and uploaded
+            # it before dying: bring it here so run_trial adopts it. If nothing
+            # complete exists, move any half-uploaded remote files aside first.
+            if not self.artifacts.fetch_trace(job_id):
+                self.artifacts.abandon_trace(job_id)
+            run = self.run_trial(task_dir, job_id, self.agent, cancel, traces_dir=self.traces_dir)
+            # Upload before anything slower (classification, the failure review),
+            # so a crash from here on loses nothing another machine can't adopt.
+            trace_uri = self.artifacts.save_trace(job_id)
         except harbor.Cancelled:
             raise
         except Exception as e:  # Harbor crashed or the bundle is missing: not the model's fault
-            log.exception("%s: trial did not complete", job["id"])
+            log.exception("%s: trial did not complete", job_id)
             fields.update(outcome=INVALID, reward=None, error=f"{type(e).__name__}: {str(e)[:500]}",
                           result={"adopted": False})
             return fields, self._retry(job)
@@ -203,7 +215,7 @@ class Executor:
             reward=m.reward,
             error=m.error,
             cost_usd=m.cost_usd,
-            trace_uri=self.artifacts.save_trace(job["id"]),
+            trace_uri=trace_uri,
             result={
                 "adopted": run.adopted,
                 "trial": run.trial_dir.name,

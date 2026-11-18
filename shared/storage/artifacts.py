@@ -6,14 +6,18 @@ Layout under the work dir:
     llm/<request_sha256>.json  prompt + response + usage of one LLM call
     traces/<job_id>/           Harbor job dir(s) of one job
 
-Every write goes to a temp path and is renamed into place, so a reader never sees
-a half-written artifact and two processes writing the same key are harmless.
+Every write is staged in a `.staging/` dir next to its destination and renamed
+into place, so a reader never sees a half-written artifact and two processes
+writing the same key are harmless. A process killed mid-write leaves its staging
+entry behind; the reconciler removes entries older than the lease TTL
+(`sweep_staging`).
 """
 
 import hashlib
 import json
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -30,10 +34,55 @@ def bundle_sha256(task_dir: Path) -> str:
     return h.hexdigest()
 
 
+STAGING = ".staging"
+
+
+def staging_path(dest: Path) -> Path:
+    """A fresh temp path on the same filesystem as `dest` (so rename is atomic),
+    kept out of the destination dir's listing."""
+    stage = dest.parent / STAGING
+    stage.mkdir(parents=True, exist_ok=True)
+    # The creation time is in the name: copytree copies the source's mtime onto
+    # the staged dir, so mtime can't tell a live copy from an abandoned one.
+    return stage / f"{dest.name}.{int(time.time())}.{uuid.uuid4().hex}"
+
+
+def _staged_at(entry: Path) -> float | None:
+    parts = entry.name.rsplit(".", 2)
+    try:
+        return float(parts[-2]) if len(parts) == 3 else None
+    except ValueError:
+        return None
+
+
+def sweep_staging(dirs: list[Path], older_than_s: float) -> int:
+    """Delete staging entries older than `older_than_s` (their writer died).
+    Returns how many were removed."""
+    cutoff = time.time() - older_than_s
+    removed = 0
+    for d in dirs:
+        stage = d / STAGING
+        if not stage.is_dir():
+            continue
+        for entry in stage.iterdir():
+            try:
+                staged = _staged_at(entry)
+                if (staged if staged is not None else entry.lstat().st_mtime) >= cutoff:
+                    continue
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass  # another sweeper got it
+    return removed
+
+
 def _atomic_copytree(src: Path, dest: Path) -> None:
     if dest.exists():
         return
-    tmp = dest.with_name(f".{dest.name}.tmp-{uuid.uuid4().hex}")
+    tmp = staging_path(dest)
     shutil.copytree(src, tmp)
     try:
         tmp.rename(dest)
@@ -80,7 +129,7 @@ class LocalArtifactStore:
 
     def put_llm(self, request_sha: str, record: dict[str, Any]) -> None:
         path = self.root / "llm" / f"{request_sha}.json"
-        tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+        tmp = staging_path(path)
         tmp.write_text(json.dumps(record, indent=2, sort_keys=True))
         os.replace(tmp, path)
 
@@ -90,8 +139,14 @@ class LocalArtifactStore:
         return self.root / "traces" / job_id
 
     def save_trace(self, job_id: str) -> str:
-        """Persist a finished job's trace dir; returns its trace URI."""
+        """Persist a finished job's trace dir; returns its trace URI. Call it as soon
+        as the run finishes, so a worker that reclaims the job can adopt it."""
         return f"traces/{job_id}/"
+
+    def fetch_trace(self, job_id: str) -> bool:
+        """Make a saved trace local if one exists. True if `trace_dir(job_id)` now
+        holds it. Locally there is nothing to fetch: the dir is there or it isn't."""
+        return self.trace_dir(job_id).exists()
 
     def abandon_trace(self, job_id: str) -> Path | None:
         """Move a half-finished trace dir aside (kept for the audit, never deleted)."""
@@ -104,14 +159,17 @@ class LocalArtifactStore:
         src.rename(dest)
         return dest
 
+    def staging_dirs(self) -> list[Path]:
+        """Dirs whose `.staging/` this store writes into (besides publish targets)."""
+        return [self.root / sub for sub in ("bundles", "llm", "traces")]
+
     # --- publishing ----------------------------------------------------------
 
     def publish(self, sha: str, dest: Path, verdict_md: str) -> None:
         """Copy an accepted bundle plus its verdict to `dest`, atomically."""
         if dest.exists():
             return
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(f".{dest.name}.tmp-{uuid.uuid4().hex}")
+        tmp = staging_path(dest)
         shutil.copytree(self.bundle_path(sha), tmp)
         (tmp / "verdict.md").write_text(verdict_md)
         try:
@@ -163,7 +221,7 @@ class S3ArtifactStore(LocalArtifactStore):
             self.s3.upload_file(str(path), self.bucket, key, ExtraArgs=extra)
 
     def _download_dir(self, prefix: str, dest: Path) -> None:
-        tmp = dest.with_name(f".{dest.name}.tmp-{uuid.uuid4().hex}")
+        tmp = staging_path(dest)
         paginator = self.s3.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=f"{prefix}/"):
             for obj in page.get("Contents", []):
@@ -212,10 +270,46 @@ class S3ArtifactStore(LocalArtifactStore):
                            Body=json.dumps(record, indent=2, sort_keys=True).encode())
 
     def save_trace(self, job_id: str) -> str:
+        """Upload the trace, then write `traces/<job>/.complete`. A trace without the
+        marker (its uploader died midway) is never adopted by `fetch_trace`."""
         src = self.trace_dir(job_id)
         if src.exists():
             self._upload_dir(src, f"traces/{job_id}")
+            self.s3.put_object(Bucket=self.bucket, Key=f"traces/{job_id}/.complete", Body=b"")
         return f"s3://{self.bucket}/traces/{job_id}/"
+
+    def fetch_trace(self, job_id: str) -> bool:
+        """Adopt a trace another machine saved: download it if it is complete in S3
+        and missing locally. True if a trace is now in `trace_dir(job_id)`."""
+        local = self.trace_dir(job_id)
+        if local.exists():
+            return True
+        if not self._exists(f"traces/{job_id}/.complete"):
+            return False
+        self._download_dir(f"traces/{job_id}", local)
+        return local.exists()
+
+    def abandon_trace(self, job_id: str) -> Path | None:
+        """Also move a half-uploaded remote trace (no marker) aside, so the next
+        run's upload can't mix with it. Kept under `traces/<job>.abandoned-<n>/`."""
+        moved = super().abandon_trace(job_id)
+        prefix = f"traces/{job_id}/"
+        if self._exists(f"{prefix}.complete"):
+            return moved
+        keys = [o["Key"] for page in self.s3.get_paginator("list_objects_v2").paginate(
+                    Bucket=self.bucket, Prefix=prefix) for o in page.get("Contents", [])]
+        if not keys:
+            return moved
+        n = 1
+        while self.s3.list_objects_v2(Bucket=self.bucket, Prefix=f"traces/{job_id}.abandoned-{n}/",
+                                      MaxKeys=1).get("KeyCount"):
+            n += 1
+        for key in keys:
+            dest = f"traces/{job_id}.abandoned-{n}/{key.removeprefix(prefix)}"
+            self.s3.copy_object(Bucket=self.bucket, Key=dest,
+                                CopySource={"Bucket": self.bucket, "Key": key})
+            self.s3.delete_object(Bucket=self.bucket, Key=key)
+        return moved
 
     def publish(self, sha: str, dest: Path, verdict_md: str) -> None:
         super().publish(sha, dest, verdict_md)

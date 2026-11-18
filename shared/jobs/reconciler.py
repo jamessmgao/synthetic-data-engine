@@ -8,6 +8,8 @@ Each pass:
 2. Re-adds every claimable job to the queue backend (Redis mode), which covers a
    crash between commit and publish, a dead worker's popped job, and Redis
    losing its data. A no-op for the database queue.
+3. Deletes artifact staging entries (`.staging/`) older than the lease TTL: the
+   half-written copies of a process killed mid-write.
 
 Expired leases need no action here: the claim query takes them over directly.
 Every step is a compare-and-set, so an accidental second reconciler is harmless.
@@ -18,17 +20,23 @@ with `start_thread(backend)`.
 
 import argparse
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 
-from shared.storage import Backend, describe, from_env
+from shared.storage import REPO_ROOT, Backend, describe, from_env
+from shared.storage.artifacts import sweep_staging
 from shared.storage.sql import utcnow
-from shared.contracts.models import MAX_JOB_ATTEMPTS, RECONCILE_S
+from shared.contracts.models import LEASE_TTL_S, MAX_JOB_ATTEMPTS, RECONCILE_S
+
+# Where accepted bundles are published; the Job Service reads the same variable.
+ACCEPTED_DIR = Path(os.environ.get("SDE_ACCEPTED_DIR") or REPO_ROOT / "output" / "accepted")
 
 log = logging.getLogger("reconciler")
 
 
-def reconcile(backend: Backend) -> dict[str, int]:
+def reconcile(backend: Backend, accepted_dir: Path = ACCEPTED_DIR) -> dict[str, int]:
     with backend.store.tx() as c:
         dead = c.execute(
             """UPDATE jobs SET status = 'DEAD', finished_at = ?, lease_until = NULL,
@@ -41,7 +49,8 @@ def reconcile(backend: Backend) -> dict[str, int]:
     for row in dead:
         log.warning("%s: dead-lettered after %d claims", row["id"], MAX_JOB_ATTEMPTS)
     republished = backend.queue.reconcile()
-    return {"dead_lettered": len(dead), "republished": republished}
+    swept = sweep_staging([*backend.artifacts.staging_dirs(), accepted_dir], LEASE_TTL_S)
+    return {"dead_lettered": len(dead), "republished": republished, "staging_swept": swept}
 
 
 def run(backend: Backend, stop: threading.Event, interval_s: float = RECONCILE_S) -> None:

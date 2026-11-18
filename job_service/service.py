@@ -27,6 +27,7 @@ Per version n of a task:
 """
 
 import json
+import os
 import secrets
 import threading
 from datetime import UTC, datetime
@@ -102,7 +103,7 @@ class JobService:
         self.store = backend.store
         self.queue = backend.queue
         self.artifacts = backend.artifacts
-        self.accepted_dir = accepted_dir or REPO_ROOT / "output" / "accepted"
+        self.accepted_dir = accepted_dir or Path(os.environ.get("SDE_ACCEPTED_DIR", REPO_ROOT / "output" / "accepted"))
         self.n_runs = eval_config()["n_runs"]
 
     # --- submission ------------------------------------------------------------
@@ -229,12 +230,13 @@ class JobService:
         name = task.get("name") or task["id"]
         return [self.accepted_dir / name, self.accepted_dir / f"{name}-{task['id']}"]
 
+    @staticmethod
+    def _owned_by(dest: Path, task: dict[str, Any]) -> bool:
+        verdict_md = dest / "verdict.md"
+        return verdict_md.exists() and verdict_md.read_text().startswith(f"# Verdict: {task['id']}\n")
+
     def published_dir(self, task: dict[str, Any]) -> Path | None:
-        for dest in self._destinations(task):
-            verdict_md = dest / "verdict.md"
-            if verdict_md.exists() and verdict_md.read_text().startswith(f"# Verdict: {task['id']}\n"):
-                return dest
-        return None
+        return next((d for d in self._destinations(task) if self._owned_by(d, task)), None)
 
     def publish(self, task: dict[str, Any], jobs: list[dict[str, Any]]) -> Path:
         """Copy the accepted bundle and its verdict.md to output/accepted/.
@@ -245,7 +247,11 @@ class JobService:
         if (done := self.published_dir(task)) is not None:
             return done
         mine, fallback = self._destinations(task)
-        dest = fallback if mine.exists() else mine
+        # Fall back only if *another* task holds the name. A directory appears
+        # whole (copied to a temp dir, then renamed), so if a second copy of
+        # this service published it a moment ago, it already carries our
+        # verdict and publishing to `mine` again is a no-op.
+        dest = fallback if mine.exists() and not self._owned_by(mine, task) else mine
         text = verdict.render(task, jobs, decision_text(task, jobs), self.n_runs)
         self.artifacts.publish(task["bundle_sha256"], dest, text)
         return dest
@@ -275,6 +281,17 @@ class _Step:
 
     def reject(self, stage: Stage, reason: RejectReason) -> bool:
         self.set(status=TaskStatus.REJECTED, stage=stage, reason=reason)
+        # Work still queued or running for this task can't change its verdict:
+        # cancel it. A worker holding one of these loses its fenced heartbeat /
+        # settle and stops; nothing would ever claim or dead-letter them otherwise.
+        now = utcnow()
+        cur = self.conn.execute(
+            """UPDATE jobs SET status = 'DEAD', finished_at = ?, lease_until = NULL, handled_at = ?,
+                               error = ?
+                WHERE task_id = ? AND status IN ('READY', 'LEASED')""",
+            (now, now, f"cancelled: task REJECTED ({reason})", self.task["id"]),
+        )
+        self.changed |= cur.rowcount > 0
         return self.changed
 
     def run(self) -> bool:

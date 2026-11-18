@@ -1,0 +1,184 @@
+"""Tests for the trace parser, on a trial directory shaped like a real Harbor 0.26 terminus-2 run.
+
+Run with: python -m pytest evaluation
+"""
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from evaluation import trace_parser
+from evaluation.classify import VALID_FAIL, VALID_PASS
+
+RESULT = {
+    "agent_result": {"n_input_tokens": 1200, "n_output_tokens": 300, "cost_usd": 0.004},
+    "agent_execution": {"started_at": "2026-11-17T22:34:00Z", "finished_at": "2026-11-17T22:37:30Z"},
+}
+
+
+def step(n, keystrokes, output, message="Plan: next", tool="bash_command"):
+    return {
+        "step_id": n, "source": "agent", "message": message, "metrics": {"prompt_tokens": 100},
+        "tool_calls": [{"tool_call_id": f"call_{n}", "function_name": tool,
+                        "arguments": {"keystrokes": keystrokes} if keystrokes is not None else {}}],
+        "observation": {"results": [{"source_call_id": f"call_{n}", "content": output}]},
+    }
+
+
+@pytest.fixture
+def trial(tmp_path) -> Path:
+    d = tmp_path / "trial__abc"
+    (d / "agent").mkdir(parents=True)
+    (d / "verifier").mkdir()
+    (d / "agent" / "trajectory.json").write_text(json.dumps({"steps": [
+        {"step_id": 1, "source": "user", "message": "the task"},
+        step(2, "cat > /etc/nginx/sites-enabled/app <<'EOF'\nserver { listen 8080; }\nEOF\n", ""),
+        step(3, "sed -i 's/80/8080/' /etc/nginx/nginx.conf && nginx -s reload\n", "reloaded"),
+        step(4, "curl -s localhost:8080/hello.html | tee /tmp/out.txt\n", "404 Not Found"),
+        step(5, None, "", message="All components are configured.", tool="mark_task_complete"),
+    ]}))
+    (d / "verifier" / "ctrf.json").write_text(json.dumps({"results": {"tests": [
+        {"name": "test_outputs.py::test_hello_html_exists", "status": "failed",
+         "message": "The test failed in the call phase due to an assertion error",
+         "trace": "def test_hello():\n>       assert 'TEST PASSED' in out\nE       AssertionError: Web server returned HTTP 404"},
+        {"name": "test_outputs.py::test_repo_exists", "status": "passed", "trace": ""},
+    ]}}))
+    return d
+
+
+class FakeLLM:
+    def __init__(self, reply: dict | Exception, cost=0.003, cached=False):
+        self.reply, self.cost, self.cached = reply, cost, cached
+        self.prompts: list[str] = []
+
+    def __call__(self, messages, response_format, llm_dir=None, cache_key=""):
+        self.prompts.append(messages[0]["content"])
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return SimpleNamespace(content=json.dumps(self.reply), cost_usd=self.cost, cached=self.cached)
+
+
+def parse(trial, outcome, llm, tmp_path, sha=None):
+    return trace_parser.parse(trial, RESULT, outcome, job_id="t1-v1-rollout1-r0", work_dir=tmp_path,
+                              bundle_sha256=sha, bundle_dir=None, complete=llm)
+
+
+def test_metrics_come_from_the_trajectory_and_result(trial, tmp_path):
+    m, failure, cost = parse(trial, VALID_PASS, FakeLLM({}), tmp_path)
+    assert failure is None and cost == 0.0  # a passing rollout gets no review
+    assert m["llm_calls"] == 4 and m["input_tokens"] == 1200 and m["output_tokens"] == 300
+    assert m["duration_seconds"] == 210.0 and m["declared_complete"] is True
+    assert m["tool_calls"][1]["input"].startswith("sed -i") and m["tool_calls"][2]["output"] == "404 Not Found"
+    assert m["files_modified"] == ["/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/app", "/tmp/out.txt"]
+
+
+def test_evidence_lists_failing_tests_assertions_and_the_agents_last_moves(trial):
+    tests, evidence = trace_parser.extract_evidence(trial)
+    assert [t["name"] for t in tests] == ["test_outputs.py::test_hello_html_exists"]
+    texts = [e["text"] for e in evidence]
+    assert texts[0].startswith("FAILED test_outputs.py::test_hello_html_exists")
+    assert "E       AssertionError: Web server returned HTTP 404" in texts
+    assert any(t.startswith("$ curl -s localhost:8080/hello.html") and "404 Not Found" in t for t in texts)
+    assert "agent declared the task complete" in texts
+    assert texts[-1] == "final message: All components are configured."
+    assert [e["id"] for e in evidence] == [f"E{i}" for i in range(1, len(evidence) + 1)]
+
+
+def test_a_failure_is_reviewed_with_the_hidden_spec(trial, tmp_path):
+    (tmp_path / "drafts").mkdir()
+    (tmp_path / "drafts" / "abc.json").write_text(json.dumps({"draft": {"spec": {
+        "root_cause": "nginx serves /var/www/old, not the deploy dir",
+        "expected_agent_pitfalls": ["editing the default site instead of the deploy root"]}}}))
+    llm = FakeLLM({"explanation": "The agent edited the wrong site file (E4) and never fixed the root (E2).",
+                   "attribution": "model", "pitfall_matched": "editing the default site instead of the deploy root",
+                   "cited_evidence": ["E2", "E4", "E99"]})
+    _, failure, cost = parse(trial, VALID_FAIL, llm, tmp_path, sha="abc")
+    assert "nginx serves /var/www/old" in llm.prompts[0]  # the reviewer saw the hidden spec
+    assert failure["attribution"] == "model" and failure["cited_evidence"] == ["E2", "E4"]  # unknown id dropped
+    assert failure["pitfall_matched"].startswith("editing the default site")
+    assert failure["failing_tests"] == ["test_outputs.py::test_hello_html_exists"]
+    assert failure["evidence"][0]["id"] == "E1" and cost == 0.003
+
+
+def test_a_task_defect_is_reported_as_such(trial, tmp_path):
+    llm = FakeLLM({"explanation": "The test checks port 9090, the instruction says 8080 (E2).",
+                   "attribution": "task", "pitfall_matched": "none", "cited_evidence": ["E2"]})
+    _, failure, _ = parse(trial, VALID_FAIL, llm, tmp_path)
+    assert failure["attribution"] == "task" and failure["pitfall_matched"] is None
+
+
+def test_an_explanation_citing_nothing_real_is_unexplained(trial, tmp_path):
+    llm = FakeLLM({"explanation": "It just failed.", "attribution": "model", "pitfall_matched": "none",
+                   "cited_evidence": ["E99"]})
+    _, failure, _ = parse(trial, VALID_FAIL, llm, tmp_path)
+    assert failure["attribution"] == "unexplained" and failure["explanation"] == "It just failed."
+
+
+def test_a_review_that_cannot_run_still_records_the_evidence(trial, tmp_path):
+    _, failure, cost = parse(trial, VALID_FAIL, FakeLLM(ConnectionError("gateway down")), tmp_path)
+    assert failure["attribution"] == "unexplained" and failure["review_error"].startswith("ConnectionError")
+    assert failure["failing_tests"] and failure["evidence"] and cost == 0.0
+
+
+def test_an_aborted_review_is_retried(trial, tmp_path):
+    reply = {"explanation": "x (E1)", "attribution": "model", "pitfall_matched": "none", "cited_evidence": ["E1"]}
+    calls = []
+
+    def flaky(messages, response_format, llm_dir=None, cache_key=""):
+        calls.append(cache_key)
+        if len(calls) < 3:
+            raise RuntimeError("Model output became abnormal while generating a JSON response")
+        return SimpleNamespace(content=json.dumps(reply), cost_usd=0.003, cached=False)
+
+    _, failure, cost = parse(trial, VALID_FAIL, flaky, tmp_path)
+    assert len(calls) == 3 and failure["attribution"] == "model" and cost == 0.003
+
+
+def test_a_pitfall_must_be_one_of_the_specs(trial, tmp_path):
+    """Seen live: GLM-5.1 answered pitfall_matched with a sentence instead of 'none'."""
+    (tmp_path / "drafts").mkdir()
+    (tmp_path / "drafts" / "abc.json").write_text(json.dumps({"draft": {"spec": {
+        "expected_agent_pitfalls": ["Serializing with one worker"]}}}))
+    for answer, expected in [("None of the listed pitfalls match exactly.", None), ("none", None),
+                             ("'serializing with one worker'", "Serializing with one worker")]:
+        llm = FakeLLM({"explanation": "x (E1)", "attribution": "model", "pitfall_matched": answer,
+                       "cited_evidence": ["E1"]})
+        assert parse(trial, VALID_FAIL, llm, tmp_path, sha="abc")[1]["pitfall_matched"] == expected
+
+
+def test_python_and_formatter_writes_are_files():
+    """Seen live: an agent edited Go source through a Python heredoc and gofmt -w."""
+    cmds = ["python3 - <<'PY'\npath = Path('internal/queue/queue.go')\ntext = path.read_text()\n"
+            "path.write_text(text.replace('a', 'b'))\nPY",
+            "/usr/local/go/bin/gofmt -w internal/queue/worker.go && go build ./...",
+            "python3 -c \"print(Path('notes.md').read_text())\""]  # a read, not a write
+    assert trace_parser.files_modified(cmds) == ["internal/queue/queue.go", "internal/queue/worker.go"]
+
+
+def test_package_installs_and_flags_are_not_files():
+    cmds = ["apt-get install -y nginx openssh-server", "git config -g user.name x > /dev/null",
+            "sudo cp hook.sh /git/server/hooks/post-receive", "install -m 755 a.sh /usr/local/bin/a"]
+    assert trace_parser.files_modified(cmds) == ["/git/server/hooks/post-receive", "/usr/local/bin/a"]
+
+
+def test_a_cached_review_costs_nothing(trial, tmp_path):
+    llm = FakeLLM({"explanation": "x (E1)", "attribution": "model", "pitfall_matched": "none",
+                   "cited_evidence": ["E1"]}, cached=True)
+    assert parse(trial, VALID_FAIL, llm, tmp_path)[2] == 0.0
+
+
+def test_stdout_fallback_when_there_is_no_ctrf(trial):
+    (trial / "verifier" / "ctrf.json").unlink()
+    (trial / "verifier" / "test-stdout.txt").write_text(
+        "E       AssertionError: Did not pass test\nFAILED ../tests/test_outputs.py::test_hello - AssertionError\n")
+    tests = trace_parser.failing_tests(trial)
+    assert tests[0]["name"] == "../tests/test_outputs.py::test_hello"
+    assert tests[0]["assertions"] == ["E       AssertionError: Did not pass test"]
+
+
+def test_a_missing_trajectory_is_noted_not_fatal(tmp_path):
+    (tmp_path / "t" / "verifier").mkdir(parents=True)
+    tests, evidence = trace_parser.extract_evidence(tmp_path / "t")
+    assert tests == [] and evidence[-1]["text"] == "no agent trajectory was recorded"

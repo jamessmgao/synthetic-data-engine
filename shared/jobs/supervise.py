@@ -18,8 +18,11 @@ import time
 def main(argv: list[str]) -> int:
     cmds = [c for c in argv if c.strip()]
     if not cmds:
-        print("supervise: no commands", file=sys.stderr)
-        return 2
+        # This release doesn't include the component: idle instead of restarting.
+        print("supervise: no commands configured; idling", flush=True)
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        while True:
+            time.sleep(3600)
     procs = [subprocess.Popen(shlex.split(c)) for c in cmds]
     for c, p in zip(cmds, procs):
         print(f"supervise: started pid {p.pid}: {c}", flush=True)

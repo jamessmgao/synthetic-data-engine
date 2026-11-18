@@ -26,3 +26,7 @@ dist.tar.gz
 # Pipeline working state (database, bundles, transcripts, traces) and old run records
 work/
 records/
+
+# Terraform
+deploy/terraform/.terraform/
+*.tfstate*

@@ -1,9 +1,21 @@
-# Task builder: interface for the Job Service
+# Task builder: interface for the generate and validate workers
 
 The task builder implements two of the PRD's job types as plain functions. They
-hold no database state: the Job Service creates and leases the job rows, calls
-these functions, and records what they return. Paths are relative to the
+hold no database state: a worker loop (`shared/jobs/worker.py`) leases the job row,
+calls the function, and records what it returns. Paths are relative to the
 artifact store, `config.WORK_DIR` (default `./work`, override with `SDE_WORK_DIR`).
+
+**Hand-offs (docs/PRD.md §5, adopted 2026-11-17).** The worker that settles a job
+also enqueues the next stage in the same transaction:
+
+- a finished `generate` → its `validate` job;
+- `validate` OK → five `rollout` jobs;
+- `validate` FAILED → a `repair` generate (≤ `config.MAX_REPAIRS`), or the task is rejected (`invalid`).
+
+`revision` generate jobs are enqueued by the Analysis service after an
+out-of-band verdict. All three origins share one queue, `sde:generate`. *Status:*
+today's code still routes these hand-offs through `job_service/`; moving them
+into the workers is PRD §8 M3b. The function contracts below don't change.
 
 ## `generate`: `generator/worker.py`
 
@@ -17,7 +29,7 @@ run_generate_job(job_id: str, job_input: dict, work_dir=None) -> dict
 |---|---|---|
 | `initial` | `spec` (taxonomy slot + difficulty profile, see `generator/prompting.py`) **or** `prompt` (raw text) | Drafts a new task. |
 | `repair` | `bundle_sha256` (the failing bundle), `feedback` (the `validate` job's `feedback`) | Continues the authoring conversation with the gate evidence. Rejects a repair that drops a test function or constraint. |
-| `revision` | `bundle_sha256`, `operator` (one of `prompting.OPERATORS`), `result` (e.g. `"5 of 5 runs passed."`), `evidence` | Asks for a harder or easier version (PRD §6.6). |
+| `revision` | `bundle_sha256`, `operator` (one of `prompting.OPERATORS`), `result` (e.g. `"5 of 5 runs passed."`), `evidence` (the Analysis service's review of the five runs) | Asks for a harder or easier version (PRD §6.6). |
 
 Returns:
 
@@ -80,11 +92,11 @@ verdict).
   a second); a half-finished one is renamed `<step>.abandoned-<n>` and kept.
 - Makes no model calls, so it costs only Docker time.
 
-## Typical flow (what `scripts/generate.py` does without the Job Service)
+## Typical flow (also what `scripts/generate.py` does standalone, without queues)
 
 ```
-generate(initial) ─► validate ─OK─► 5 rollouts (executor)
-                        │FAILED
+generate(initial) ─► validate ─OK─► 5 rollouts (executor) ─► analyze ─► accept, or
+                        │FAILED                                          generate(revision)
                         ▼
               generate(repair, feedback) ─► validate ─► … (≤ config.MAX_REPAIRS)
 ```

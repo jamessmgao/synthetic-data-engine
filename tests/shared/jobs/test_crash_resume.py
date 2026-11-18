@@ -65,3 +65,33 @@ def test_kill_and_restart_with_two_copies(env, backend):
     assert len(repeated) <= 1, repeated
     for jid in repeated:
         assert jobs[jid]["attempts"] == 2
+
+
+def test_poison_job_does_not_take_its_sibling_down(env, backend):
+    """A job that kills its process every run is dead-lettered alone: the healthy
+    job co-claimed by the same process is charged for at most one crash."""
+    from shared.jobs.reconciler import reconcile
+
+    poison, healthy = add_task(backend, "b-x-poison"), add_task(backend, "b-x-healthy")
+    jq = JobQueue(backend)
+    with backend.store.tx() as c:
+        for t in (poison, healthy):
+            insert_job(c, id=f"{t}-v1-generate", task_id=t, version=1, type=JobType.GENERATE)
+    jq.publish([f"{poison}-v1-generate", f"{healthy}-v1-generate"])
+
+    worker = Path(__file__).with_name("poison_worker.py")
+    full = {**os.environ, **env, "SDE_LEASE_TTL_S": "0.6", "SDE_HEARTBEAT_S": "0.1", "SDE_POLL_S": "0.05"}
+    for _ in range(12):  # a supervisor restarting the crashed worker
+        p = subprocess.run([sys.executable, str(worker)], env=full, timeout=60)
+        if p.returncode == 0:
+            break
+        time.sleep(0.7)  # leases of the dead process expire
+        reconcile(backend)  # dead-letters, and re-adds expired jobs to Redis
+    else:
+        raise AssertionError("worker never finished")
+
+    h = backend.store.job(f"{healthy}-v1-generate")
+    p_ = backend.store.job(f"{poison}-v1-generate")
+    assert h["status"] == "DONE" and h["outcome"] == "OK"
+    assert h["attempts"] <= 2
+    assert p_["status"] == "DEAD" and p_["attempts"] == 3

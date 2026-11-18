@@ -1,0 +1,38 @@
+# The app on the AWS runner. State is managed: RDS Postgres, ElastiCache Redis and
+# S3, configured through /opt/sde/runtime.env, which deploy/remote-deploy.sh writes
+# from SSM Parameter Store. Same images and process layout as compose.dev.yaml.
+#
+#   docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --build
+#
+# SDE_*_CMD come from runtime.env. remote-deploy.sh leaves out a component whose
+# code isn't in the release (an empty command is skipped by shared.jobs.supervise).
+
+x-app: &app
+  env_file: /opt/sde/runtime.env
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "20m", max-file: "5"}
+
+services:
+  api:
+    <<: *app
+    build: {context: .., dockerfile: deploy/Dockerfile, target: control}
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_API_CMD-}"]
+    ports: ["127.0.0.1:8000:8000"] # reached through an SSM port-forward only
+
+  # ×1: generation + Job Service + the one reconciler.
+  worker-control:
+    <<: *app
+    build: {context: .., dockerfile: deploy/Dockerfile, target: control}
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_GENERATE_CMD-}", "${SDE_JOB_SERVICE_CMD-}"]
+    volumes: ["/opt/sde/work:/opt/sde/work", "/opt/sde/output:/app/output"]
+
+  # Docker jobs: build + validate and rollouts, through the host's Docker daemon.
+  worker-runner:
+    <<: *app
+    build: {context: .., dockerfile: deploy/Dockerfile, target: runner}
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_VALIDATE_CMD-}", "${SDE_EXECUTOR_CMD-}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/sde/work:/opt/sde/work # same path as on the host, for Harbor's bind mounts

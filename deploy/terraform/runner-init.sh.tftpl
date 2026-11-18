@@ -1,0 +1,18 @@
+#!/bin/bash
+# First boot of the runner: Docker with the compose and buildx plugins, and the
+# /opt/sde layout that deploy/remote-deploy.sh expects.
+set -euxo pipefail
+
+dnf install -y docker
+systemctl enable --now docker
+
+plugins=/usr/local/lib/docker/cli-plugins
+mkdir -p "$plugins"
+curl -fsSL -o "$plugins/docker-compose" \
+  "https://github.com/docker/compose/releases/download/v${compose_version}/docker-compose-linux-x86_64"
+curl -fsSL -o "$plugins/docker-buildx" \
+  "https://github.com/docker/buildx/releases/download/v${buildx_version}/buildx-v${buildx_version}.linux-amd64"
+chmod +x "$plugins/docker-compose" "$plugins/docker-buildx"
+
+mkdir -p /opt/sde/releases /opt/sde/work /opt/sde/output
+touch /opt/sde/.bootstrapped

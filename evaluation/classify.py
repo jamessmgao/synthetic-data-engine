@@ -38,14 +38,14 @@ class Measurement:
     duration_sec: float | None
 
 
-def _parse_time(value: str | None) -> datetime | None:
+def parse_time(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _duration(result: dict) -> float | None:
-    start, end = _parse_time(result.get("started_at")), _parse_time(result.get("finished_at"))
+    start, end = parse_time(result.get("started_at")), parse_time(result.get("finished_at"))
     if start is None or end is None:
         return None
     return (end - start).total_seconds()

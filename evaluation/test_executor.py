@@ -109,6 +109,8 @@ def test_settles_each_slot_with_outcome_reward_cost_and_trace(backend):
     assert by_id["t1-v1-rollout2-r0"]["outcome"] == VALID_FAIL and by_id["t1-v1-rollout2-r0"]["reward"] == 0.0
     assert all(j["status"] == "DONE" and j["cost_usd"] == 0.01 for j in by_id.values())
     assert by_id["t1-v1-rollout1-r0"]["trace_uri"] == "traces/t1-v1-rollout1-r0/"
+    # Explaining failures is the Analysis service's job, not the executor's.
+    assert all(j["failure"] is None and j["trace_metrics"] is None for j in by_id.values())
     assert summarize(jobs(backend), 5)["verdict"] == "TOO_EASY"  # 4/5
 
 
@@ -122,6 +124,35 @@ def test_the_trial_runs_against_the_versions_bundle(backend):
 
     drain(make(backend, spy))
     assert seen == [(backend.artifacts.bundle_path(SHA), backend.artifacts.trace_dir("x").parent)]
+
+
+def test_trace_is_fetched_before_running_and_uploaded_before_settling(backend, monkeypatch):
+    """Cross-machine adoption: another machine's finished upload is fetched first; a
+    finished trial is uploaded before the job settles, so a crash loses nothing."""
+    seed(backend, runs=2)
+    events = []
+    art = backend.artifacts
+    monkeypatch.setattr(art, "fetch_trace", lambda job_id: events.append(("fetch", job_id)) or job_id.endswith("1-r0"))
+    monkeypatch.setattr(art, "abandon_trace", lambda job_id: events.append(("abandon", job_id)))
+    monkeypatch.setattr(art, "save_trace", lambda job_id: events.append(("save", job_id)) or f"traces/{job_id}/")
+
+    def fake(task_dir, job_id, agent, cancel, traces_dir=None):
+        events.append(("run", job_id))
+        return harbor.TrialRun(result=trial_result(0.0), trial_dir=Path(traces_dir) / job_id / "t", adopted=False)
+
+    real_settle = JobQueue.settle
+
+    def settle(self, job_id, *a, **kw):
+        events.append(("settle", job_id))
+        return real_settle(self, job_id, *a, **kw)
+
+    monkeypatch.setattr(JobQueue, "settle", settle)
+    drain(make(backend, fake))
+    one, two = "t1-v1-rollout1-r0", "t1-v1-rollout2-r0"
+    assert [e for e in events if e[1] == one] == [("fetch", one), ("run", one), ("save", one), ("settle", one)]
+    # Nothing complete remotely for slot 2: half-uploaded files are set aside before running.
+    assert [e for e in events if e[1] == two] == [("fetch", two), ("abandon", two), ("run", two),
+                                                   ("save", two), ("settle", two)]
 
 
 def test_invalid_rollout_is_retried_in_the_same_slot_never_scored(backend):

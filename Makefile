@@ -9,10 +9,19 @@ TEST_ENV := SDE_TEST_DATABASE_URL=postgresql://sde:sde@localhost:$${SDE_PG_PORT:
             SDE_TEST_S3_ENDPOINT=http://localhost:$${SDE_S3_PORT:-9000} \
             AWS_ACCESS_KEY_ID=sde-dev AWS_SECRET_ACCESS_KEY=sde-dev-secret AWS_DEFAULT_REGION=us-east-1
 
-.PHONY: test deps-up test-infra up down logs ps reconcile
+.PHONY: test test-unit test-e2e test-all deps-up test-infra up down logs ps reconcile
 
 test:            ## infrastructure tests on SQLite + files (no services needed)
 	$(PYTHON) -m pytest tests/shared -q
+
+test-unit:       ## every component's unit tests (no services, no model calls)
+	$(PYTHON) -m pytest tests/shared job_service api generator evaluation -q
+
+test-e2e:        ## the whole pipeline as processes, on SQLite and (if up) the compose cluster; no model calls
+	$(PYTHON) -m pytest tests/e2e -q
+
+test-all: deps-up  ## everything above, with the cluster up
+	$(TEST_ENV) $(PYTHON) -m pytest tests/shared job_service api generator evaluation tests/e2e -q
 
 deps-up:         ## Postgres + Redis + S3 (RustFS) only
 	$(COMPOSE) up -d --wait postgres redis s3
@@ -34,3 +43,32 @@ ps:
 
 reconcile:       ## one reconciler pass against the current env's backends
 	$(PYTHON) -m shared.jobs.reconciler --once
+
+# --- AWS deployment (deploy/aws_ops.py; account 284460774261, us-east-2) --------
+AWS_OPS := $(PYTHON) deploy/aws_ops.py
+
+.PHONY: aws-bootstrap aws-plan aws-apply aws-secrets aws-deploy aws-smoke aws-status aws-logs aws-stop aws-start aws-destroy aws-up
+
+aws-bootstrap:   ## create the Terraform state bucket (once)
+	$(AWS_OPS) bootstrap
+aws-plan:
+	$(AWS_OPS) plan
+aws-apply:       ## VPC, RDS Postgres, ElastiCache Redis, S3, runner EC2
+	$(AWS_OPS) apply
+aws-secrets:     ## OPENROUTER_API_KEY from .env → SSM SecureString
+	$(AWS_OPS) secrets
+aws-deploy:      ## ship REF (default HEAD) to the runner: make aws-deploy REF=<branch|sha>
+	$(AWS_OPS) deploy $(or $(REF),HEAD)
+aws-smoke:       ## queue + artifacts round trip on the runner against RDS/Redis/S3
+	$(AWS_OPS) smoke
+aws-status:
+	$(AWS_OPS) status
+aws-logs:        ## make aws-logs [SERVICE=worker-runner]
+	$(AWS_OPS) logs $(SERVICE)
+aws-stop:        ## stop the runner (the expensive part) when no batch is running
+	$(AWS_OPS) stop
+aws-start:
+	$(AWS_OPS) start
+aws-destroy:     ## delete everything Terraform created (asks for confirmation)
+	$(AWS_OPS) destroy
+aws-up: aws-bootstrap aws-apply aws-secrets aws-deploy aws-smoke  ## all of the above, in order

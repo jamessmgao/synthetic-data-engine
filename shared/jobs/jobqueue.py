@@ -17,6 +17,8 @@ Guarantees, on SQLite and PostgreSQL alike:
 """
 
 import json
+import os
+import socket
 import time
 from typing import Any
 
@@ -49,12 +51,17 @@ class JobQueue:
 
         `docker_slots` caps leased validate + rollout jobs across all processes.
         The returned row includes `lease_token`; pass it to every later call.
+
+        Owners named `<host>:<pid>:…` (both worker loops do this) get crash
+        isolation: see `sql.claim`.
         """
         types = [JobType(t) for t in (job_type if isinstance(job_type, list) else [job_type])]
+        process = process_prefix()
+        process = process if owner.startswith(process) else None
         for candidate in self.queue.candidates(types):
             with self.store.tx() as c:
                 row = sql_claim(c, owner, types, lease_s=lease_sec, docker_slots=docker_slots,
-                                batch_id=batch_id, only_id=candidate)
+                                batch_id=batch_id, only_id=candidate, process=process)
             if row:
                 if candidate:
                     self.queue.claimed(candidate)
@@ -139,6 +146,11 @@ class JobQueue:
             f"SELECT id, type, due_at FROM jobs WHERE id IN ({marks})", job_ids
         ).fetchall()
         self.queue.publish(rows)
+
+
+def process_prefix() -> str:
+    """The owner prefix every thread of this process shares."""
+    return f"{socket.gethostname()}:{os.getpid()}:"
 
 
 def _insert_followup(c, f: dict[str, Any], parent: dict[str, Any]) -> bool:

@@ -63,6 +63,7 @@ SCHEMA = [
         lease_until   DOUBLE PRECISION,
         lease_token   INTEGER NOT NULL DEFAULT 0,
         attempts      INTEGER NOT NULL DEFAULT 0,
+        isolated      INTEGER NOT NULL DEFAULT 0,
         bundle_sha256 TEXT,
         config_hash   TEXT,
         outcome       TEXT,
@@ -134,7 +135,10 @@ class _PostgresConn:
         import psycopg
         from psycopg.rows import dict_row
 
-        self._c = psycopg.connect(url, autocommit=True, row_factory=dict_row)
+        # prepare_threshold=None: no server-side prepared statements. A prepared
+        # `SELECT * FROM jobs` breaks ("cached plan must not change result type")
+        # once another process adds a column, e.g. during a rolling deploy.
+        self._c = psycopg.connect(url, autocommit=True, row_factory=dict_row, prepare_threshold=None)
 
     def execute(self, sql: str, params: tuple | list = ()) -> Any:
         return self._c.execute(sql.replace("?", "%s"), params)
@@ -222,6 +226,7 @@ def claim(
     docker_slots: int | None = None,
     batch_id: str | None = None,
     only_id: str | None = None,
+    process: str | None = None,
 ) -> dict[str, Any] | None:
     """Lease the next claimable job of the given types (or exactly `only_id`).
 
@@ -229,6 +234,14 @@ def claim(
     claimed fewer than MAX_JOB_ATTEMPTS times; due; and its task not yet decided.
     Docker job types are only claimed while fewer than `docker_slots` live leases
     hold one (None = no cap). Returns the leased row, `lease_token` included.
+
+    Crash isolation: a job whose lease expired is a suspect, because its process
+    died while running it (or while running a sibling). Given `process`, the owner
+    prefix shared by one process's threads, a suspect is only claimed by a process
+    holding no other live lease, and it is marked `isolated`. That process then
+    claims nothing else until the suspect settles. A crash during an isolated run
+    is charged to the suspect alone, so a poison job can't drag innocent siblings
+    to MAX_JOB_ATTEMPTS with it.
     """
     now = time.time()
     t_marks = ",".join("?" * len(types))
@@ -246,10 +259,16 @@ def claim(
     if only_id:
         filters += " AND id = ?"
         extra.append(only_id)
+    if process:
+        mine = "SELECT 1 FROM jobs WHERE status = 'LEASED' AND lease_until >= ? AND substr(lease_owner, 1, ?) = ?"
+        filters += f""" AND NOT EXISTS ({mine} AND isolated = 1)
+                   AND (status = 'READY' OR NOT EXISTS ({mine}))"""
+        extra += [now, len(process), process, now, len(process), process]
     row = conn.execute(
-        f"""UPDATE jobs SET status = 'LEASED', lease_owner = ?, lease_until = ?,
+        f"""UPDATE jobs SET lease_owner = ?, lease_until = ?,
                    lease_token = lease_token + 1, attempts = attempts + 1,
-                   started_at = COALESCE(started_at, ?)
+                   isolated = CASE WHEN status = 'LEASED' THEN 1 ELSE 0 END,
+                   status = 'LEASED', started_at = COALESCE(started_at, ?)
              WHERE id = (
                 SELECT id FROM jobs
                  WHERE type IN ({t_marks}) AND due_at <= ?
@@ -286,6 +305,11 @@ class SqlStore:
         with self.tx() as conn:
             for stmt in SCHEMA:
                 conn.execute(stmt)
+            # Columns added after the first release (CREATE TABLE IF NOT EXISTS
+            # leaves an existing table as it was).
+            have = {d[0] for d in conn.execute("SELECT * FROM jobs LIMIT 0").description}
+            if "isolated" not in have:
+                conn.execute("ALTER TABLE jobs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0")
 
     @property
     def conn(self) -> _SqliteConn | _PostgresConn:
