@@ -164,6 +164,25 @@ def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
     assert reconcile(backend)["dead_lettered"] == 0
 
 
+def test_dead_lettered_world_jobs_reject_their_tasks(backend, jq):
+    """Agent mode: a world or world_check job nobody can finish must not leave its task in
+    WORLD_BUILDING / WORLD_CHECKING forever (its batch would never complete)."""
+    tasks_by_type = {}
+    for kind in (JobType.WORLD, JobType.WORLD_CHECK):
+        t = add_task(backend)
+        enqueue(backend, jq, t, kind)
+        tasks_by_type[kind] = t
+    for i in range(MAX_JOB_ATTEMPTS):
+        jq.queue.reconcile()
+        for kind in tasks_by_type:
+            assert jq.claim(str(kind), f"w{i}", lease_sec=0.01) is not None
+        time.sleep(0.02)
+    assert reconcile(backend)["dead_lettered"] == 2
+    for t in tasks_by_type.values():
+        task = backend.store.task(t)
+        assert (task["status"], task["reason"]) == ("REJECTED", "infra_unresolved")
+
+
 def test_dead_lettered_rollout_triggers_one_analysis(backend, jq):
     t = add_task(backend)
     other = add_task(backend)

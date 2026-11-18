@@ -39,6 +39,7 @@ from shared.contracts import config
 from generator.author_task import render_world_mutation_instruction, run_create_job  # noqa: F401  (re-export)
 from generator.families import brief_for
 from shared.taskformat.schema import BASE_IMAGES
+from generator.self_check import ensure_world_checked
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "validator"))
 from shared.taskformat.world_check import _check_structure  # noqa: E402
@@ -186,19 +187,23 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
     ok, _, feedback = _check_structure(out)
     if not ok:
         return _failed("author", feedback, trial, feedback)
+    guard = ensure_world_checked(out, Path(trial["artifacts_dir"]), work / "traces" / job_id)
+    if not guard["ok"]:
+        return _failed("author", guard["feedback"], trial, guard["feedback"])
 
     meta = json.loads((out / "world.json").read_text())
     meta["spec"] = spec
+    if origin == "mutation":
+        # The author records what the mutation defeats (world_mutation.md); keep that on
+        # this mutation's entry, the rest of the history comes from the job input.
+        written = ((meta.get("lineage") or {}).get("mutations") or [{}])[-1]
+        if lineage["mutations"] and written.get("defeats") and "defeats" not in lineage["mutations"][-1]:
+            lineage["mutations"][-1] = {**lineage["mutations"][-1], "defeats": written["defeats"]}
     meta["lineage"] = lineage
     (out / "world.json").write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
     sha, dest = _store(out, work)
     name = meta.get("name") or "-".join(filter(None, (spec.get("family"), spec.get("mechanism")))) or "world"
     authoring = _authoring(trial)
-    check = Path(trial["artifacts_dir"]) / "world_check.json"
-    if check.is_file():
-        try:
-            authoring["self_check"] = json.loads(check.read_text()).get("outcome")
-        except json.JSONDecodeError:
-            authoring["self_check"] = "unreadable"
+    authoring["self_check"] = {"by": guard["by"], "outcome": guard["result"].get("outcome")}
     return {"outcome": "OK", "error": None, "cost_usd": trial.get("cost_usd") or 0.0,
             "result": {"world_sha256": sha, "world_path": str(dest), "name": name, "authoring": authoring}}

@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from evaluation.calibration import eval_config, in_band
-from evaluation.verdict import decision_text, pass_pattern
+from evaluation.verdict import decision_text, pass_pattern, version_input
 from shared.storage.sql import SqlStore, row_dict
 from shared.contracts.models import (
     GENERATION_TYPES,
@@ -103,9 +103,9 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
     scored = _scored(jobs, version)
     pass_count = sum(o == Outcome.VALID_PASS for o in scored.values())
 
-    # The version's origin is its first non-repair create / revise job.
-    first = next((j for j in generates if (j["input"] or {}).get("origin") != "repair"), None)
-    first_input = (first or {}).get("input") or {}
+    # The version's origin is its first non-repair world / create / revise job (a
+    # mutated agent-mode version starts with a world job).
+    first_input = version_input(vjobs)
     built = [j for j in generates if j["outcome"] == Outcome.OK]
 
     if version == task["current_version"]:
@@ -120,6 +120,8 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
         "n": version,
         "origin": first_input.get("origin"),
         "operator": first_input.get("operator"),
+        "mutation_operators": (first_input.get("mutation_operators")
+                               or (first_input.get("mutation") or {}).get("operators") or []),
         "state": state,
         "world": _world_view(vjobs),
         "bundle_sha256": built[-1]["bundle_sha256"] if built else None,

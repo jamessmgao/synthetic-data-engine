@@ -63,10 +63,31 @@ def work(tmp_path):
     return tmp_path
 
 
-def create(work, harness=None, **job_input):
+@pytest.fixture(autouse=True)
+def no_model_calls(monkeypatch):
+    """No test may reach the real model: any unstubbed llm.complete fails the test."""
+    from shared.llm import llm
+
+    def refuse(*a, **k):
+        raise AssertionError("a test reached the real model (llm.complete)")
+
+    monkeypatch.setattr(llm, "complete", refuse)
+
+
+class FakeGate:
+    def __init__(self, passed=True, feedback="", cost=0.0):
+        self.name, self.passed, self.feedback = "leak", passed, feedback
+        self.detail = {"verdict": "clean" if passed else "leak", "cost_usd": cost}
+
+
+def clean_review(bundle_dir, trace_dir):
+    return FakeGate()
+
+
+def create(work, harness=None, leak_review=clean_review, **job_input):
     harness = harness or FakeHarness()
     job_input = {"origin": "initial", "world_sha256": "w1", "shape": "fix", "dial": 2, **job_input}
-    return at.run_create_job("t-1-v1-create", job_input, work, run_trial=harness), harness
+    return at.run_create_job("t-1-v1-create", job_input, work, run_trial=harness, leak_review=leak_review), harness
 
 
 # --- the initial create ------------------------------------------------------------------
@@ -97,6 +118,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    "sde-task check /logs/artifacts/draft.json", "--as oracle", "--as nop", "--as wrong",
                    "Shape: implement", "level 3 of 3", at.FORMS["many_rules"]["dial"][3],
                    "Mistakes earlier drafts made", "python:3.12-slim-bookworm",  # system.md, images filled in
+                   "# plausible_wrong_fix: <the plausible_wrong_fix text>", "setup_errors",
                    "the test that replays the world's counterexample MUST be among the failures"):
         assert needle in text, needle
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]  # every template slot filled
@@ -121,12 +143,17 @@ def test_rerunning_the_job_gives_the_same_bundle(work):
 
 
 @pytest.mark.parametrize("harness, needle", [
-    (FakeHarness(exception="AgentTimeoutError"), "AgentTimeoutError"),
+    (FakeHarness(draft=None, exception="AgentTimeoutError"), "AgentTimeoutError"),
     (FakeHarness(no_trial=True), "no trial result"),
 ])
-def test_a_failed_trial_is_infra(work, harness, needle):
+def test_a_failed_trial_without_a_draft_is_infra(work, harness, needle):
     out, _ = create(work, harness)
     assert (out["outcome"], out["result"]["failure_kind"]) == ("FAILED", "infra") and needle in out["error"]
+
+
+def test_a_valid_draft_is_kept_when_the_trial_fails_after_writing_it(work):
+    out, _ = create(work, FakeHarness(exception="AgentTimeoutError"))
+    assert out["outcome"] == "OK" and out["result"]["authoring"]["exception_type"] == "AgentTimeoutError"
 
 
 def test_a_missing_world_is_infra(work):
@@ -167,7 +194,7 @@ def parent(work):
 
 def revise(work, harness=None, **job_input):
     harness = harness or FakeHarness(draft=draft_with(wrong_fix_script=WRONG_FIX, description="revised"))
-    return at.run_create_job("t-1-v2-revise", job_input, work, run_trial=harness), harness
+    return at.run_create_job("t-1-v2-revise", job_input, work, run_trial=harness, leak_review=clean_review), harness
 
 
 def test_repair_carries_the_gate_feedback_and_the_previous_draft(work, parent):
@@ -212,6 +239,66 @@ def test_a_revision_may_not_drop_tests(work, parent):
 def test_a_revision_without_its_parent_draft_is_infra(work):
     out, harness = revise(work, origin="repair", bundle_sha256="missing", feedback="x")
     assert out["result"]["failure_kind"] == "infra" and harness.calls == []
+
+
+# --- the leak review moves into the create job (plan N6) -----------------------------------
+
+
+def fake_llm(monkeypatch, verdict="clean", leaks=(), cost=0.03):
+    """Stub llm.complete for the real gate_leak; returns the list of calls."""
+    from shared.llm import llm
+
+    calls = []
+
+    def complete(messages, response_format, llm_dir=None, cache_key=None):
+        calls.append({"llm_dir": llm_dir, "user": messages[1]["content"]})
+        return llm.Completion(content=json.dumps({"verdict": verdict, "leaks": list(leaks)}), finish_reason="stop",
+                              model="z-ai/glm-5.1", prompt_tokens=1, completion_tokens=1, reasoning_tokens=0,
+                              gateway_cost_usd=None, cost_usd=cost, duration_sec=1.0, transport_retries=0,
+                              request_sha256="r1", cached=False)
+
+    monkeypatch.setattr(llm, "complete", complete)
+    return calls
+
+
+def test_create_runs_the_leak_review_and_validate_adopts_it(work, monkeypatch):
+    calls = fake_llm(monkeypatch)
+    out, _ = create(work, leak_review=None)  # the real gate_leak
+    assert out["outcome"] == "OK" and out["cost_usd"] == pytest.approx(1.25 + 0.03)
+    assert out["result"]["leak"]["passed"] and out["result"]["leak"]["adopted"] is False and len(calls) == 1
+    sha = out["result"]["bundle_sha256"]
+    assert (work / "leak_reviews" / sha / "review.json").is_file()
+    from validator import gates
+
+    gate = gates.gate_leak(Path(out["result"]["bundle_path"]), work / "traces" / "t-1-v1-validate-r0")
+    assert gate.passed and gate.detail["adopted"] is True and gate.detail["cost_usd"] == 0.0
+    assert len(calls) == 1  # validate did not call the model again
+
+
+def test_a_leak_found_at_create_is_the_authors_fault_with_feedback(work, monkeypatch):
+    instruction = VALID["instruction"]
+    quote = instruction.split(".")[0].strip()  # a real sentence of the instruction
+    fake_llm(monkeypatch, verdict="leak", leaks=[{"quote": quote, "reveals": "the fix"}])
+    out, _ = create(work, leak_review=None)
+    r = out["result"]
+    assert (out["outcome"], r["failure_kind"]) == ("FAILED", "author")
+    assert quote in r["feedback"] and r["feedback"] == out["error"] and r["bundle_sha256"]  # repair starts here
+    assert out["cost_usd"] == pytest.approx(1.28) and r["leak"]["passed"] is False
+
+
+def test_a_failed_review_call_does_not_fail_the_create(work):
+    def broken(bundle_dir, trace_dir):
+        raise RuntimeError("leak review returned unparseable JSON")
+
+    out, _ = create(work, leak_review=broken)
+    assert out["outcome"] == "OK" and "unparseable" in out["result"]["leak"]["error"] and out["cost_usd"] == 1.25
+
+
+def test_a_leak_review_outside_the_bundle_store_stays_in_the_trace_dir(tmp_path):
+    from validator import gates
+
+    assert gates.leak_review_dir(tmp_path / "examples" / "x", tmp_path / "tr") == tmp_path / "tr" / "leak"
+    assert gates.leak_review_dir(tmp_path / "bundles" / "abc", tmp_path / "tr") == tmp_path / "leak_reviews" / "abc"
 
 
 # --- the world mutation prompt -------------------------------------------------------------

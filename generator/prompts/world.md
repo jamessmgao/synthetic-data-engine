@@ -72,7 +72,7 @@ $family_brief
 Write the world to `/logs/artifacts/world/`:
 
 - `environment/`: the system, with its `Dockerfile` (the system at `/app` is a good default);
-- `repro/repro.sh`: the deterministic reproduction (run inside the world's image, from `/`);
+- `repro/repro.sh`: the deterministic reproduction;
 - `world_fix/fix.sh`: the real fix;
 - `world.json`:
 
@@ -88,13 +88,18 @@ Write the world to `/logs/artifacts/world/`:
 
 (The pipeline fills in `lineage`.)
 
+Both scripts run INSIDE the world's image: they are copied to `/world/repro/repro.sh`
+and `/world/world_fix/fix.sh` and started from the image's `WORKDIR`, so refer to the
+system by absolute paths (`/app/...`). For the fixed world the check runs
+`bash /world/world_fix/fix.sh && bash /world/repro/repro.sh`.
+
 # Check before you finish
 
     sde-world check /logs/artifacts/world
 
-It builds the world, runs repro.sh twice on it (must exit 1 both times) and twice
-after world_fix/fix.sh (must exit 0 both times). Save its output:
-
-    sde-world check /logs/artifacts/world > /logs/artifacts/world_check.json
+It builds the world, runs repro.sh twice on it (must exit 1 both times; any other
+exit code means the script itself failed) and twice after world_fix/fix.sh (must
+exit 0 both times). It saves its result to `/logs/artifacts/world_check.json`, which
+the pipeline reads: a world without a passing self-check is rejected.
 
 Finish only when it exits 0.

@@ -11,8 +11,10 @@ Generation Service calls it for `create` and, in agent mode, `revise` jobs.
         "result": {"name", "bundle_sha256", "bundle_path", "draft_path", "world_sha256",
                    "llm_calls": [],  # one agent trial, not chat calls: see `authoring`
                    "authoring": {trial_dir, steps, duration_sec, n_input_tokens,
-                                 n_output_tokens, gateway_cost_usd, adopted},
-                   "failure_kind": "infra" | "author"   (FAILED only)},
+                                 n_output_tokens, gateway_cost_usd, adopted, exception_type},
+                   "leak": {passed, verdict, leaks, cost_usd, adopted, ...} | {error},
+                   "failure_kind": "infra" | "author",   (FAILED only)
+                   "feedback": str},                      (FAILED by the leak review only)
     }
 
 job_input, by origin:
@@ -31,15 +33,25 @@ for a revision, the previous draft (/input/previous/draft.json); it writes
 /logs/artifacts/draft.json and checks it with `sde-task` before finishing. Here the
 draft is validated with TaskDraft (every deterministic pipeline check), a repair may
 not drop tests or constraints, and a draft without a wrong fix is rejected (the
-validate gate runs it). FAILED results say whose fault: `infra` when the trial itself
-failed (Harbor exception, no trial), `author` when the agent left no valid draft.
+validate gate runs it). A valid draft is accepted even if the trial ended with an exception
+after writing it (result.authoring.exception_type records it). FAILED results say
+whose fault: `infra` when the trial failed without leaving a draft (Harbor exception,
+no trial), `author` when a clean trial left no valid draft.
+
+Then the leak review (plan N6): validator/gates.py's glm-5.1 review of the
+instruction against the hidden spec runs here, without a Docker slot. A confirmed
+leak is FAILED / author with the gate's feedback (and the bundle, for the repair);
+the review's cost is added to the job's, and it is recorded by bundle sha, so
+validate's leak gate adopts it instead of paying again. If the review call itself
+fails, the job still succeeds and validate runs the review.
 
 Idempotent per job_id: the harness adopts a finished trial under traces/<job_id>/,
-bundles are content-addressed, and the draft record is written once.
+bundles are content-addressed, and the draft record and leak review are written once.
 """
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from string import Template
 from typing import Any, Callable
@@ -265,8 +277,10 @@ def _authoring(trial: dict | None) -> dict | None:
 
 
 def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = None, *,
-                   run_trial: Callable[..., dict] | None = None) -> dict:
-    """See the module docstring. `run_trial` defaults to the shared authoring harness."""
+                   run_trial: Callable[..., dict] | None = None,
+                   leak_review: Callable[[Path, Path], Any] | None = None) -> dict:
+    """See the module docstring. `run_trial` defaults to the shared authoring harness,
+    `leak_review` to validator/gates.py's gate_leak."""
     work_dir = Path(work_dir or config.WORK_DIR)
     try:
         origin = _origin(job_input)
@@ -303,10 +317,13 @@ def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = N
         from generator.authoring_harness import run_authoring_trial as run_trial
     trial = run_trial(job_id, instruction, files, work_dir, timeout_sec=AUTHOR_TIMEOUT_SEC)
 
-    if trial.get("exception_type") or not trial.get("artifacts_dir"):
-        return _failed("infra", trial.get("error") or "the authoring trial left no artifacts", world_sha, trial)
-    draft_path = Path(trial["artifacts_dir"]) / "draft.json"
-    if not draft_path.is_file():
+    # A valid draft is accepted even if the trial then failed (e.g. a timeout after the
+    # author finished): the gates verify it anyway; result.authoring.exception_type records
+    # it. Without a draft, a failed trial is infra's fault and a clean one the author's.
+    draft_path = Path(trial["artifacts_dir"]) / "draft.json" if trial.get("artifacts_dir") else None
+    if draft_path is None or not draft_path.is_file():
+        if trial.get("exception_type") or not trial.get("artifacts_dir"):
+            return _failed("infra", trial.get("error") or "the authoring trial left no artifacts", world_sha, trial)
         return _failed("author", "the author wrote no /logs/artifacts/draft.json", world_sha, trial)
     try:
         draft = TaskDraft.model_validate_json(draft_path.read_text())
@@ -325,7 +342,33 @@ def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = N
     sha, bundle_path = write_bundle(draft, work_dir / "bundles", meta)
     record_path = _save_draft_record(sha, work_dir, {"draft": draft.model_dump(), "prompt": instruction,
                                                     "generation_meta": meta, "job_id": job_id})
-    return {"outcome": "OK", "error": None, "cost_usd": trial.get("cost_usd") or 0.0,
-            "result": {"name": draft.name, "bundle_sha256": sha, "bundle_path": str(bundle_path),
-                       "draft_path": str(record_path), "world_sha256": world_sha, "llm_calls": [],
-                       "authoring": _authoring(trial)}}
+    built = {"name": draft.name, "bundle_sha256": sha, "bundle_path": str(bundle_path),
+             "draft_path": str(record_path), "world_sha256": world_sha, "llm_calls": []}
+    cost = trial.get("cost_usd") or 0.0
+
+    # The leak review (plan N6): one glm-5.1 call, no Docker, so it runs here instead of
+    # holding a validate slot. It is recorded by bundle sha, so validate adopts it.
+    try:
+        gate = (leak_review or _leak_review)(Path(bundle_path), work_dir / "traces" / job_id)
+    except Exception as e:  # the call failed: validate's leak gate runs it again
+        leak = {"error": f"{type(e).__name__}: {str(e)[:500]}"}
+    else:
+        leak = {"passed": gate.passed, **gate.detail}
+        cost += gate.detail.get("cost_usd") or 0.0
+        if not gate.passed:
+            failed = _failed("author", gate.feedback, world_sha, trial)
+            failed["cost_usd"] = round(cost, 6)
+            failed["result"].update(built, feedback=gate.feedback, leak=leak)
+            return failed
+    return {"outcome": "OK", "error": None, "cost_usd": round(cost, 6),
+            "result": {**built, "authoring": _authoring(trial), "leak": leak}}
+
+
+def _leak_review(bundle_dir: Path, trace_dir: Path):
+    """validator/gates.py's leak gate (validator/ sits next to generator/ here and in the image)."""
+    validator = str(Path(__file__).resolve().parent.parent / "validator")
+    if validator not in sys.path:
+        sys.path.insert(0, validator)
+    from validator.gates import gate_leak
+
+    return gate_leak(bundle_dir, trace_dir)

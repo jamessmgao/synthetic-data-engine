@@ -130,5 +130,23 @@ def test_cli_exit_codes(tmp_path, monkeypatch, capsys):
     assert sde_task.main(["run", str(d), "--as", "nop", "--world", str(w)]) == 1
 
 
+def test_results_are_saved_as_self_check_evidence(tmp_path, monkeypatch, capsys):
+    arts = tmp_path / "artifacts"
+    arts.mkdir()
+    monkeypatch.setenv("SDE_ARTIFACTS_DIR", str(arts))
+    d, w = write(tmp_path, draft_with(wrong_fix_script=WRONG))
+    sde_task.main(["check", str(d), "--world", str(w)])
+    monkeypatch.setattr(sde_task, "_docker", FakeDocker(reward="0"))
+    sde_task.main(["run", str(d), "--as", "nop", "--world", str(w)])
+    assert json.loads((arts / "sde_task" / "check.json").read_text())["ok"]
+    assert json.loads((arts / "sde_task" / "run-nop.json").read_text())["reward"] == 0.0
+
+
+def test_schema_lists_every_draft_field(capsys):
+    assert sde_task.main(["schema"]) == 0
+    schema = json.loads(capsys.readouterr().out)
+    assert {"instruction", "solution_script", "wrong_fix_script", "test_outputs"} <= set(schema["properties"])
+
+
 def test_valid_fixture_is_unchanged():
     assert "wrong_fix_script" not in VALID  # the fixture predates it; draft_with adds it

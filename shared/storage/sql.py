@@ -25,12 +25,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from shared.contracts.models import (
+    AGENT_JOB_TYPES,
     DOCKER_JOB_TYPES,
     LEASE_TTL_S,
     MAX_JOB_ATTEMPTS,
     PRIORITY,
     JobStatus,
     JobType,
+    needs_docker,
 )
 
 SCHEMA = [
@@ -64,6 +66,7 @@ SCHEMA = [
         lease_token   INTEGER NOT NULL DEFAULT 0,
         attempts      INTEGER NOT NULL DEFAULT 0,
         isolated      INTEGER NOT NULL DEFAULT 0,
+        needs_docker  INTEGER NOT NULL DEFAULT 0,
         bundle_sha256 TEXT,
         config_hash   TEXT,
         outcome       TEXT,
@@ -209,14 +212,14 @@ def insert_job(
     Call `JobQueue.publish([id])` after the transaction commits so Redis sees it."""
     cur = conn.execute(
         """INSERT INTO jobs (id, task_id, version, type, slot, retry, input, status, due_at,
-                             priority, bundle_sha256, config_hash, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             priority, bundle_sha256, config_hash, needs_docker, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT DO NOTHING""",
         (
             id, task_id, version, str(type), slot, retry, json.dumps(input or {}),
             str(JobStatus.READY), time.time() + delay_s,
             PRIORITY[JobType(type)] if priority is None else priority,
-            bundle_sha256, config_hash, utcnow(),
+            bundle_sha256, config_hash, int(needs_docker(str(type), input)), utcnow(),
         ),
     )
     return cur.rowcount == 1
@@ -235,6 +238,7 @@ def claim(
     *,
     lease_s: float = LEASE_TTL_S,
     docker_slots: int | None = None,
+    agent_slots: int | None = None,
     only_id: str | None = None,
     process: str | None = None,
     host: str | None = None,
@@ -243,10 +247,12 @@ def claim(
 
     Claimable means: READY, or LEASED with an expired lease (its worker died);
     claimed fewer than MAX_JOB_ATTEMPTS times; due; and its task not yet decided.
-    Docker job types are only claimed while fewer than `docker_slots` live leases
-    hold one (None = no cap). With `host` (the owner prefix of one machine), the cap
-    counts only that machine's leases, so each runner gets its own slots; without
-    it, the cap is global. Returns the leased row, `lease_token` included.
+    A job that needs Docker (jobs.needs_docker) is only claimed while fewer than
+    `docker_slots` live leases hold a slot (None = no cap), and an agent job (world,
+    create / revise from a world) only while fewer than `agent_slots` agent jobs do.
+    With `host` (the owner prefix of one machine) the caps count only that machine's
+    leases, so each runner gets its own slots; without it they are global. Returns
+    the leased row, `lease_token` included.
 
     Crash isolation: a job whose lease expired is a suspect, because its process
     died while running it (or while running a sibling). Given `process`, the owner
@@ -258,16 +264,17 @@ def claim(
     """
     now = time.time()
     t_marks = ",".join("?" * len(types))
-    d_marks = ",".join("?" * len(DOCKER_JOB_TYPES))
+    a_marks = ",".join("?" * len(AGENT_JOB_TYPES))
     filters, extra = "", []
+    on_host = " AND substr(lease_owner, 1, ?) = ?" if host else ""
+    host_args = [len(host), host] if host else []
+    held = f"SELECT COUNT(*) FROM jobs WHERE status = 'LEASED' AND lease_until >= ? AND needs_docker = 1{on_host}"
     if docker_slots is not None:
-        on_host = " AND substr(lease_owner, 1, ?) = ?" if host else ""
-        filters += f""" AND (type NOT IN ({d_marks}) OR (
-                        SELECT COUNT(*) FROM jobs
-                         WHERE type IN ({d_marks}) AND status = 'LEASED'
-                           AND lease_until >= ?{on_host}) < ?)"""
-        extra += [*map(str, DOCKER_JOB_TYPES), *map(str, DOCKER_JOB_TYPES), now,
-                  *([len(host), host] if host else []), docker_slots]
+        filters += f" AND (needs_docker = 0 OR ({held}) < ?)"
+        extra += [now, *host_args, docker_slots]
+    if agent_slots is not None:
+        filters += f" AND (needs_docker = 0 OR type NOT IN ({a_marks}) OR ({held} AND type IN ({a_marks})) < ?)"
+        extra += [*map(str, AGENT_JOB_TYPES), now, *host_args, *map(str, AGENT_JOB_TYPES), agent_slots]
     if only_id:
         filters += " AND id = ?"
         extra.append(only_id)
@@ -294,6 +301,19 @@ def claim(
         [owner, now + lease_s, utcnow(), *map(str, types), now, now, MAX_JOB_ATTEMPTS, *extra],
     ).fetchone()
     return row_dict(row) if row else None
+
+
+def docker_load(conn: Conn, host: str | None) -> dict[str, int]:
+    """Live leases holding a Docker slot (and of those, agent jobs), on `host` or overall."""
+    now = time.time()
+    on_host = " AND substr(lease_owner, 1, ?) = ?" if host else ""
+    marks = ",".join("?" * len(AGENT_JOB_TYPES))
+    row = conn.execute(
+        f"""SELECT COUNT(*) AS docker, COUNT(*) FILTER (WHERE type IN ({marks})) AS agent
+              FROM jobs WHERE status = 'LEASED' AND lease_until >= ? AND needs_docker = 1{on_host}""",
+        [*map(str, AGENT_JOB_TYPES), now, *([len(host), host] if host else [])],
+    ).fetchone()
+    return {"docker": int(row["docker"]), "agent": int(row["agent"])}
 
 
 def mark_handled(conn: Conn, job_id: str) -> bool:
@@ -364,6 +384,11 @@ class SqlStore:
             have = {d[0] for d in conn.execute("SELECT * FROM jobs LIMIT 0").description}
             if "isolated" not in have:
                 conn.execute("ALTER TABLE jobs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0")
+            if "needs_docker" not in have:
+                conn.execute("ALTER TABLE jobs ADD COLUMN needs_docker INTEGER NOT NULL DEFAULT 0")
+                marks = ",".join("?" * len(DOCKER_JOB_TYPES))
+                conn.execute(f"UPDATE jobs SET needs_docker = 1 WHERE type IN ({marks})",
+                             [str(t) for t in DOCKER_JOB_TYPES])
             _split_generate_jobs(conn)
             # A batch is a label on its tasks (POST /v1/batches); single tasks leave it null.
             task_cols = {d[0] for d in conn.execute("SELECT * FROM tasks LIMIT 0").description}

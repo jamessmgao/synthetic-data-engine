@@ -1,7 +1,10 @@
 """sde-task: the task author's self-check, run inside the authoring container.
 
+    sde-task schema
     sde-task check <draft.json> [--world <world_dir>]
     sde-task run <draft.json | bundle_dir> --as oracle|nop|wrong [--world <world_dir>]
+
+`schema` prints the TaskDraft JSON schema: every field draft.json must have.
 
 `check` runs every deterministic check the pipeline runs on a TaskDraft (schema,
 paths, Dockerfile, syntax, stdlib + pytest only test imports, coverage, leaks...),
@@ -20,6 +23,9 @@ reported as such. Prints {as, reward, expected, ok, tests, setup_errors, output_
 exit 0 iff ok.
 
 Everything built or started is labeled with $SDE_DOCKER_LABEL and removed after.
+Each check / run result is also saved to $SDE_ARTIFACTS_DIR/sde_task/<check|run-ROLE>.json
+(default /logs/artifacts, if it exists): the pipeline reads those as the evidence
+that the author self-checked.
 """
 
 import argparse
@@ -168,6 +174,7 @@ def run_bundle(bundle: Path, role: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sde-task", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("schema", help="print the TaskDraft JSON schema draft.json must match")
     check = sub.add_parser("check", help="validate a draft and materialize it")
     check.add_argument("draft", type=Path)
     check.add_argument("--world", type=Path, default=None)
@@ -176,6 +183,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--as", dest="role", choices=sorted(EXPECTED), required=True)
     run.add_argument("--world", type=Path, default=None)
     args = parser.parse_args(argv)
+    if args.cmd == "schema":
+        print(json.dumps(TaskDraft.model_json_schema(), indent=1))
+        return 0
     world = args.world or (DEFAULT_WORLD if DEFAULT_WORLD.is_dir() else None)
 
     with tempfile.TemporaryDirectory(prefix="sde-task-") as tmp:
@@ -187,8 +197,18 @@ def main(argv: list[str] | None = None) -> int:
             checked = check_draft(args.target, world, Path(tmp))
             result = run_bundle(Path(checked["bundle_dir"]), args.role) if checked["ok"] else {
                 "as": args.role, "ok": False, "setup_errors": ["the draft fails `sde-task check`"], **checked}
-        print(json.dumps(result, indent=1))
+        text = json.dumps(result, indent=1)
+        save(f"{args.cmd}.json" if args.cmd == "check" else f"run-{args.role}.json", text)
+        print(text)
     return 0 if result["ok"] else 1
+
+
+def save(name: str, text: str) -> None:
+    """Keep the latest result where the pipeline looks for self-check evidence."""
+    artifacts = Path(os.environ.get("SDE_ARTIFACTS_DIR", "/logs/artifacts"))
+    if artifacts.is_dir():
+        (artifacts / "sde_task").mkdir(exist_ok=True)
+        (artifacts / "sde_task" / name).write_text(text + "\n")
 
 
 if __name__ == "__main__":

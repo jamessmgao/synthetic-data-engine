@@ -36,6 +36,15 @@ def decision_text(task: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
     return f"PENDING: v{task['current_version']} is {task['stage']}"
 
 
+def version_input(vjobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """What started a version: its first world / create / revise job that isn't a repair.
+    In agent mode a mutated version starts with a `world` job (origin "mutation", its
+    operators and history); the create after the world check just says "initial"."""
+    starters = [j for j in vjobs if j["type"] in (JobType.WORLD, *GENERATION_TYPES)
+                and (j.get("input") or {}).get("origin") != "repair"]
+    return (starters[0].get("input") or {}) if starters else {}
+
+
 def _gates(validate: dict[str, Any]) -> str:
     """The validate outcome, plus the model-judged gates that ran (wrong fix, leak)."""
     gates = (validate.get("result") or {}).get("gates") or {}
@@ -64,7 +73,7 @@ def render(task: dict[str, Any], jobs: list[dict[str, Any]], decision: str, n_ru
     for v in range(1, task["current_version"] + 1):
         vjobs = [j for j in jobs if j["version"] == v]
         drafts = [j for j in vjobs if j["type"] in GENERATION_TYPES]
-        inp = (drafts[0] if drafts else {}).get("input") or {}
+        inp = version_input(vjobs)
         mutations = inp.get("mutations") or mutations  # each revision carries the whole history
         built = [j for j in drafts if j["outcome"] == Outcome.OK]
         validates = [j for j in vjobs if j["type"] == JobType.VALIDATE]

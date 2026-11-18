@@ -32,11 +32,11 @@ param_or() { param "$1" 2>/dev/null || echo "$2"; }
 author_mode=$(param_or /sde/author_mode oneshot)
 
 # The authoring image, when this release has one: built into each runner's Docker
-# (context = the release root: it bakes in generator/ and validator/), tagged by the
+# (context = the release root: it bakes in config/, generator/ and validator/), tagged by the
 # content of those dirs so a change rebuilds it and an unchanged one is reused.
 authoring_image=""
 if [ -f "$release/authoring/Dockerfile" ]; then
-  tag=$(cd "$release" && find authoring generator validator -type f ! -path '*/__pycache__/*' -print0 \
+  tag=$(cd "$release" && find authoring config generator validator -type f ! -path '*/__pycache__/*' -print0 \
         | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
   authoring_image="sde-authoring:$tag"
   docker image inspect "$authoring_image" >/dev/null 2>&1 \

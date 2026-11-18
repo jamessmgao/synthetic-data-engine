@@ -43,6 +43,7 @@ ENV PATH=/usr/local/go/bin:/opt/jdk/bin:$PATH JAVA_HOME=/opt/jdk
 RUN pip install "pytest==8.4.1" "harbor==0.26.0" "toml==0.10.2"
 
 # Our generator and validator, for the self-check CLIs (sde-world, sde-task).
+COPY config/ /opt/sde/config/
 COPY generator/ /opt/sde/generator/
 COPY validator/ /opt/sde/validator/
 COPY authoring/ /opt/sde/authoring/

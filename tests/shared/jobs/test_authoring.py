@@ -29,42 +29,71 @@ from shared.contracts.models import MAX_REPAIRS_PER_VERSION, JobType
 
 REPO = Path(__file__).resolve().parents[3]
 
-SLOTS_SCRIPT = """
-import json, os, socket, sys
-sys.path.insert(0, sys.argv[1])
-from shared.storage import from_env
-from shared.storage.sql import insert_job, utcnow
-from shared.jobs.jobqueue import JobQueue
-from shared.contracts.models import DOCKER_JOB_TYPES, JobType
-b = from_env(); jq = JobQueue(b)
-with b.store.tx() as c:
-    now = utcnow()
-    c.execute("INSERT INTO tasks (id, status, stage, created_at, updated_at) VALUES ('t', 'CALIBRATING', 'QUEUED', ?, ?)", (now, now))
-    insert_job(c, id="t-world", task_id="t", version=1, type=JobType.WORLD)
-    for i in range(2):
-        insert_job(c, id=f"t-create-{i}", task_id="t", version=1, type=JobType.CREATE)
-    insert_job(c, id="t-rollout", task_id="t", version=1, type=JobType.ROLLOUT, slot=1)
-owner = lambda i: f"{socket.gethostname()}:{os.getpid()}:{i}"
-got = [jq.claim(["create", "world"], owner(i), docker_slots=2) for i in range(3)]
-rollout = jq.claim(["rollout"], owner(9), docker_slots=2)
-print(json.dumps({"docker_types": list(map(str, DOCKER_JOB_TYPES)),
-                  "authoring": sum(j is not None for j in got), "rollout": rollout is not None}))
-"""
+def _jobs(backend, jq, t, specs):
+    ids = []
+    with backend.store.tx() as c:
+        for jid, type, inp in specs:
+            insert_job(c, id=f"{t}-{jid}", task_id=t, version=1, type=type, input=inp)
+            ids.append(f"{t}-{jid}")
+    jq.publish(ids)
 
 
-@pytest.mark.parametrize("mode,authoring,rollout", [("agent", 2, False), ("oneshot", 3, True)])
-def test_agent_jobs_hold_a_docker_slot(tmp_path, mode, authoring, rollout):
-    env = {**os.environ, "SDE_AUTHOR_MODE": mode, "SDE_WORK_DIR": str(tmp_path / "work")}
-    for var in ("DATABASE_URL", "REDIS_URL", "S3_BUCKET"):
-        env.pop(var, None)
-    out = subprocess.run([sys.executable, "-c", SLOTS_SCRIPT, str(REPO)], env=env,
-                         capture_output=True, text=True, check=True).stdout
-    got = json.loads(out)
-    assert {"world", "create", "revise"} <= set(got["docker_types"]) if mode == "agent" \
-        else not {"world", "create", "revise"} & set(got["docker_types"])
-    assert "world_check" in got["docker_types"]  # a gate in every mode
-    # agent: 2 slots, both taken by authoring trials, so the 3rd and the rollout wait.
-    assert got["authoring"] == authoring and got["rollout"] is rollout
+def _owner(i, host="runner-a"):
+    return f"{host}:{os.getpid()}:{i}"
+
+
+@pytest.fixture
+def on_host(monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+    monkeypatch.setattr(jqmod.socket, "gethostname", lambda: "runner-a")
+
+
+def test_slots_are_decided_per_job(backend, jq, on_host):
+    t = add_task(backend)
+    _jobs(backend, jq, t, [("oneshot", JobType.CREATE, {"origin": "initial", "spec": {}}),
+                           ("agent", JobType.CREATE, {"origin": "initial", "world_sha256": "w"}),
+                           ("world", JobType.WORLD, {"spec": {}})])
+    rows = {j["id"].rsplit("-", 1)[1]: j["needs_docker"] for j in backend.store.task_jobs(t)}
+    assert rows == {"oneshot": 0, "agent": 1, "world": 1}
+
+
+def test_one_shot_drafts_never_wait_for_a_docker_slot(backend, jq, on_host):
+    t = add_task(backend)
+    _jobs(backend, jq, t, [("r1", JobType.ROLLOUT, {}), ("c1", JobType.CREATE, {"origin": "initial"}),
+                           ("c2", JobType.CREATE, {"origin": "initial"})])
+    assert jq.claim("rollout", _owner(0), docker_slots=1) is not None  # the only slot is taken
+    got = [jq.claim(["create", "world"], _owner(i), docker_slots=1, agent_slots=1) for i in (1, 2)]
+    assert all(g is not None and g["needs_docker"] == 0 for g in got)
+
+
+def test_agent_jobs_leave_slots_for_the_gates_and_rollouts(backend, jq, on_host):
+    t = add_task(backend)
+    _jobs(backend, jq, t, [(f"w{i}", JobType.WORLD, {"spec": {}}) for i in range(3)]
+          + [("c", JobType.CREATE, {"world_sha256": "w"}), ("v", JobType.VALIDATE, {})])
+    gen = [jq.claim(["create", "world"], _owner(i), docker_slots=3, agent_slots=2) for i in range(4)]
+    assert sum(g is not None for g in gen) == 2  # SDE_AGENT_SLOTS of the 3 slots
+    assert jq.claim("validate", _owner(9), docker_slots=3) is not None  # the third is free for gates
+    assert jq.claim("validate", _owner(10), docker_slots=3) is None
+
+
+def test_a_full_machine_skips_the_claim_transactions(backend, jq, on_host, monkeypatch):
+    import shared.jobs.jobqueue as jqmod
+    t = add_task(backend)
+    _jobs(backend, jq, t, [("r1", JobType.ROLLOUT, {}), ("r2", JobType.ROLLOUT, {}), ("r3", JobType.ROLLOUT, {})])
+    assert jq.claim("rollout", _owner(0), docker_slots=1)
+    tries = []
+    real = jqmod.sql_claim
+    monkeypatch.setattr(jqmod, "sql_claim", lambda *a, **kw: tries.append(1) or real(*a, **kw))
+    for i in range(5):
+        assert jq.claim("rollout", _owner(i + 1), docker_slots=1) is None
+    assert tries == []  # one slot count per poll, no locked claim attempts
+
+
+def test_agent_slots_default_leaves_one_slot_free():
+    p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                        "from shared.contracts.models import AGENT_SLOTS; print(AGENT_SLOTS)", str(REPO)],
+                       env={**os.environ, "SDE_DOCKER_SLOTS": "8"}, capture_output=True, text=True, check=True)
+    assert p.stdout.strip() == "7"
 
 
 def test_unknown_author_mode_is_refused():
@@ -134,12 +163,42 @@ def test_world_check_failing_past_the_repair_budget_rejects(backend, jq):
     assert jq.claim(["world", "world_check", "create"], "w") is None
 
 
-def test_a_world_that_could_not_be_built_rejects(backend, jq):
+def test_a_failed_world_run_is_retried_then_rejected(backend, jq):
+    t = add_task(backend)
+    inp = {"origin": "initial", "spec": {"family": "database_consistency"}}
+    with backend.store.tx() as c:
+        insert_job(c, id=f"{t}-v1-world", task_id=t, version=1, type=JobType.WORLD, input=inp)
+    jq.publish([f"{t}-v1-world"])
+    for r in range(1, MAX_REPAIRS_PER_VERSION + 1):
+        run_job(backend, jq, "world", {"outcome": "FAILED", "error": "AgentTimeoutError",
+                                       "result": {"failure_kind": "infra"}}, handoffs.after_world(backend))
+        retry = jobs_of(backend, t)[f"{t}-v1-world-retry{r}"]
+        assert retry["type"] == "world" and retry["input"] == inp and stage(backend, t)[0] == "WORLD_BUILDING"
+    run_job(backend, jq, "world", {"outcome": "FAILED", "result": {"failure_kind": "author"}},
+            handoffs.after_world(backend))
+    assert stage(backend, t) == ("INVALID", "REJECTED")
+    assert f"{t}-v1-world-retry{MAX_REPAIRS_PER_VERSION + 1}" not in jobs_of(backend, t)
+
+
+def test_a_retried_world_repair_keeps_its_check_round(backend, jq):
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        insert_job(c, id=f"{t}-v1-world-repair1", task_id=t, version=1, type=JobType.WORLD,
+                   input={"origin": "repair", "world_sha256": "w0", "spec": {}})
+    jq.publish([f"{t}-v1-world-repair1"])
+    run_job(backend, jq, "world", {"outcome": "FAILED", "result": {"failure_kind": "infra"}},
+            handoffs.after_world(backend))
+    run_job(backend, jq, "world", {"outcome": "OK", "result": {"world_sha256": "w1"}}, handoffs.after_world(backend))
+    assert f"{t}-v1-world-repair1-retry1" in jobs_of(backend, t)
+    assert jobs_of(backend, t)[f"{t}-v1-world-check-r1"]["input"]["round"] == 1
+
+
+def test_ok_without_a_world_sha_rejects_instead_of_hanging(backend, jq):
     t = add_task(backend)
     with backend.store.tx() as c:
         insert_job(c, id=f"{t}-v1-world", task_id=t, version=1, type=JobType.WORLD, input={"spec": {}})
     jq.publish([f"{t}-v1-world"])
-    run_job(backend, jq, "world", {"outcome": "FAILED", "error": "agent gave up"}, handoffs.after_world(backend))
+    run_job(backend, jq, "world", {"outcome": "OK", "result": {}}, handoffs.after_world(backend))
     assert stage(backend, t) == ("INVALID", "REJECTED")
 
 
@@ -288,6 +347,107 @@ def test_a_world_task_keeps_its_world_through_validate_and_repair(backend):
             "input": validate["input"], "result": {"feedback": "the tests accept the plausible wrong fix"},
             "error": None})
     assert repair["input"]["origin"] == "repair" and repair["input"]["world_sha256"] == "w1"
+
+
+def test_a_trial_is_saved_even_when_the_authoring_function_raises(backend, monkeypatch):
+    """A raising run_world_job releases the job; the retry (maybe elsewhere) must find the
+    partial trial instead of starting over and paying again."""
+    saved = []
+
+    def run_world_job(job_id, job_input, work_dir=None):
+        trial = Path(work_dir) / "traces" / job_id / "authoring" / "t" / "agent.log"
+        trial.parent.mkdir(parents=True)
+        trial.write_text("40 minutes of work")
+        raise RuntimeError("docker daemon went away")
+
+    monkeypatch.setitem(sys.modules, "author", types.SimpleNamespace(run_world_job=run_world_job,
+                                                                     run_create_job=None))
+    monkeypatch.setattr(backend.artifacts, "save_trace", lambda jid: saved.append(jid) or f"traces/{jid}/")
+    with pytest.raises(RuntimeError):
+        worker.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})
+    assert saved == ["t-v1-world"]
+
+
+def test_the_create_jobs_leak_review_is_shared_with_validate(backend, monkeypatch, authoring):
+    registered, fetched = [], []
+    monkeypatch.setattr(backend.artifacts, "register_file", lambda rel: registered.append(rel))
+    monkeypatch.setattr(backend.artifacts, "fetch_file", lambda rel: fetched.append(rel) or False)
+    real_create = sys.modules["author"].run_create_job
+
+    def create_with_review(job_id, job_input, work_dir=None):
+        out = real_create(job_id, job_input, work_dir)
+        review = Path(work_dir) / "leak_reviews" / out["result"]["bundle_sha256"] / "review.json"
+        review.parent.mkdir(parents=True)
+        review.write_text("{}")
+        return out
+
+    monkeypatch.setattr(sys.modules["author"], "run_create_job", create_with_review)
+    world = worker.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    sha = worker.draft_fn(backend, "agent")({"id": "t-v1-create", "bundle_sha256": None,
+                                             "input": {"origin": "initial", "world_sha256": world}})["bundle_sha256"]
+    assert f"leak_reviews/{sha}/review.json" in registered
+    monkeypatch.setitem(sys.modules, "gates", types.SimpleNamespace(
+        run_validate_job=lambda b, t: {"outcome": "OK", "result": {"gates": {}}, "feedback": ""},
+        run_world_check_job=None))
+    worker.validate_fn(backend)({"id": "t-v1-validate-r0", "bundle_sha256": sha, "input": {}})
+    assert f"leak_reviews/{sha}/review.json" in fetched
+
+
+def _leaking_create(t: str, sha: str = "b1") -> dict:
+    """A create job's settle when the leak review (plan N6) rejected the draft it wrote."""
+    return {"outcome": "FAILED", "error": "instruction leaks the fix", "bundle_sha256": sha,
+            "result": {"failure_kind": "author", "bundle_sha256": sha, "world_sha256": "w1",
+                       "feedback": "A reviewer ... found sentences that give away the root cause"}}
+
+
+def test_a_leaking_create_is_repaired_then_validated(backend, jq):
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'QUEUED' WHERE id = ?", (t,))
+        insert_job(c, id=f"{t}-v1-create", task_id=t, version=1, type=JobType.CREATE,
+                   input={"origin": "initial", "world_sha256": "w1", "shape": "fix", "dial": 2})
+    jq.publish([f"{t}-v1-create"])
+
+    run_job(backend, jq, "create", _leaking_create(t), handoffs.after_generation(backend))
+    repair = jobs_of(backend, t)[f"{t}-v1-repair1"]
+    assert repair["type"] == "revise" and repair["input"] == {
+        "origin": "repair", "bundle_sha256": "b1", "world_sha256": "w1",
+        "feedback": "A reviewer ... found sentences that give away the root cause"}
+    assert stage(backend, t) == ("GENERATING", "CALIBRATING")  # not rejected
+
+    run_job(backend, jq, "revise", {"outcome": "OK", "bundle_sha256": "b2", "result": {"world_sha256": "w1"}},
+            handoffs.after_generation(backend))
+    validate = jobs_of(backend, t)[f"{t}-v1-validate-r1"]
+    assert validate["input"]["bundle_sha256"] == "b2" and validate["input"]["world_sha256"] == "w1"
+    assert stage(backend, t)[0] == "BUILDING"
+
+
+@pytest.mark.parametrize("fields", [
+    {"outcome": "FAILED", "error": "no draft", "result": {"failure_kind": "author"}},  # nothing to repair
+    {"outcome": "FAILED", "error": "AgentTimeoutError", "result": {"failure_kind": "infra", "bundle_sha256": "b1"}},
+    {"outcome": "FAILED", "error": "no draft", "result": {}},  # one-shot failure, as before
+])
+def test_create_failures_without_a_repairable_draft_still_reject(backend, jq, fields):
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'QUEUED' WHERE id = ?", (t,))
+        insert_job(c, id=f"{t}-v1-create", task_id=t, version=1, type=JobType.CREATE, input={"origin": "initial"})
+    jq.publish([f"{t}-v1-create"])
+    run_job(backend, jq, "create", fields, handoffs.after_generation(backend))
+    assert stage(backend, t) == ("INVALID", "REJECTED")
+    assert not any("repair" in j for j in jobs_of(backend, t))
+
+
+def test_a_leaking_repair_past_the_budget_rejects(backend, jq):
+    t = add_task(backend)
+    last = f"{t}-v1-repair{MAX_REPAIRS_PER_VERSION}"
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'GENERATING' WHERE id = ?", (t,))
+        insert_job(c, id=last, task_id=t, version=1, type=JobType.REVISE,
+                   input={"origin": "repair", "bundle_sha256": "b0", "feedback": "x"})
+    jq.publish([last])
+    run_job(backend, jq, "revise", _leaking_create(t), handoffs.after_generation(backend))
+    assert stage(backend, t) == ("INVALID", "REJECTED")
 
 
 def test_oneshot_create_is_unchanged(backend, monkeypatch):

@@ -291,12 +291,24 @@ def _normalized(text: str) -> str:
     return " ".join(text.replace("`", "").replace("*", "").split()).lower()
 
 
+def leak_review_dir(bundle_dir: Path, trace_dir: Path) -> Path:
+    """Where a bundle's leak review is recorded. A content-addressed bundle
+    (<work>/bundles/<sha>) keeps it under <work>/leak_reviews/<sha>, so every job that
+    reviews the same bundle adopts it: the create job reviews it first (plan N6, no
+    Docker slot), validate reuses that review. Any other directory: <trace_dir>/leak."""
+    bundle_dir = Path(bundle_dir)
+    if bundle_dir.parent.name == "bundles":
+        return bundle_dir.parent.parent / "leak_reviews" / bundle_dir.name
+    return Path(trace_dir) / "leak"
+
+
 def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     """Reject a bundle whose instruction reveals the hidden cause or fix.
 
-    The review is stored at trace_dir/leak/review.json and adopted on retry.
-    A leak only counts if its quote really appears in the instruction, so an
-    over-eager or hallucinating reviewer cannot fail a task on its own words.
+    The review is stored at leak_review_dir()/review.json and adopted on retry and
+    by any later job on the same bundle. A leak only counts if its quote really
+    appears in the instruction, so an over-eager or hallucinating reviewer cannot
+    fail a task on its own words.
     """
     if not config.LEAK_REVIEW:
         return Gate("leak", True, {"skipped": "disabled (SDE_LEAK_REVIEW=0)", "cost_usd": 0.0})
@@ -306,7 +318,8 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
         return Gate("leak", True, {"skipped": "no hidden spec in the bundle", "cost_usd": 0.0})
     instruction = (bundle_dir / "instruction.md").read_text()
 
-    record_path = trace_dir / "leak" / "review.json"
+    review_dir = leak_review_dir(bundle_dir, trace_dir)
+    record_path = review_dir / "review.json"
     if record_path.exists():
         record = json.loads(record_path.read_text())
         record["adopted"], record["cost_usd"] = True, 0.0
@@ -315,8 +328,7 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
         messages = [{"role": "system", "content": LEAK_SYSTEM},
                     {"role": "user", "content": f"HIDDEN AUTHOR NOTES\n\n{notes}\n\n"
                                                 f"INSTRUCTION SHOWN TO THE AGENT\n\n{instruction}"}]
-        completion = llm.complete(messages, LEAK_FORMAT, llm_dir=trace_dir / "leak" / "llm",
-                                  cache_key="leak-review")
+        completion = llm.complete(messages, LEAK_FORMAT, llm_dir=review_dir / "llm", cache_key="leak-review")
         try:
             review = json.loads(completion.content)
         except json.JSONDecodeError:

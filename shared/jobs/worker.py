@@ -39,6 +39,7 @@ from shared.storage import Backend, describe, from_env
 from shared.jobs.jobqueue import Handoff, JobQueue
 from shared.contracts.models import (
     AGENT_GENERATION_TYPES,
+    AGENT_SLOTS,
     AUTHOR_MODE,
     DOCKER_SLOTS,
     GATE_TYPES,
@@ -117,6 +118,7 @@ def serve(
     on_start: OnStart | None = None,
     concurrency: int = 1,
     docker_slots: int | None = None,
+    agent_slots: int | None = None,
     stop: threading.Event | None = None,
     lease_sec: float = LEASE_TTL_S,
 ) -> None:
@@ -128,7 +130,7 @@ def serve(
 
     def loop(owner: str) -> None:
         while not stop.is_set():
-            job = jq.claim(types, owner, lease_sec, docker_slots)
+            job = jq.claim(types, owner, lease_sec, docker_slots, agent_slots)
             if job is None:
                 stop.wait(POLL_S)
                 continue
@@ -166,12 +168,16 @@ def _fns(fn: JobFns) -> JobFn:
 
 def serve_generation(backend: Backend, fn: JobFns, **kw: Any) -> None:
     """The Generation Service: revise, then create, then (agent mode) world jobs. In
-    agent mode each job is a Harbor authoring trial, holding a Docker slot like the
-    gates and rollouts. `fn` is one function for every type, or one per type."""
+    agent mode a world job, and a create / revise from a world, is a Harbor authoring
+    trial holding a Docker slot; at most AGENT_SLOTS of the machine's slots go to them,
+    so gates and rollouts are never starved. One-shot drafts hold no slot (the slot is
+    decided per job: jobs.needs_docker). `fn` is one function for every type, or one
+    per type."""
     agent = AUTHOR_MODE == "agent"
     types = AGENT_GENERATION_TYPES if agent else GENERATION_TYPES
     if agent:
         kw.setdefault("docker_slots", DOCKER_SLOTS)
+        kw.setdefault("agent_slots", AGENT_SLOTS)
         kw.setdefault("lease_sec", AGENT_LEASE_TTL_S)
     drafts = {"handoff": handoffs.after_generation(backend), "start": handoffs.generation_started(backend)}
     world = {"handoff": handoffs.after_world(backend), "start": handoffs.world_started(backend)}
@@ -209,11 +215,21 @@ def _settled(out: dict[str, Any]) -> dict[str, Any]:
     return {k: out.get(k) for k in ("outcome", "error", "result", "cost_usd")}
 
 
-def _agent_trial(backend: Backend, job_id: str, fields: dict[str, Any]) -> None:
+def leak_review(bundle_sha: str) -> str:
+    """Where the leak gate keeps a bundle's review (validator/gates.py leak_review_dir).
+    The create job writes it; registered, a validate job on another machine adopts it
+    instead of calling the model again."""
+    return f"leak_reviews/{bundle_sha}/review.json"
+
+
+def _save_trial(backend: Backend, job_id: str) -> str | None:
     """An agent job's authoring trial lives in its trace dir: save it, so a machine
-    that reclaims the job adopts it (fetched before the run) and the audit keeps it."""
+    that reclaims or retries the job adopts it (fetched before the run) instead of
+    paying for it again, and the audit keeps it. Called in a `finally`: a job whose
+    authoring function raised is released and may be retried on another machine."""
     if backend.artifacts.trace_dir(job_id).exists():
-        fields["trace_uri"] = backend.artifacts.save_trace(job_id)
+        return backend.artifacts.save_trace(job_id)
+    return None
 
 
 def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
@@ -242,15 +258,21 @@ def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
             backend.artifacts.world_path(world)
         if agent:
             backend.artifacts.fetch_trace(job["id"])
-        out = draft(job["id"], inp, backend.work_dir)
+        trace_uri = None
+        try:
+            out = draft(job["id"], inp, backend.work_dir)
+        finally:
+            if agent:
+                trace_uri = _save_trial(backend, job["id"])
         fields = _settled(out)
         if sha := (out.get("result") or {}).get("bundle_sha256"):
             backend.artifacts.register_bundle(sha)
-            if (backend.work_dir / "drafts" / f"{sha}.json").is_file():
-                backend.artifacts.register_file(f"drafts/{sha}.json")
+            for rel in (f"drafts/{sha}.json", leak_review(sha)):
+                if (backend.work_dir / rel).is_file():
+                    backend.artifacts.register_file(rel)
             fields["bundle_sha256"] = sha
-        if agent:
-            _agent_trial(backend, job["id"], fields)
+        if trace_uri:
+            fields["trace_uri"] = trace_uri
         return fields
 
     return run
@@ -268,11 +290,15 @@ def world_fn(backend: Backend) -> JobFn:
             if inp.get(key):
                 backend.artifacts.world_path(inp[key])  # downloads it in S3 mode
         backend.artifacts.fetch_trace(job["id"])
-        out = run_world_job(job["id"], inp, backend.work_dir)
+        try:
+            out = run_world_job(job["id"], inp, backend.work_dir)
+        finally:
+            trace_uri = _save_trial(backend, job["id"])
         fields = _settled(out)
         if sha := (out.get("result") or {}).get("world_sha256"):
             backend.artifacts.register_world(sha)
-        _agent_trial(backend, job["id"], fields)
+        if trace_uri:
+            fields["trace_uri"] = trace_uri
         return fields
 
     return run
@@ -298,6 +324,7 @@ def validate_fn(backend: Backend) -> JobFn:
     def run(job: dict[str, Any]) -> dict[str, Any]:
         sha = job["bundle_sha256"] or job["input"]["bundle_sha256"]
         bundle_dir = backend.artifacts.bundle_path(sha)  # downloads it in S3 mode
+        backend.artifacts.fetch_file(leak_review(sha))  # the create job's review, if any: adopted
         trace_dir = backend.artifacts.trace_dir(job["id"])
         out = run_validate_job(bundle_dir, trace_dir)
         result = {**out["result"], "feedback": out.get("feedback", ""),

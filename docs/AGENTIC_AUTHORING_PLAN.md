@@ -212,7 +212,10 @@ skipped when absent, required in agent mode), then `leak`. Result keys
   `inject_partial_failure`, `introduce_global_invariant`, `generate_counterexample`,
   `tighten_resource_bound`, `add_persistent_state`, `extend_cross_component_dependency`,
   `add_semantic_edge_case`, `add_realistic_distractor`, `compose_failure_modes`,
-  `expand_state_space`, `introduce_temporal_constraint`.
+  `expand_state_space`, `introduce_temporal_constraint`, and `remove_cues`.
+- **`remove_cues`**: rewrite the cue sentences the pass review cited (instruction or code
+  text pointing at the fix) at the interface level; the world stays the same. Cues mean
+  the task leaks, so it is always the first pick when the pass review found any.
 - **Chosen by deterministic rules first** from trace metrics and the pass review
   (`fix_applied`, `simple_strategy`, files written): process-local/in-memory fix →
   `add_persistent_state`; one file edited where the symptom shows →
@@ -220,7 +223,8 @@ skipped when absent, required in agent mode), then `leak`. Result keys
   `generate_counterexample`; the pass review's `suggestions[].technique` only breaks ties.
 - **History lives in job rows**: the chosen operators and reason go in the analyze job's
   `result.mutation`; the full history travels in the next job's input; no shared file is
-  read-modify-written.
+  read-modify-written. `result.mutation.rules` records `{operator, rule, evidence}` for each
+  chosen operator, so we can measure which rules move the pass rate.
 
 ## 4. Ownership and merge protocol
 

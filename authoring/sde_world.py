@@ -6,10 +6,15 @@ Runs exactly the pipeline's `world_check` gate (shared/taskformat/world_check.py
 world: structure, build, the counterexample's repro.sh exits 1 twice, then 0
 twice after world_fix/fix.sh. Prints the result as JSON and exits 0 only if
 the world would pass the gate. The author must not finish until it passes.
+
+The result is also saved to $SDE_ARTIFACTS_DIR/world_check.json (default
+/logs/artifacts, if it exists): the pipeline reads it as the evidence that the
+author self-checked, and runs the check itself when it's missing.
 """
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -29,7 +34,11 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="sde-world-") as trace:
         result = run_world_check_job(args.world_dir, Path(trace))
-    print(json.dumps(result, indent=1))
+    text = json.dumps(result, indent=1)
+    artifacts = Path(os.environ.get("SDE_ARTIFACTS_DIR", "/logs/artifacts"))
+    if artifacts.is_dir():
+        (artifacts / "world_check.json").write_text(text + "\n")
+    print(text)
     if result["outcome"] != "OK":
         print(f"\naq-world: FAILED at {result['failed_check']}:\n{result['feedback']}", file=sys.stderr)
     return 0 if result["outcome"] == "OK" else 1

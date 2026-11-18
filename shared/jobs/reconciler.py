@@ -35,7 +35,8 @@ from shared.storage.artifacts import sweep_staging
 from shared.storage.sql import insert_job, utcnow
 from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import (
-    GENERATION_TYPES,
+    AGENT_GENERATION_TYPES,
+    GATE_TYPES,
     LEASE_TTL_S,
     MAX_JOB_ATTEMPTS,
     RECONCILE_S,
@@ -67,8 +68,9 @@ def reconcile(backend: Backend, accepted_dir: Path = ACCEPTED_DIR) -> dict[str, 
                 if insert_job(c, id=aid, task_id=row["task_id"], version=row["version"],
                               type=JobType.ANALYZE, input={"trigger": row["id"]}):
                     analyze.append(aid)
-            elif row["type"] in (*GENERATION_TYPES, JobType.VALIDATE):
-                # No service will ever hand this version on: the task can't finish.
+            elif row["type"] in (*AGENT_GENERATION_TYPES, *GATE_TYPES):
+                # No service will ever hand this version on: the task can't finish
+                # (create / revise / validate, and in agent mode world / world_check).
                 tasks.reject(c, row["task_id"], RejectReason.INFRA_UNRESOLVED, Stage.UNRESOLVED,
                              version=row["version"])
     for row in dead:

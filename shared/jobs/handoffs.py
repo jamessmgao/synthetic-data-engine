@@ -9,8 +9,10 @@ functions plugged in front of them.
     create / revise / repair<k> ─OK─► validate-r<k> ─OK─► 5 rollouts on the run queue
           │FAILED                        │FAILED
           ▼                              ▼
-     REJECTED invalid        repair<k+1> on the revise queue (≤ MAX_REPAIRS_PER_VERSION),
-                             else REJECTED invalid
+     repair<k+1> if the author    repair<k+1> on the revise queue (≤ MAX_REPAIRS_PER_VERSION),
+     wrote a draft that needs     else REJECTED invalid
+     fixing (≤ MAX_REPAIRS…),
+     else REJECTED invalid
 
 In agent mode a version starts one step earlier, with its world
 (docs/AGENTIC_AUTHORING_PLAN.md §1):
@@ -18,7 +20,13 @@ In agent mode a version starts one step earlier, with its world
     world / world-repair<k> ─OK─► world-check-r<k> ─OK─► create (from the world) ─► …as above
           │FAILED                        │FAILED
           ▼                              ▼
-     REJECTED invalid        world-repair<k+1> (≤ MAX_REPAIRS_PER_VERSION), else REJECTED invalid
+     …-retry<r+1>, same input  world-repair<k+1> (≤ MAX_REPAIRS_PER_VERSION), else REJECTED invalid
+     (≤ MAX_REPAIRS_PER_VERSION),
+     else REJECTED invalid
+
+A world run fails for reasons that aren't the task's fault (the agent timed out, the
+gateway broke, the agent ended without a world), so a failed world job is retried
+before the task is given up; result.failure_kind says infra or author.
 
 Every task change is a compare-and-set on (current_version, stage): if the task
 moved on (decided, or a copy got there first), nothing is enqueued.
@@ -34,7 +42,8 @@ from shared.storage.sql import Conn, job_id, rollout_job_id
 from shared.contracts.models import MAX_REPAIRS_PER_VERSION, JobType, Outcome, RejectReason, Stage
 
 _REPAIR = re.compile(r"-repair(\d+)$")
-_WORLD_REPAIR = re.compile(r"-world-repair(\d+)$")
+_WORLD_REPAIR = re.compile(r"-world-repair(\d+)(?:-retry\d+)?$")
+_RETRY = re.compile(r"-retry(\d+)$")
 
 
 def draft_round(job: dict[str, Any]) -> int:
@@ -56,11 +65,26 @@ def generation_started(backend: Backend):
 
 
 def after_generation(backend: Backend):
-    """A draft settled: validate it, or reject a task that couldn't be drafted."""
+    """A draft settled: validate it. A draft the author got wrong but wrote (e.g. its
+    instruction leaks the fix: the create job's leak review, plan N6) is repaired like a
+    failed gate. Otherwise reject a task that couldn't be drafted."""
 
     def handoff(conn: Conn, job: dict[str, Any]) -> list[dict[str, Any]]:
         tid, n = job["task_id"], job["version"]
         if job["outcome"] != Outcome.OK:
+            res, k = job["result"] or {}, draft_round(job)
+            sha = job.get("bundle_sha256") or res.get("bundle_sha256")
+            if res.get("failure_kind") == "author" and sha and k < MAX_REPAIRS_PER_VERSION:
+                if not tasks.cas(conn, tid, version=n, stages=(Stage.QUEUED, Stage.GENERATING),
+                                 stage=Stage.GENERATING):
+                    return []
+                world = res.get("world_sha256") or (job["input"] or {}).get("world_sha256")
+                return [{
+                    "id": job_id(tid, n, "repair", k + 1), "type": JobType.REVISE, "task_id": tid, "version": n,
+                    "input": {"origin": "repair", "bundle_sha256": sha,
+                              "feedback": res.get("feedback") or job["error"] or "the draft was rejected",
+                              **({"world_sha256": world} if world else {})},
+                }]
             tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n)
             return []
         sha = job["bundle_sha256"] or (job["result"] or {}).get("bundle_sha256")
@@ -92,6 +116,12 @@ def world_round(job: dict[str, Any]) -> int:
     return int(m.group(1)) if m else 0
 
 
+def world_retry(job: dict[str, Any]) -> int:
+    """Which attempt at the same world job this is: 0, or r for …-retry<r>."""
+    m = _RETRY.search(job["id"])
+    return int(m.group(1)) if m else 0
+
+
 def world_started(backend: Backend):
     def start(job: dict[str, Any]) -> None:
         with backend.store.tx() as conn:
@@ -107,11 +137,21 @@ def after_world(backend: Backend):
     def handoff(conn: Conn, job: dict[str, Any]) -> list[dict[str, Any]]:
         tid, n = job["task_id"], job["version"]
         live = (Stage.QUEUED, Stage.WORLD_BUILDING)
+        sha = (job["result"] or {}).get("world_sha256")
         if job["outcome"] != Outcome.OK:
+            r = world_retry(job)
+            if r >= MAX_REPAIRS_PER_VERSION:
+                tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n, stages=live)
+                return []
+            if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_BUILDING):
+                return []
+            base = _RETRY.sub("", job["id"])
+            return [{"id": f"{base}-retry{r + 1}", "type": JobType.WORLD, "task_id": tid, "version": n,
+                     "input": job["input"] or {}}]
+        if not sha:  # reported OK but produced no world: nothing to check, and nothing would re-queue it
             tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n, stages=live)
             return []
-        sha = (job["result"] or {}).get("world_sha256")
-        if not sha or not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_CHECKING):
+        if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_CHECKING):
             return []
         k = world_round(job)
         return [{

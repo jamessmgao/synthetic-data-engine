@@ -92,13 +92,21 @@ AUTHOR_MODE = os.environ.get("SDE_AUTHOR_MODE", "oneshot")
 if AUTHOR_MODE not in AUTHOR_MODES:
     raise ValueError(f"SDE_AUTHOR_MODE must be one of {AUTHOR_MODES}, not {AUTHOR_MODE!r}")
 
-# Job types that hold a Docker slot while leased. Every process on a machine must
-# agree on this (they read the same SDE_AUTHOR_MODE), since the slot count is per machine.
-DOCKER_JOB_TYPES = (
-    (*GATE_TYPES, JobType.ROLLOUT, *AGENT_GENERATION_TYPES) if AUTHOR_MODE == "agent"
-    else (*GATE_TYPES, JobType.ROLLOUT)
-)
+# Docker slots are decided per JOB, when it is queued (jobs.needs_docker): these types
+# always run a container; create / revise only when authored from a world (an agent
+# trial), never as a one-shot GLM call. Agent jobs (world, and create / revise from a
+# world) hold their slot for up to an hour, so at most SDE_AGENT_SLOTS of a machine's
+# SDE_DOCKER_SLOTS go to them: the rest stay free for the gates and rollouts.
+DOCKER_JOB_TYPES = (*GATE_TYPES, JobType.ROLLOUT, JobType.WORLD)
+AGENT_JOB_TYPES = AGENT_GENERATION_TYPES
 DOCKER_SLOTS = int(os.environ.get("SDE_DOCKER_SLOTS", "4"))
+AGENT_SLOTS = int(os.environ.get("SDE_AGENT_SLOTS") or max(1, DOCKER_SLOTS - 1))
+
+
+def needs_docker(type: str, input: dict | None) -> bool:
+    if type in DOCKER_JOB_TYPES:
+        return True
+    return type in GENERATION_TYPES and bool((input or {}).get("world_sha256"))
 
 # Calibration limits (PRD §6.3–§6.6), shared so every component agrees.
 # Versions per task: v1 plus up to MAX_VERSIONS - 1 revisions by the Trace Parser.

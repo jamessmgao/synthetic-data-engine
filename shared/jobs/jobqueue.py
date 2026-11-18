@@ -25,8 +25,8 @@ from collections.abc import Callable
 from typing import Any
 
 from shared.storage import Backend
-from shared.storage.sql import Conn, claim as sql_claim, insert_job, row_dict, utcnow
-from shared.contracts.models import LEASE_TTL_S, JobStatus, JobType
+from shared.storage.sql import Conn, claim as sql_claim, docker_load, insert_job, row_dict, utcnow
+from shared.contracts.models import DOCKER_JOB_TYPES, LEASE_TTL_S, JobStatus, JobType
 
 # (conn, settled job row) -> follow-up jobs; runs inside the settle transaction.
 Handoff = Callable[[Conn, dict[str, Any]], list[dict[str, Any]]]
@@ -50,11 +50,13 @@ class JobQueue:
         owner: str,
         lease_sec: float = LEASE_TTL_S,
         docker_slots: int | None = None,
+        agent_slots: int | None = None,
     ) -> dict[str, Any] | None:
         """Lease the best claimable job of the given type(s), or return None.
 
-        `docker_slots` caps leased validate + rollout jobs on this machine.
-        The returned row includes `lease_token`; pass it to every later call.
+        `docker_slots` caps the jobs holding a Docker slot on this machine (jobs whose
+        needs_docker is set), `agent_slots` the hour-long agent jobs among them. The
+        returned row includes `lease_token`; pass it to every later call.
 
         Owners named `<host>:<pid>:…` (both worker loops do this) get a per-machine
         Docker cap and crash isolation: see `sql.claim`. Other owners share one
@@ -64,10 +66,13 @@ class JobQueue:
         process = process_prefix()
         mine = owner.startswith(process)
         host = f"{socket.gethostname()}:" if mine else None
+        types = self._unblocked(types, host, docker_slots, agent_slots)
+        if not types:
+            return None
         for candidate in self.queue.candidates(types):
             with self.store.tx() as c:
                 row = sql_claim(c, owner, types, lease_s=lease_sec, docker_slots=docker_slots,
-                                only_id=candidate,
+                                agent_slots=agent_slots, only_id=candidate,
                                 process=process if mine else None, host=host)
             if row:
                 if candidate:
@@ -76,6 +81,23 @@ class JobQueue:
             if candidate:
                 self.queue.missed(candidate)
         return None
+
+    def _unblocked(self, types: list[JobType], host: str | None, docker_slots: int | None,
+                   agent_slots: int | None) -> list[JobType]:
+        """Drop the types that can't be claimed right now because their slots are full.
+
+        Counted once per poll (outside the claim lock): with hour-long agent jobs
+        holding the slots, trying every candidate in a locked claim transaction only
+        to be refused would churn the database. Types that need Docker only for some
+        jobs (create / revise) stay: the claim itself still checks each job."""
+        if docker_slots is None and agent_slots is None:
+            return types
+        load = docker_load(self.store.conn, host)
+        if docker_slots is not None and load["docker"] >= docker_slots:
+            return [t for t in types if t not in DOCKER_JOB_TYPES]
+        if agent_slots is not None and load["agent"] >= agent_slots:
+            return [t for t in types if t != JobType.WORLD]
+        return types
 
     def heartbeat(self, job_id: str, token: int, lease_sec: float = LEASE_TTL_S) -> bool:
         """Extend the lease. False means another worker took the job over: stop work."""
@@ -168,11 +190,19 @@ def process_prefix() -> str:
 
 
 def _insert_followup(c, f: dict[str, Any], parent: dict[str, Any]) -> bool:
+    """Insert a follow-up job. It inherits the settled job's pins (bundle, config hash,
+    and its input when it gives none) only within the same task version: a retry of
+    a rollout slot must be scored against the same bundle, but the first job of the
+    next version (e.g. a world mutation) must not be pinned to the old one. An input
+    the follow-up states, even an empty one, is used as given."""
+    same = f["task_id"] == parent["task_id"] and f["version"] == parent["version"]
     parent_input = json.loads(parent["input"]) if isinstance(parent["input"], str) else parent["input"]
+    inherit = lambda key, own: own if own or not same else parent[key]  # noqa: E731
     return insert_job(
         c, id=f["id"], task_id=f["task_id"], version=f["version"], type=JobType(f["type"]),
-        input=f.get("input") or parent_input, slot=f.get("slot", 0), retry=f.get("retry", 0),
-        bundle_sha256=f.get("bundle_sha256") or parent["bundle_sha256"],
-        config_hash=f.get("config_hash") or parent["config_hash"],
+        input=f["input"] if "input" in f else (parent_input if same else {}),
+        slot=f.get("slot", 0), retry=f.get("retry", 0),
+        bundle_sha256=inherit("bundle_sha256", f.get("bundle_sha256")),
+        config_hash=inherit("config_hash", f.get("config_hash")),
         delay_s=f.get("delay_sec", 0.0), priority=f.get("priority") or None,
     )

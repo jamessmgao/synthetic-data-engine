@@ -66,6 +66,7 @@ BASE_ENV = {
     # The scenarios script versions explicitly (t04 is too hard three times, then
     # exhausted), so pin the cap rather than follow the production default.
     "SDE_MAX_VERSIONS": "3",
+    "SDE_AGENT_LEASE_TTL_S": "2",  # agent-mode generation leases, as short as the others here
 }
 
 

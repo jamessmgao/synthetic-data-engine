@@ -21,6 +21,7 @@ import os
 import shutil
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -244,11 +245,20 @@ class S3ArtifactStore(LocalArtifactStore):
         except self._ClientError:
             return False
 
+    UPLOAD_THREADS = 8
+
     def _upload_dir(self, src: Path, prefix: str) -> None:
-        for path in sorted(p for p in src.rglob("*") if p.is_file()):
+        """Upload a tree, a few files at a time: worlds and authoring traces can hold
+        thousands of small files, and one round trip each, serially, is slow."""
+
+        def put(path: Path) -> None:
             key = f"{prefix}/{path.relative_to(src).as_posix()}"
             extra = {"Metadata": {"executable": "1"}} if os.access(path, os.X_OK) else {}
             self.s3.upload_file(str(path), self.bucket, key, ExtraArgs=extra)
+
+        files = sorted(p for p in src.rglob("*") if p.is_file())
+        with ThreadPoolExecutor(self.UPLOAD_THREADS) as pool:
+            list(pool.map(put, files))  # re-raises the first upload error
 
     def _download_dir(self, prefix: str, dest: Path) -> None:
         tmp = staging_path(dest)

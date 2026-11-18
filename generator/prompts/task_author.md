@@ -36,7 +36,9 @@ TaskDraft schema (`sde-task check` validates it). It becomes the task:
   to the task's layout.
 - **The wrong fix** (`wrong_fix_script`): a concrete implementation of the world's
   `plausible_wrong_fix`, written the way a capable engineer would write it. The tests
-  must reject it.
+  must reject it. Its first line is a comment naming it, with the text copied exactly
+  from `world.json`:
+  `# plausible_wrong_fix: <the plausible_wrong_fix text>` (`sde-task check` requires it).
 - **The hidden tests** (`test_outputs`, `test_support_files`):
   1. the counterexample, replayed exactly as `repro.sh` does it, asserting the
      invariant it violates;
@@ -64,7 +66,8 @@ $system_rules
 
 # Check before you finish
 
-Run these, read the JSON they print, fix the draft, and repeat until all four exit 0:
+Run these, read the JSON they print, fix the draft, and repeat until all four exit 0
+(both commands check the draft against the world in `/input/world/`):
 
     sde-task check /logs/artifacts/draft.json              # {ok, errors}: the schema and every pipeline rule
     sde-task run /logs/artifacts/draft.json --as oracle    # reference solution: reward 1, every test passes
@@ -72,8 +75,11 @@ Run these, read the JSON they print, fix the draft, and repeat until all four ex
     sde-task run /logs/artifacts/draft.json --as wrong     # the wrong fix: reward 0
 
 `run` builds the task image and runs it like the evaluation does (1 CPU, 2 GB, the
-solution as the unprivileged `agent` user, the tests as root) and lists every test's
-status. Read which tests failed:
+solution as the unprivileged `agent` user, the tests as root). Its JSON lists every
+test by name with its status and assertion message (`tests`), and failures caused only
+by setup problems (an import error, a missing file or command, no reward) under
+`setup_errors`: a nop or wrong run that fails only that way does not count. Read
+which tests failed:
 
 - `nop`: the test that replays the world's counterexample MUST be among the failures,
   failing on the invariant the counterexample violates (the same outcome `repro.sh`
