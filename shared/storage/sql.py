@@ -167,10 +167,16 @@ def job_id(task_id: str, version: int, kind: str, n: int = 0) -> str:
 
     `create` starts v1; `revise` starts a later version (a revision); `repair<n>`
     (also type revise) fixes a version whose gates failed; `validate-r<n>` checks
-    draft n of a version (0 = its create / revise, n = repair n)."""
+    draft n of a version (0 = its create / revise, n = repair n). Agent mode adds
+    `world` (builds or mutates the version's world), `world-repair<n>` (type world,
+    after a failed check) and `world-check-r<n>` (checks world draft n)."""
     match kind:
-        case "create" | "revise":
+        case "create" | "revise" | "world":
             return f"{task_id}-v{version}-{kind}"
+        case "world-repair":
+            return f"{task_id}-v{version}-world-repair{n}"
+        case "world-check":
+            return f"{task_id}-v{version}-world-check-r{n}"
         case "repair":
             return f"{task_id}-v{version}-repair{n}"
         case "validate":

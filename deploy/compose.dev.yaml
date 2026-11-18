@@ -12,7 +12,14 @@
 #   SDE_VALIDATE_CMD      Build + Validate (shared/jobs/worker.py → task-builder gates)
 #   SDE_EXECUTOR_CMD      Executor (the run queue)
 #   SDE_API_CMD           the API service
+#   SDE_RUNNER_GENERATION_CMD  Generation Service on worker-runner (agent mode only)
 # Set one to "" to leave that process out.
+#
+# Author mode (docs/AGENTIC_AUTHORING_PLAN.md): SDE_AUTHOR_MODE=oneshot (default)
+# drafts with one GLM-5.1 call on worker-control. With SDE_AUTHOR_MODE=agent every
+# world / create / revise job is a Harbor authoring trial that needs Docker and holds
+# a slot, so the Generation Service moves to worker-runner: `make up-agent` sets that up and
+# builds the authoring image (SDE_AUTHORING_IMAGE) first.
 
 x-backend-env: &backend-env
   DATABASE_URL: postgresql://sde:sde@postgres:5432/sde
@@ -26,6 +33,8 @@ x-backend-env: &backend-env
   # the host, because task containers are started by the host's Docker daemon.
   SDE_WORK_DIR: ${PWD}/work
   SDE_DOCKER_SLOTS: ${SDE_DOCKER_SLOTS:-4}
+  SDE_AUTHOR_MODE: ${SDE_AUTHOR_MODE:-oneshot}
+  SDE_AUTHORING_IMAGE: ${SDE_AUTHORING_IMAGE:-sde-authoring:dev}
 
 x-depends: &depends
   postgres: {condition: service_healthy}
@@ -112,6 +121,7 @@ services:
       - shared.jobs.supervise
       - ${SDE_VALIDATE_CMD-python -m validator.service validate}
       - ${SDE_EXECUTOR_CMD-python -m evaluation.executor}
+      - ${SDE_RUNNER_GENERATION_CMD-}
     environment:
       <<: *backend-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

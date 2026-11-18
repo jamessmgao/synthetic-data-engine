@@ -148,11 +148,21 @@ class TraceParserService:
             cost += c
         direction = ("repair" if blamed_task else "easier" if calibration.too_hard(passes)
                      else "harder" if calibration.too_easy(passes) else None)
+        # World mutation for the next version (plan §3.5): which operators, aimed at which
+        # fix. The history travels in the revise inputs, so nothing shared is rewritten.
+        mutation, history = None, _mutation_history(jobs)
+        if action == "revise":
+            chosen = (calibration.choose_mutations(passes, enriched, analysis, history) if not blamed_task
+                      else {"operators": [], "why": [], "target_fix": None})
+            mutation = {"version": n + 1, "from_version": n, "pass_count": passes, "direction": direction,
+                        **chosen}
         summary = (f"{passes}/{self.n_runs} passed" + (f"; task blamed by {blamed_task}" if blamed_task else "")
                    + {"accept": "; accepted", "reject": f"; rejected ({reason})",
-                      "revise": f"; revising ({direction}) with {operator}"}[action])
+                      "revise": f"; revising ({direction}) with {operator}"
+                                + (f", mutating: {', '.join(mutation['operators'])}"
+                                   if mutation and mutation["operators"] else "")}[action])
         fields = _result(action, summary, pass_count=passes, operator=operator, direction=direction,
-                         easy_analysis=analysis)
+                         easy_analysis=analysis, mutation=mutation)
         fields["cost_usd"] = round(cost, 6)
 
         def handoff(conn: Conn, row: dict[str, Any]) -> list[dict[str, Any]]:
@@ -166,15 +176,10 @@ class TraceParserService:
                 sha = next(iter(scored.values()))["bundle_sha256"]
                 ok = tasks.cas(conn, tid, version=n, stages=(Stage.EVALUATING,),
                                current_version=n + 1, stage=Stage.QUEUED, bundle_sha256=None)
-                followups.append({
-                    "id": job_id(tid, n + 1, "revise"), "type": JobType.REVISE, "task_id": tid,
-                    "version": n + 1, "bundle_sha256": sha,
-                    "input": {"origin": "revision", "bundle_sha256": sha, "operator": operator,
-                              "direction": direction,
-                              "result": f"{passes} of {self.n_runs} runs passed.",
-                              "evidence": calibration.evidence(enriched),
-                              **({"analysis": analysis} if analysis else {})},
-                })
+                followups.append(next_job(
+                    task, n, sha, _world_sha256(jobs, n), direction=direction, operator=operator,
+                    mutation=mutation, history=history, analysis=analysis,
+                    result=f"{passes} of {self.n_runs} runs passed.", evidence=calibration.evidence(enriched)))
             if not ok:  # another copy decided this version first: record that, not our decision
                 conn.execute("UPDATE jobs SET result = ? WHERE id = ?", (json.dumps(
                     {"action": "stale", "summary": f"another analysis decided v{n} first ({summary})"}), row["id"]))
@@ -307,6 +312,64 @@ class TraceParserService:
 def _result(action: str, summary: str, **extra: Any) -> dict[str, Any]:
     return {"outcome": Outcome.OK, "result": {"action": action, "summary": summary,
                                               **{k: v for k, v in extra.items() if v is not None}}}
+
+
+def _mutation_history(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The world's mutations so far: the latest job that carried a history has the whole list."""
+    carried = [j for j in jobs if "mutations" in (j["input"] or {})]
+    latest = max(carried, key=lambda j: j["version"], default=None)
+    return list(((latest or {}).get("input") or {}).get("mutations") or [])
+
+
+def _world_sha256(jobs: list[dict[str, Any]], n: int) -> str | None:
+    """The world version n's task was written from (agent mode), if any."""
+    built = [j for j in jobs if j["version"] == n and (j.get("result") or {}).get("world_sha256")]
+    return built[-1]["result"]["world_sha256"] if built else None
+
+
+def _world_spec(task: dict[str, Any]) -> dict[str, Any]:
+    """The task's spec for a world job; the hand-off copies shape and dial into create, so
+    both are always set (a spec v2 has them; an older one gets fix / its difficulty dial)."""
+    spec = dict(task.get("slot") or {})
+    spec.setdefault("shape", "fix")
+    spec.setdefault("dial", (spec.get("difficulty") or {}).get("dial", 2))
+    return spec
+
+
+def author_mode() -> str:
+    return os.environ.get("SDE_AUTHOR_MODE", "oneshot")
+
+
+def next_job(task: dict[str, Any], n: int, sha: str, world_sha: str | None, *, direction: str | None,
+             operator: str | None, mutation: dict[str, Any], history: list[dict[str, Any]],
+             analysis: dict | None, result: str, evidence: str) -> dict[str, Any]:
+    """The job that produces version n+1 (plan §3.6).
+
+    Agent mode, task written from a world: too easy → a `world` mutation job (change the
+    world to defeat what passed); too hard → `revise` (easier, same world); task blamed →
+    `revise` (repair_ambiguity). One-shot mode, or a task not written from a world: a
+    one-shot `revise` with the operator and the same mutation fields."""
+    tid = task["id"]
+    mutations = [*history, mutation]
+    agent = author_mode() == "agent" and world_sha is not None
+    if agent and direction == "harder":
+        return {"id": job_id(tid, n + 1, "world"), "type": JobType.WORLD, "task_id": tid, "version": n + 1,
+                "bundle_sha256": sha,
+                "input": {"origin": "mutation", "parent_world_sha256": world_sha, "spec": _world_spec(task),
+                          "mutation": {"operators": mutation["operators"], "why": mutation["why"]},
+                          "mutations": mutations, "analysis": analysis, "target_fix": mutation["target_fix"],
+                          "result": result, "evidence": evidence}}
+    base ={"id": job_id(tid, n + 1, "revise"), "type": JobType.REVISE, "task_id": tid, "version": n + 1,
+            "bundle_sha256": sha}
+    if agent and direction in ("easier", "repair"):
+        return {**base, "input": {"origin": "easier" if direction == "easier" else "repair_ambiguity",
+                                  "bundle_sha256": sha, "world_sha256": world_sha, "result": result,
+                                  "evidence": evidence, "target_fix": mutation["target_fix"],
+                                  "mutations": mutations}}
+    return {**base, "input": {"origin": "revision", "bundle_sha256": sha, "operator": operator,
+                              "direction": direction, "result": result, "evidence": evidence,
+                              "mutation_operators": mutation["operators"], "target_fix": mutation["target_fix"],
+                              "mutations": mutations, **({"analysis": analysis} if analysis else {})}}
 
 
 def _reject(tid: str, n: int, reason: RejectReason, stage: Stage) -> Handoff:

@@ -14,6 +14,8 @@ class TaskStatus(StrEnum):
 class Stage(StrEnum):
     """Stage of a task's current version."""
 
+    WORLD_BUILDING = "WORLD_BUILDING"  # agent mode: a world job builds (or mutates) the world
+    WORLD_CHECKING = "WORLD_CHECKING"  # agent mode: world_check gates it
     QUEUED = "QUEUED"
     GENERATING = "GENERATING"
     BUILDING = "BUILDING"
@@ -34,16 +36,21 @@ class RejectReason(StrEnum):
 class JobType(StrEnum):
     """One queue per type (Redis key `sde:<type>`), PRD §5.1."""
 
-    CREATE = "create"  # Generation Service: a new task from its spec (the create queue)
+    WORLD = "world"  # Generation Service, agent mode: build, repair or mutate a world
+    CREATE = "create"  # Generation Service: a new task from its spec, or (agent) from a world
     REVISE = "revise"  # Generation Service: a repair or a revision (the revise queue)
+    WORLD_CHECK = "world_check"  # Build + Validate, agent mode: the world's repro fails, its fix holds
     VALIDATE = "validate"  # Build + Validate
     ROLLOUT = "rollout"  # Executor (the run queue)
     ANALYZE = "analyze"  # Trace Parser: accept / revise / reject
     SMOKE = "smoke"  # `python -m shared.jobs.smoke` only; no worker claims it
 
 
-# The Generation Service's queues, revisions first.
+# The Generation Service's queues, revisions first. World jobs exist in agent mode only.
 GENERATION_TYPES = (JobType.REVISE, JobType.CREATE)
+AGENT_GENERATION_TYPES = (*GENERATION_TYPES, JobType.WORLD)
+# Build + Validate's queues.
+GATE_TYPES = (JobType.VALIDATE, JobType.WORLD_CHECK)
 
 
 class JobStatus(StrEnum):
@@ -69,12 +76,28 @@ PRIORITY = {
     JobType.ANALYZE: 40,
     JobType.ROLLOUT: 30,
     JobType.VALIDATE: 20,
+    JobType.WORLD_CHECK: 18,
     JobType.REVISE: 15,
-    JobType.CREATE: 10,
+    JobType.CREATE: 12,  # a task whose world is checked, before starting a new world
+    JobType.WORLD: 10,
     JobType.SMOKE: 0,
 }
-# Job types that hold a Docker slot while leased.
-DOCKER_JOB_TYPES = (JobType.VALIDATE, JobType.ROLLOUT)
+# How tasks are authored (docs/AGENTIC_AUTHORING_PLAN.md §1):
+#   oneshot  create / revise: one GLM-5.1 call per draft (generator/worker.py:run_generate_job)
+#   agent    world → world_check → create → validate. world, create and revise are each a
+#            Harbor authoring trial, terminus-2 + GLM-5.1 for up to ~60 min
+#            (generator/author.py: run_world_job, run_create_job), holding a Docker slot
+AUTHOR_MODES = ("oneshot", "agent")
+AUTHOR_MODE = os.environ.get("SDE_AUTHOR_MODE", "oneshot")
+if AUTHOR_MODE not in AUTHOR_MODES:
+    raise ValueError(f"SDE_AUTHOR_MODE must be one of {AUTHOR_MODES}, not {AUTHOR_MODE!r}")
+
+# Job types that hold a Docker slot while leased. Every process on a machine must
+# agree on this (they read the same SDE_AUTHOR_MODE), since the slot count is per machine.
+DOCKER_JOB_TYPES = (
+    (*GATE_TYPES, JobType.ROLLOUT, *AGENT_GENERATION_TYPES) if AUTHOR_MODE == "agent"
+    else (*GATE_TYPES, JobType.ROLLOUT)
+)
 DOCKER_SLOTS = int(os.environ.get("SDE_DOCKER_SLOTS", "4"))
 
 # Calibration limits (PRD §6.3–§6.6), shared so every component agrees.

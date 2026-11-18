@@ -3,6 +3,7 @@
     bootstrap        create the Terraform state bucket (once)
     plan | apply     Terraform: VPC, RDS Postgres, ElastiCache Redis, S3, runner EC2
     secrets          copy OPENROUTER_API_KEY from .env into SSM (/sde/openrouter_api_key)
+    author-mode M    set /sde/author_mode to oneshot or agent (takes effect on the next deploy)
     deploy [REF]     ship git REF (default HEAD) to every runner and `compose up --build`
     smoke            run shared.jobs.smoke on the control runner against RDS, Redis and S3
     status           what's running on each runner, and the deployed release
@@ -192,6 +193,14 @@ def cmd_secrets() -> None:
               "--name /sde/api_key --with-decryption")
 
 
+def cmd_author_mode(mode: str) -> None:
+    if mode not in ("oneshot", "agent"):
+        sys.exit("author mode must be oneshot or agent")
+    aws("ssm", "put-parameter", "--name", "/sde/author_mode", "--type", "String", "--value", mode,
+        "--overwrite")
+    print(f"/sde/author_mode = {mode}; run `make aws-deploy` to apply it")
+
+
 def cmd_deploy(ref: str = "HEAD") -> None:
     out = outputs()
     sha = run(["git", "rev-parse", ref], cwd=REPO)
@@ -266,6 +275,7 @@ COMMANDS = {
     "apply": lambda: terraform("apply", "-input=false", "-auto-approve"),
     "destroy": lambda: terraform("destroy", "-input=false"),
     "secrets": cmd_secrets,
+    "author-mode": cmd_author_mode,
     "deploy": cmd_deploy,
     "smoke": cmd_smoke,
     "status": cmd_status,

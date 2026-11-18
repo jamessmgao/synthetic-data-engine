@@ -36,25 +36,59 @@ def decision_text(task: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
     return f"PENDING: v{task['current_version']} is {task['stage']}"
 
 
+def _gates(validate: dict[str, Any]) -> str:
+    """The validate outcome, plus the model-judged gates that ran (wrong fix, leak)."""
+    gates = (validate.get("result") or {}).get("gates") or {}
+    marks = [f"{name} {'skipped' if g.get('skipped') else '✓' if g.get('passed') else '✗'}"
+             for name in ("wrong_fix", "leak") if isinstance(g := gates.get(name), dict)]
+    return f"{validate['outcome']}" + (f" ({', '.join(marks)})" if marks else "")
+
+
+def _world(vjobs: list[dict[str, Any]]) -> str:
+    """Agent mode: the world this version's task was written from, and its world_check outcome."""
+    worlds = [w for j in vjobs if (w := (j.get("result") or {}).get("world_sha256"))]
+    if not worlds:
+        return "-"
+    checks = [j for j in vjobs if j["type"] == "world_check"]
+    return f"`{worlds[-1][:12]}`" + (f" ({checks[-1]['outcome'] or checks[-1]['status']})" if checks else "")
+
+
 def render(task: dict[str, Any], jobs: list[dict[str, Any]], decision: str, n_runs: int) -> str:
     lines = [f"# Verdict: {task['id']}", "", f"**{decision}**", ""]
 
     lines += ["## Spec", "", "```json", json.dumps(task.get("slot") or {}, indent=2), "```", ""]
 
-    lines += ["## Versions", "", "| v | origin | operator | bundle | gates | runs |", "|---|---|---|---|---|---|"]
+    lines += ["## Versions", "", "| v | origin | operator | mutations | world | bundle | gates | runs |",
+              "|---|---|---|---|---|---|---|---|"]
+    mutations: list[dict[str, Any]] = []
     for v in range(1, task["current_version"] + 1):
         vjobs = [j for j in jobs if j["version"] == v]
         drafts = [j for j in vjobs if j["type"] in GENERATION_TYPES]
         inp = (drafts[0] if drafts else {}).get("input") or {}
+        mutations = inp.get("mutations") or mutations  # each revision carries the whole history
         built = [j for j in drafts if j["outcome"] == Outcome.OK]
         validates = [j for j in vjobs if j["type"] == JobType.VALIDATE]
-        gates = validates[-1]["outcome"] if validates else "-"
+        gates = _gates(validates[-1]) if validates else "-"
         sha = (built[-1]["bundle_sha256"] or "")[:12] if built else "-"
+        operators = inp.get("mutation_operators") or (inp.get("mutation") or {}).get("operators") or []
         lines.append(
-            f"| {v} | {inp.get('origin', '-')} | {inp.get('operator') or '-'} | `{sha}` | {gates} "
+            f"| {v} | {inp.get('origin', '-')} | {inp.get('operator') or '-'} "
+            f"| {', '.join(operators) or '-'} | {_world(vjobs)} | `{sha}` | {gates} "
             f"| {pass_pattern(jobs, v, n_runs)} |"
         )
     lines.append("")
+
+    if mutations:
+        lines += ["## World mutations", ""]
+        for m in mutations:
+            ops = ", ".join(m.get("operators") or []) or "none"
+            lines.append(f"- v{m.get('from_version')} → v{m.get('version')} ({m.get('pass_count')}/{n_runs} passed, "
+                         f"{m.get('direction')}): {ops}")
+            for why in m.get("why") or []:
+                lines.append(f"  - {why}")
+            if m.get("target_fix"):
+                lines.append(f"  - aimed at: {m['target_fix']}")
+        lines.append("")
 
     rollouts = sorted(
         (j for j in jobs if j["type"] == JobType.ROLLOUT), key=lambda j: (j["version"], j["slot"], j["retry"])

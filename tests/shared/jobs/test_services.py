@@ -347,6 +347,128 @@ def test_too_easy_revision_carries_why_it_was_easy(backend, tmp_path):
     assert decision["cost_usd"] >= 0.02
 
 
+def test_too_easy_revisions_mutate_the_world_and_keep_its_history(backend, tmp_path):
+    """Each too-easy version picks mutations from the evidence; the history accumulates and
+    successive versions try operators not applied before."""
+    def complete(messages, response_format, llm_dir=None, cache_key=""):
+        reply = {"why_easy": "Every run kept a seen-set [E1].", "simple_strategy": "dedupe in memory",
+                 "cues": [{"quote": "twice", "where": "instruction"}],
+                 "fix_applied": "a process-local set of processed job ids", "cited_evidence": ["E1"],
+                 "suggestions": []}
+        return SimpleNamespace(content=json.dumps(reply), cost_usd=0.02, cached=False)
+
+    parser = TraceParserService(backend, accepted_dir=tmp_path / "accepted", complete=complete)
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score(backend, parser, 1, "11111")
+    v2 = backend.store.job(job_id(T, 2, "revise"))["input"]
+    assert v2["mutation_operators"] == ["add_persistent_state", "add_realistic_distractor"]
+    assert v2["target_fix"] == "a process-local set of processed job ids"
+    assert [m["version"] for m in v2["mutations"]] == [2]
+
+    build(backend, 2, "sha2")
+    score(backend, parser, 2, "11110")
+    v3 = backend.store.job(job_id(T, 3, "revise"))["input"]
+    assert [m["version"] for m in v3["mutations"]] == [2, 3]
+    assert not set(v3["mutation_operators"]) & set(v2["mutation_operators"])  # something new
+    decision = next(j for j in backend.store.task_jobs(T) if j["type"] == "analyze" and j["version"] == 2
+                    and (j["result"] or {}).get("action") == "revise")
+    assert decision["result"]["mutation"]["operators"] == v3["mutation_operators"]
+
+
+def test_too_hard_and_repair_revisions_mutate_nothing(backend, parser):
+    create_task(backend, task_id=T)
+    build(backend, 1, "sha1")
+    score(backend, parser, 1, "00000")
+    rev = backend.store.job(job_id(T, 2, "revise"))["input"]
+    assert rev["direction"] == "easier" and rev["mutation_operators"] == []
+    assert rev["mutations"][0]["direction"] == "easier"
+
+
+def _next(direction, world_sha="w1", operators=("add_persistent_state",)):
+    from evaluation.trace_parser_service import next_job
+
+    mutation = {"version": 2, "from_version": 1, "pass_count": 5, "direction": direction,
+                "operators": list(operators), "why": ["w"] * len(operators), "target_fix": "a seen-set"}
+    return next_job({"id": T, "slot": {"family": "database_consistency"}}, 1, "sha1", world_sha,
+                    direction=direction, operator="increase_diagnosis_depth", mutation=mutation,
+                    history=[{"version": 1, "operators": []}], analysis={"why_easy": "x"},
+                    result="5 of 5 runs passed.", evidence="- run 1: passed")
+
+
+def test_agent_mode_too_easy_mutates_the_world(monkeypatch):
+    """Plan §3.6: too easy → a `world` mutation job from the parent world."""
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "agent")
+    job = _next("harder")
+    assert job["type"] == "world" and job["id"] == job_id(T, 2, "world") == f"{T}-v2-world"
+    inp = job["input"]
+    assert inp["origin"] == "mutation" and inp["parent_world_sha256"] == "w1"
+    assert inp["mutation"] == {"operators": ["add_persistent_state"], "why": ["w"]}
+    assert [m["version"] for m in inp["mutations"]] == [1, 2] and inp["target_fix"] == "a seen-set"
+    # The hand-off copies shape and dial into create, so they are always present.
+    assert inp["spec"] == {"family": "database_consistency", "shape": "fix", "dial": 2}
+    assert inp["analysis"] == {"why_easy": "x"}
+
+
+def test_agent_mode_too_hard_and_blamed_revise_the_task_on_the_same_world(monkeypatch):
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "agent")
+    easier, blamed = _next("easier", operators=()), _next("repair", operators=())
+    assert easier["type"] == "revise" and easier["input"]["origin"] == "easier"
+    assert easier["input"]["world_sha256"] == "w1" and easier["input"]["bundle_sha256"] == "sha1"
+    assert blamed["input"]["origin"] == "repair_ambiguity"
+
+
+def test_one_shot_mode_or_a_task_without_a_world_revises_one_shot(monkeypatch):
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "agent")
+    job = _next("harder", world_sha=None)  # written one-shot before agent mode was turned on
+    assert job["type"] == "revise" and job["input"]["origin"] == "revision"
+    assert job["input"]["mutation_operators"] == ["add_persistent_state"]
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "oneshot")
+    assert _next("easier")["input"]["origin"] == "revision"
+
+
+def test_verdict_shows_mutations_and_model_judged_gates():
+    from evaluation import verdict
+
+    hist = [{"version": 2, "from_version": 1, "pass_count": 5, "direction": "harder",
+             "operators": ["add_persistent_state"], "why": ["a restart must defeat it"], "target_fix": "a seen-set"}]
+    job = {"cost_usd": None, "outcome": "OK", "bundle_sha256": "abc", "slot": None, "retry": 0}
+    jobs = [{**job, "id": "v2", "type": "revise", "version": 2,
+             "input": {"origin": "revision", "mutation_operators": ["add_persistent_state"], "mutations": hist}},
+            {**job, "id": "v2-validate", "type": "validate", "version": 2,
+             "result": {"gates": {"wrong_fix": {"passed": True}, "leak": {"passed": False}}}}]
+    text = verdict.render({"id": T, "current_version": 2, "slot": {}}, jobs, "ACCEPTED", 5)
+    assert "| 2 | revision | - | add_persistent_state | - | `abc` | OK (wrong_fix ✓, leak ✗) |" in text
+    jobs += [{**job, "id": "v2-world", "type": "world", "version": 2, "result": {"world_sha256": "f" * 64}},
+             {**job, "id": "v2-wc", "type": "world_check", "version": 2, "status": "DONE"}]
+    text = verdict.render({"id": T, "current_version": 2, "slot": {}}, jobs, "ACCEPTED", 5)
+    assert f"| `{'f' * 12}` (OK) |" in text
+    assert "- v1 → v2 (5/5 passed, harder): add_persistent_state" in text and "aimed at: a seen-set" in text
+
+
+def test_choose_mutations_reads_the_passing_strategy():
+    from evaluation.calibration import MUTATION_OPERATORS, choose_mutations
+
+    def run(slot, files=None, steps=None, cmds=()):
+        return {"slot": slot, "outcome": "VALID_PASS",
+                "trace_metrics": {"files_modified": files, "llm_calls": steps,
+                                  "tool_calls": [{"input": c} for c in cmds]}}
+
+    greedy = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["sed -i 's/x/y/' a.py"])],
+                              {"trusted": True, "simple_strategy": "a greedy first-fit assignment"}, [])
+    assert greedy["operators"][0] == "generate_counterexample"
+    # Untrusted analysis is ignored; one-file, few-step passes still say what to change.
+    local = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)] + [{"slot": 5, "outcome": "VALID_FAIL"}],
+                             {"trusted": False, "fix_applied": "a lock"}, [])
+    assert local["operators"] == ["extend_cross_component_dependency", "compose_failure_modes"]
+    assert local["target_fix"] is None
+    # Already applied operators go last; everything chosen is from the contract's list.
+    again = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)], None,
+                             [{"operators": ["extend_cross_component_dependency"]}])
+    assert "extend_cross_component_dependency" not in again["operators"]
+    assert set(greedy["operators"] + local["operators"] + again["operators"]) <= set(MUTATION_OPERATORS)
+
+
 def test_in_band_and_too_hard_versions_get_no_pass_review(backend, tmp_path):
     names = []
 

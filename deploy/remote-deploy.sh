@@ -25,6 +25,21 @@ param() {
   aws ssm get-parameter --region "$region" --name "$1" --with-decryption \
     --query Parameter.Value --output text
 }
+# An optional parameter, with a default when it isn't set.
+param_or() { param "$1" 2>/dev/null || echo "$2"; }
+
+# Author mode (docs/AGENTIC_AUTHORING_PLAN.md), set with `aws_ops.py author-mode`.
+author_mode=$(param_or /sde/author_mode oneshot)
+
+# The authoring image, when this release has one: built into each runner's Docker,
+# tagged by its content so a change rebuilds it and an unchanged one is reused.
+authoring_image=""
+if [ -f "$release/authoring/Dockerfile" ]; then
+  tag=$(cd "$release/authoring" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
+  authoring_image="sde-authoring:$tag"
+  docker image inspect "$authoring_image" >/dev/null 2>&1 \
+    || docker build -q -t "$authoring_image" "$release/authoring" >/dev/null
+fi
 # Run a component only if its code is in this release.
 cmd() { if [ -e "$release/$1" ]; then echo "$2=$3"; else echo "$2="; fi; }
 
@@ -39,12 +54,21 @@ umask 077
   echo "SDE_WORK_DIR=/opt/sde/work"
   echo "SDE_DOCKER_SLOTS=$slots"
   echo "SDE_RELEASE=$sha"
+  echo "SDE_AUTHOR_MODE=$author_mode"
+  echo "SDE_AUTHORING_IMAGE=$authoring_image"
   echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
-  # worker-control always runs the one reconciler, with the Generation Service if present.
-  if [ -e "$release/generator/worker.py" ]; then
-    echo "SDE_GENERATION_CMD=python -m generator.service generation --with-reconciler"
-  else
+  # worker-control always runs the one reconciler. The Generation Service runs next
+  # to it in oneshot mode, and on every runner's worker-runner in agent mode (each
+  # world / create / revise job is a Harbor trial there, holding a Docker slot).
+  if [ ! -e "$release/generator/worker.py" ]; then
     echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
+    echo "SDE_RUNNER_GENERATION_CMD="
+  elif [ "$author_mode" = agent ]; then
+    echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
+    echo "SDE_RUNNER_GENERATION_CMD=python -m generator.service generation"
+  else
+    echo "SDE_GENERATION_CMD=python -m generator.service generation --with-reconciler"
+    echo "SDE_RUNNER_GENERATION_CMD="
   fi
   cmd evaluation/trace_parser_service.py SDE_TRACE_PARSER_CMD "python -m evaluation.trace_parser_service"
   cmd validator/gates.py SDE_VALIDATE_CMD "python -m validator.service validate"
@@ -69,5 +93,5 @@ docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml build
 # shellcheck disable=SC2086
 docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml up -d --remove-orphans $services
 docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml ps
-echo "components:"; grep '_CMD=' /opt/sde/runtime.env
+echo "components:"; grep -E '_CMD=|SDE_AUTHOR_MODE=|SDE_AUTHORING_IMAGE=' /opt/sde/runtime.env
 echo "deployed $sha as $role"

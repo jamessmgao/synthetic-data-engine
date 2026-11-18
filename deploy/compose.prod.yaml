@@ -38,7 +38,8 @@ services:
     build: {context: .., dockerfile: deploy/Dockerfile, target: runner}
     user: "10001:10001"
     group_add: ["${DOCKER_GID:-0}"]
-    command: ["python", "-m", "shared.jobs.supervise", "${SDE_VALIDATE_CMD-}", "${SDE_EXECUTOR_CMD-}"]
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_VALIDATE_CMD-}", "${SDE_EXECUTOR_CMD-}",
+              "${SDE_RUNNER_GENERATION_CMD-}"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /opt/sde/work:/opt/sde/work # same path as on the host, for Harbor's bind mounts

@@ -12,6 +12,14 @@ functions plugged in front of them.
      REJECTED invalid        repair<k+1> on the revise queue (≤ MAX_REPAIRS_PER_VERSION),
                              else REJECTED invalid
 
+In agent mode a version starts one step earlier, with its world
+(docs/AGENTIC_AUTHORING_PLAN.md §1):
+
+    world / world-repair<k> ─OK─► world-check-r<k> ─OK─► create (from the world) ─► …as above
+          │FAILED                        │FAILED
+          ▼                              ▼
+     REJECTED invalid        world-repair<k+1> (≤ MAX_REPAIRS_PER_VERSION), else REJECTED invalid
+
 Every task change is a compare-and-set on (current_version, stage): if the task
 moved on (decided, or a copy got there first), nothing is enqueued.
 """
@@ -26,6 +34,7 @@ from shared.storage.sql import Conn, job_id, rollout_job_id
 from shared.contracts.models import MAX_REPAIRS_PER_VERSION, JobType, Outcome, RejectReason, Stage
 
 _REPAIR = re.compile(r"-repair(\d+)$")
+_WORLD_REPAIR = re.compile(r"-world-repair(\d+)$")
 
 
 def draft_round(job: dict[str, Any]) -> int:
@@ -66,6 +75,87 @@ def after_generation(backend: Backend):
             "id": job_id(tid, n, "validate", k), "type": JobType.VALIDATE, "task_id": tid, "version": n,
             "bundle_sha256": sha,
             "input": {"bundle_sha256": sha, "bundle_dir": str(backend.artifacts.bundle_path(sha)), "round": k},
+        }]
+
+    return handoff
+
+
+# --- Worlds (agent mode) ---------------------------------------------------------------
+
+
+def world_round(job: dict[str, Any]) -> int:
+    """Which world draft of its version a world job is: 0, or k for world-repair<k>."""
+    m = _WORLD_REPAIR.search(job["id"])
+    return int(m.group(1)) if m else 0
+
+
+def world_started(backend: Backend):
+    def start(job: dict[str, Any]) -> None:
+        with backend.store.tx() as conn:
+            tasks.start(conn, job["task_id"], job["version"], Stage.WORLD_BUILDING,
+                        (Stage.QUEUED, Stage.WORLD_BUILDING))
+
+    return start
+
+
+def after_world(backend: Backend):
+    """A world settled: check it, or reject a task whose world couldn't be built."""
+
+    def handoff(conn: Conn, job: dict[str, Any]) -> list[dict[str, Any]]:
+        tid, n = job["task_id"], job["version"]
+        live = (Stage.QUEUED, Stage.WORLD_BUILDING)
+        if job["outcome"] != Outcome.OK:
+            tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n, stages=live)
+            return []
+        sha = (job["result"] or {}).get("world_sha256")
+        if not sha or not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_CHECKING):
+            return []
+        k = world_round(job)
+        return [{
+            "id": job_id(tid, n, "world-check", k), "type": JobType.WORLD_CHECK, "task_id": tid,
+            "version": n,
+            "input": {"world_sha256": sha, "world_dir": str(backend.artifacts.world_path(sha)),
+                      "spec": (job["input"] or {}).get("spec"), "round": k},
+        }]
+
+    return handoff
+
+
+def world_check_started(backend: Backend):
+    def start(job: dict[str, Any]) -> None:
+        with backend.store.tx() as conn:
+            tasks.start(conn, job["task_id"], job["version"], Stage.WORLD_CHECKING,
+                        (Stage.WORLD_CHECKING,))
+
+    return start
+
+
+def after_world_check(backend: Backend):
+    """The world checked out: author a task from it. Otherwise repair the world."""
+
+    def handoff(conn: Conn, job: dict[str, Any]) -> list[dict[str, Any]]:
+        tid, n = job["task_id"], job["version"]
+        inp = job["input"] or {}
+        sha, spec, k = inp["world_sha256"], inp.get("spec") or {}, int(inp.get("round", 0))
+        live = (Stage.WORLD_CHECKING,)
+        if job["outcome"] == Outcome.OK:
+            if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.QUEUED):
+                return []
+            return [{
+                "id": job_id(tid, n, "create"), "type": JobType.CREATE, "task_id": tid, "version": n,
+                "input": {"origin": "initial", "world_sha256": sha, "shape": spec.get("shape"),
+                          "dial": spec.get("dial")},
+            }]
+        if k >= MAX_REPAIRS_PER_VERSION:
+            tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n, stages=live)
+            return []
+        if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_BUILDING):
+            return []
+        feedback = (job["result"] or {}).get("feedback") or job["error"] or "the world check failed"
+        return [{
+            "id": job_id(tid, n, "world-repair", k + 1), "type": JobType.WORLD, "task_id": tid,
+            "version": n,
+            "input": {"origin": "repair", "world_sha256": sha, "feedback": feedback, "spec": spec},
         }]
 
     return handoff

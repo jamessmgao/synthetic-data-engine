@@ -3,6 +3,8 @@
 Layout under the work dir:
 
     bundles/<sha256>/          immutable task directories
+    worlds/<sha256>/           immutable world directories (agent mode, plan §3.3)
+    drafts/<sha256>.json       a bundle's draft record (prompt + TaskDraft)
     llm/<request_sha256>.json  prompt + response + usage of one LLM call
     traces/<job_id>/           Harbor job dir(s) of one job
 
@@ -35,6 +37,7 @@ def bundle_sha256(task_dir: Path) -> str:
 
 
 STAGING = ".staging"
+TREE_KINDS = ("bundles", "worlds")
 
 
 def staging_path(dest: Path) -> Path:
@@ -98,24 +101,50 @@ class LocalArtifactStore:
 
     def __init__(self, root: Path):
         self.root = root
-        for sub in ("bundles", "llm", "traces"):
+        for sub in TREE_KINDS + ("llm", "traces", "drafts"):
             (root / sub).mkdir(parents=True, exist_ok=True)
 
-    # --- bundles ---------------------------------------------------------
+    # --- content-addressed trees: task bundles and worlds -------------------
+    # The authoring code writes them itself (write_bundle, run_world_job) under
+    # <kind>/<sha>/; `register_*` makes one durable, `*_path` makes one local.
+
+    def tree_path(self, kind: str, sha: str) -> Path:
+        return self.root / kind / sha
+
+    def register_tree(self, kind: str, sha: str) -> None:
+        """Make a tree another component already wrote durable. A no-op locally."""
+        if not self.tree_path(kind, sha).is_dir():
+            raise FileNotFoundError(self.tree_path(kind, sha))
 
     def put_bundle(self, task_dir: Path) -> str:
         sha = bundle_sha256(task_dir)
-        _atomic_copytree(task_dir, self.bundle_path(sha))
+        _atomic_copytree(task_dir, self.root / "bundles" / sha)
+        self.register_bundle(sha)
         return sha
 
     def bundle_path(self, sha: str) -> Path:
-        return self.root / "bundles" / sha
+        return self.tree_path("bundles", sha)
 
     def register_bundle(self, sha: str) -> None:
-        """Make a bundle another component already wrote to `bundle_path(sha)` durable
-        (the generator content-addresses bundles itself). A no-op locally."""
-        if not self.bundle_path(sha).is_dir():
-            raise FileNotFoundError(self.bundle_path(sha))
+        self.register_tree("bundles", sha)
+
+    def world_path(self, sha: str) -> Path:
+        return self.tree_path("worlds", sha)
+
+    def register_world(self, sha: str) -> None:
+        self.register_tree("worlds", sha)
+
+    # --- per-bundle records (drafts/<sha>.json) ------------------------------
+
+    def register_file(self, rel: str) -> None:
+        """Make a file another component wrote under the work dir durable, at the
+        same relative path. A no-op locally."""
+        if not (self.root / rel).is_file():
+            raise FileNotFoundError(self.root / rel)
+
+    def fetch_file(self, rel: str) -> bool:
+        """Make a registered file local if it exists anywhere. True if it's now local."""
+        return (self.root / rel).is_file()
 
     # --- LLM transcripts ---------------------------------------------------
 
@@ -161,7 +190,7 @@ class LocalArtifactStore:
 
     def staging_dirs(self) -> list[Path]:
         """Dirs whose `.staging/` this store writes into (besides publish targets)."""
-        return [self.root / sub for sub in ("bundles", "llm", "traces")]
+        return [self.root / sub for sub in (*TREE_KINDS, "llm", "traces", "drafts")]
 
     # --- publishing ----------------------------------------------------------
 
@@ -185,9 +214,10 @@ class S3ArtifactStore(LocalArtifactStore):
 
     Harbor and Docker need real files, so everything is also kept locally; S3 is
     what survives losing a machine and what other workers download from. Keys
-    mirror the local layout (`bundles/<sha>/…`, `llm/<sha>.json`, `traces/<job>/…`,
+    mirror the local layout (`bundles/<sha>/…`, `worlds/<sha>/…`, `drafts/<sha>.json`,
+    `llm/<sha>.json`, `traces/<job>/…`,
     `accepted/<name>/…`). A bundle counts as uploaded only once its
-    `bundles/<sha>/.complete` marker exists, so a half-finished upload is redone.
+    `<kind>/<sha>/.complete` marker exists, so a half-finished upload is redone.
     """
 
     def __init__(self, root: Path, bucket: str, endpoint_url: str | None = None):
@@ -239,22 +269,33 @@ class S3ArtifactStore(LocalArtifactStore):
         except OSError:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    def put_bundle(self, task_dir: Path) -> str:
-        sha = super().put_bundle(task_dir)
-        self.register_bundle(sha)
-        return sha
+    def register_tree(self, kind: str, sha: str) -> None:
+        super().register_tree(kind, sha)
+        if not self._exists(f"{kind}/{sha}/.complete"):
+            self._upload_dir(super().tree_path(kind, sha), f"{kind}/{sha}")
+            self.s3.put_object(Bucket=self.bucket, Key=f"{kind}/{sha}/.complete", Body=b"")
 
-    def register_bundle(self, sha: str) -> None:
-        super().register_bundle(sha)
-        if not self._exists(f"bundles/{sha}/.complete"):
-            self._upload_dir(self.bundle_path(sha), f"bundles/{sha}")
-            self.s3.put_object(Bucket=self.bucket, Key=f"bundles/{sha}/.complete", Body=b"")
-
-    def bundle_path(self, sha: str) -> Path:
-        local = super().bundle_path(sha)
-        if not local.exists() and self._exists(f"bundles/{sha}/.complete"):
-            self._download_dir(f"bundles/{sha}", local)
+    def tree_path(self, kind: str, sha: str) -> Path:
+        local = super().tree_path(kind, sha)
+        if not local.exists() and self._exists(f"{kind}/{sha}/.complete"):
+            self._download_dir(f"{kind}/{sha}", local)
         return local
+
+    def register_file(self, rel: str) -> None:
+        super().register_file(rel)
+        self.s3.upload_file(str(self.root / rel), self.bucket, rel)
+
+    def fetch_file(self, rel: str) -> bool:
+        if super().fetch_file(rel):
+            return True
+        if not self._exists(rel):
+            return False
+        dest = self.root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = staging_path(dest)
+        self.s3.download_file(self.bucket, rel, str(tmp))
+        os.replace(tmp, dest)
+        return True
 
     def get_llm(self, request_sha: str) -> dict[str, Any] | None:
         found = super().get_llm(request_sha)
