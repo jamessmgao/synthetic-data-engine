@@ -40,7 +40,9 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Performance and resource optimization",
         "mechanisms": "complexity analysis, memory/CPU tradeoffs, preserving exact semantics while getting faster",
         "lever": "a straightforward correct implementation that fundamentally cannot meet a clearly stated "
-                 "scalability requirement",
+                 "scalability requirement, where the obvious optimization (stream it, index it, cache it) "
+                 "silently changes a result that must stay exact; the hard part is keeping the semantics, "
+                 "not choosing the optimization a stated limit already dictates",
         "world": "e.g. a query executor, log reconciler, diff or index builder that is correct but quadratic, "
                  "or holds everything in memory",
         "counterexample": "an input shape (adversarial but realistic) where the current code exceeds a stated "
@@ -55,12 +57,14 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Database consistency and recovery",
         "mechanisms": "isolation anomalies, transaction boundaries, crashes, concurrent updates, persistent state",
         "lever": "a failure or concurrent execution that violates a business invariant even though every "
-                 "individual database operation succeeds",
+                 "individual database operation succeeds; never a plain lost update or read-check-write on "
+                 "one row: the fix a DBA writes first (a conditional UPDATE, SELECT … FOR UPDATE, a UNIQUE "
+                 "constraint) is the plausible wrong fix, defeated by a second table, a retry or a crash",
         "world": "e.g. a booking, inventory, ledger or quota service on SQLite or Postgres, with concurrent "
                  "clients, retries and a crash point between a commit and its side effect",
         "counterexample": "two or more clients run in a fixed interleaving (or a crash is injected at a named "
-                          "statement) and the final state breaks the invariant, e.g. oversold stock or a "
-                          "double charge",
+                          "statement) and the final state breaks the invariant, e.g. a ledger and its "
+                          "summary table that disagree, or a charge applied twice after a retry",
         "scaffold": "sde_sched.py to interleave the clients' transactions step by step and sde_fault.py for a "
                     "crash between a commit and its side effect",
         "dependent": "the fix spans the write path and the retry / recovery worker, or a derived table, "

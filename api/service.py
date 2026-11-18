@@ -15,6 +15,7 @@ What the services write and these read (PRD §5.1):
 
 from collections import Counter, defaultdict
 from datetime import datetime
+from statistics import median
 from typing import Any
 
 from evaluation.calibration import eval_config, in_band
@@ -132,6 +133,43 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
         "pass_count": pass_count if len(scored) == n_runs else None,
         "pass_pattern": pass_pattern(jobs, version, n_runs),
         "cost_usd": _sum_cost(vjobs),
+        "analysis": _analysis_view(vjobs, scored),
+    }
+
+
+def _analysis_view(vjobs: list[dict], scored: dict[int, str]) -> dict | None:
+    """The Trace Parser's decision on the version (its last analyze job that decided):
+    the action, the pass review (why it was easy, the cues, the suggestions), the
+    mutation chosen for the next version with the rules that fired, and the passing
+    runs' signals those rules read (calibration.choose_mutations). None until decided."""
+    decided = [j for j in vjobs if j["type"] == JobType.ANALYZE and j["status"] == JobStatus.DONE
+               and (j["result"] or {}).get("action") not in (None, "wait", "stale")]
+    if not decided:
+        return None
+    result = decided[-1]["result"]
+    review = result.get("easy_analysis")
+    passing = [j for j in vjobs if j["type"] == JobType.ROLLOUT and j["outcome"] == Outcome.VALID_PASS
+               and scored.get(j["slot"]) == Outcome.VALID_PASS]
+    metrics = [j["trace_metrics"] or {} for j in passing]
+    files = [m["files_modified"] for m in metrics if m.get("files_modified") is not None]
+    steps = [m["llm_calls"] for m in metrics if m.get("llm_calls")]
+    return {
+        "job_id": decided[-1]["id"],
+        "action": result.get("action"),
+        "summary": result.get("summary"),
+        "direction": result.get("direction"),
+        "operator": result.get("operator"),
+        "mutation": result.get("mutation"),
+        "review": {k: review.get(k) for k in (
+            "trusted", "why_easy", "simple_strategy", "fix_applied", "cues", "suggestions", "runs_reviewed",
+            "review_error",
+        ) if k in review} if review else None,
+        "signals": {
+            "passing_runs": len(passing),
+            "files_modified_median": median(files) if files else None,
+            "steps_median": median(steps) if steps else None,
+            "cues": len((review or {}).get("cues") or []),
+        },
     }
 
 

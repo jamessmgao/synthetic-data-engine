@@ -19,7 +19,7 @@ under the stopping rules below, log it as iteration 0, then deploy main and star
 iteration 1.
 
 Each iteration:
-1. Submit a batch of 6 tasks, one per family, budget_usd 40, via the API (docs/API.md;
+1. Submit a batch of 6 tasks, one per family, with no budget_usd, via the API (docs/API.md;
    `make aws-k8s-public` prints the current URL, which changes on every deploy).
 2. Watch it end to end:
    - world authoring, world check, task authoring, validate, the 5 rollouts, the Trace
@@ -77,7 +77,9 @@ Optimizing the revision pipeline (the algorithm, not only the prompts):
   (prompt or self-check), because a failed world wastes the whole task.
 
 Limits:
-- Stay within the $220 total budget (/healthz shows the spend). Never raise any cap.
+- No budget cap (the user removed it on 2026-11-18, replacing the earlier $220): be reasonably
+  frugal (/healthz shows the spend). When the gateway key runs out ("API key spend limit
+  exceeded"), switch to the backup key (outside the repo; its file says how) between batches.
 - Never set a short solver timeout: timeouts don't count as the model failing.
 
 Infrastructure:
@@ -133,5 +135,5 @@ The task creation yield is at least 80% on one batch of 10 or more: at least 80%
 submitted are ACCEPTED in band (1-3/5) because they are genuinely difficult. Not counted as
 accepted: tasks rejected or cancelled for malformation, failed validation, broken worlds,
 infrastructure errors or timeouts. Record that batch's per-task evidence in
-docs/ITERATION_LOG.md. If the $220 budget runs out first, stop and write a final summary there
+docs/ITERATION_LOG.md. If both gateway keys run out first, stop and write a final summary there
 instead.

@@ -176,6 +176,21 @@ def test_the_blind_check_can_be_switched_off(tmp_path, monkeypatch):
     assert gate.detail["cost_usd"] == pytest.approx(0.02)
 
 
+def test_a_mutated_world_tells_the_judge_the_parent_fix_is_known(tmp_path, monkeypatch):
+    b = bundle(tmp_path, GOOD_INSTRUCTION)
+    world_json = tmp_path / "work" / "worlds" / "w-p1" / "world.json"
+    meta = json.loads(world_json.read_text())
+    meta["lineage"] = {"mutations": [{"defeats": "commit-before-ack now also promotes a rejected over-limit batch"}]}
+    world_json.write_text(json.dumps(meta))
+    model = Model({"verdict": "clean", "leaks": []})
+    run_gate = gates.gate_leak
+    monkeypatch.setattr(llm, "complete", model)
+    run_gate(b, tmp_path / "trace")
+    judge = model.seen["leak-judge"]
+    assert "mutation of a solved parent" in judge and "promotes a rejected over-limit batch" in judge
+    assert "mutation of a solved parent" not in model.seen["leak-blind"]  # the predictor still sees only the instruction
+
+
 def test_without_the_world_the_review_still_runs_on_the_bundle(tmp_path, monkeypatch):
     b = bundle(tmp_path, P1_INSTRUCTION)
     (b / "task.toml").write_text("")  # no world recorded

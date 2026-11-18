@@ -8,10 +8,10 @@ The cluster: [DEPLOY.md](DEPLOY.md) §8.6. The API from the command line: [API.m
 
 ## The loop
 
-1. **Submit a batch:** 6 tasks, one per family, with `budget_usd: 40`. If a change targets
+1. **Submit a batch:** 6 tasks, one per family (no `budget_usd`: no cap). If a change targets
    one family, use 4–6 tasks of that family instead.
    ```bash
-   sde -X POST $SDE_URL/v1/batches -d '{"batch_id": "tune-<n>", "count": 6, "dial": 2, "budget_usd": 40}'
+   sde -X POST $SDE_URL/v1/batches -d '{"batch_id": "tune-<n>", "count": 6, "dial": 2}'
    ```
 2. **Watch it end to end:**
    - world and task authoring;
@@ -68,8 +68,10 @@ The cluster: [DEPLOY.md](DEPLOY.md) §8.6. The API from the command line: [API.m
 ## Limits
 
 - **Budget:**
-  - stay within the **$220 total cap** (`/healthz` shows the spend);
-  - never raise any cap, global or per batch.
+  - **no total cap** (removed by the user on 2026-11-18, replacing the earlier $220): be
+    reasonably frugal (`/healthz` shows the spend); batches have no `budget_usd` either;
+  - when the gateway key runs out ("API key spend limit exceeded"), switch to the backup key
+    (outside the repo; its file says how), between batches.
 - **Timeouts:** never set a short solver timeout. Timeouts don't count as the model failing.
 - **Changes go through git:** every change is committed, pushed and deployed. Live inspection of
   the cluster is fine; live editing of files in pods isn't (a deploy erases it, and nobody can tell

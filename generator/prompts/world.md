@@ -32,6 +32,10 @@ $family_brief
   textbook slip agents spot on sight (`=` for `+=`, an off-by-one, a missing lock around a
   counter), and the fix is not a one-liner. Prefer a fix that touches 2 modules, or a module
   elsewhere that depends on the current behavior.
+- **The correct behavior is not already in the system**: no second mode, reference path or
+  recompute-from-scratch routine the fix can simply switch to or call. Otherwise any honest
+  invariant names the fix ("service mode must agree with --reference"), and agents pass by
+  delegating to it. A reference may exist only in the tests or the repro, never in `/app`.
 - **The plausible wrong fix** is what a capable engineer would try first: it makes the visible
   symptom go away but still fails repro.sh, only on a deeper schedule (another crash point, a
   second retry, a concurrent worker) or on a dependent (e.g. a process-local dedup set that a
@@ -51,7 +55,9 @@ never `docker run -v` (paths here are not host paths): build with a context and 
 with `docker cp`. Label what you start by hand with `--label "$$SDE_DOCKER_LABEL"`. Clean up only
 your own containers (`docker ps --filter label=$$SDE_DOCKER_LABEL`): never kill, stop or remove
 containers you didn't start (the daemon is shared). If the terminal is stuck, press C-c once and
-wait; never kill all containers. The world
+wait; never kill all containers. Your terminal is one interactive shell: never type `exit` or
+`set -e` at the prompt (they end the session); put multi-step checks in a script or
+`bash -c '…'`. The world
 later runs as a non-root `agent` user with 1 CPU / 2 GB; install packages only in the
 Dockerfile. Any timing bound in tests needs a 5x margin (1 CPU). Pitfalls: every `COPY`
 source must exist in `environment/`; `COPY a b c dest` needs `dest/` (a trailing slash);
@@ -77,4 +83,5 @@ worlds: the README's last section has the inline patterns.
 
 `sde-world check /logs/artifacts/world` must exit 0. You are not done until it does; if it
 fails, fix the one failing check it names and re-run. Never finish with a failing or skipped
-check.
+check. Builds and the check take minutes: while they run, wait with `"duration": 60` (the
+maximum) per step, never short 10 s polls (every step resends the whole conversation).

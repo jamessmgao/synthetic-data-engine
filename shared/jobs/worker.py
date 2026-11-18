@@ -80,7 +80,7 @@ def release_in_flight(reason: str = "released at worker shutdown") -> list[str]:
     released = []
     for job_id, (jq, token, job, on_lost) in jobs:
         try:
-            if jq.release(job_id, token, error=reason, delay_sec=0.0):
+            if jq.release(job_id, token, error=reason, delay_sec=0.0, refund_attempt=True):
                 released.append(job_id)
         except Exception:
             log.exception("%s: release at shutdown failed (it will be reclaimed when its lease lapses)", job_id)

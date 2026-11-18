@@ -41,6 +41,12 @@ def cap(monkeypatch):
     return set_cap
 
 
+@pytest.mark.parametrize("value", ["none", "Off", "unlimited", " "])
+def test_none_means_no_cap(cap, value):
+    cap(value)  # SSM can't store an empty string, so the deploy passes "none"
+    assert budget.cap_usd() is None
+
+
 def test_no_cap_by_default(backend, jq, monkeypatch):
     monkeypatch.delenv("SDE_BUDGET_USD", raising=False)
     t = add_task(backend)

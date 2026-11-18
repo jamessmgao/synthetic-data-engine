@@ -113,9 +113,13 @@ MAX_MUTATIONS = 2
 # code patterns: plain words like "set" or "lock" appear in ordinary commands.
 _FIX_RULES: list[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...], str]] = [
     ("process_local_guard",
-     ("process-local", "in-memory", "in memory", "seen set", "set of", "dict of", "flag", "module-level",
-      "global variable", "class attribute", "cache"),
-     ("= set()", "= {}  #", "processed = set", "seen = set", "_seen", "global "),
+     # Unambiguous phrases only: "cache", "set of", "dict of" and "flag" also describe fixes
+     # that aren't guards (a cache invalidation, "the set of jobs").
+     ("process-local", "in-memory", "in memory", "seen set", "module-level", "global variable",
+      "class attribute"),
+     # A Python `global` statement starts its line; a bare "global " also matched C text such as
+     # "the global optimum" in aws-agent-b1-t08's planner.
+     ("= set()", "= {}  #", "processed = set", "seen = set", "_seen", "\nglobal ", "    global "),
      ("add_persistent_state", "inject_partial_failure"),
      "the passing fix kept a guard in one process; a restart or crash must defeat it"),
     ("local_reorder_or_serialize",

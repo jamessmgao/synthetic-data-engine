@@ -40,6 +40,9 @@ executions:
 2. The exact counterexample as one case, replayed as `repro.sh` does it (from the image's
    `WORKDIR`, by absolute `/app/...` paths).
 3. Regression and edge cases for what must keep working, with exact expected values.
+Random inputs obey every rule the instruction states (an acyclic graph, unique IDs, value
+ranges): assert it in the generator, and never require success on an input the instruction
+calls invalid (a real draft's generator could make a job its own prerequisite).
 Drive the system only through its interface (never import internals); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
 under 60 s on 1 CPU. Timing assertions need a 5x margin; no test relies on wall-clock speed.
@@ -49,7 +52,12 @@ invariants as observable outcomes), what must keep working, and the interface (e
 path, command and format the tests use). NEVER: the counterexample (its steps, schedule or
 trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
 that workers can be killed at any moment and restarted), the cause, the files to change, or
-the shape of the fix, in any words. The leak review rejects all of these.
+the shape of the fix, in any words. The leak review rejects all of these. Each guarantee holds
+over all histories, and the symptom is what users saw, not the inputs or interleaving that
+caused it; never restate the counterexample's path as a symptom or a conditional guarantee
+(BAD: "if a charge is requested through the charge API and the order's queued delivery is
+then consumed by the worker, that request has exactly one debit"; GOOD: "each request ID is
+debited at most once, whichever path processes it").
 
 Every event, field, file or output the tests rely on is stated as REQUIRED ("the worker emits
 `result_ready` before it commits"), never as optional: an agent may ignore a "may". BAD: "the
@@ -79,6 +87,8 @@ twice: a flaky test fails it), nop (reward 0) and the wrong fix (reward 0), and 
 test with its status. A nop or wrong run that fails only on setup errors (import, missing file,
 no reward) does not count: the counterexample test must be among nop's failures. Write files
 with one heredoc each or a Python script in `/tmp`; never nest heredocs sharing a delimiter.
+Your terminal is one interactive shell: never type `exit` or `set -e` at the prompt (they end
+the session); put multi-step checks in a script or `bash -c '…'`.
 Never weaken or delete a test to make a check pass.
 
 $request
@@ -92,3 +102,7 @@ $request
 You are not done until both exit 0, on the final draft. If one fails, fix that one thing and
 re-run both. Never finish with a failing check: the pipeline re-checks the saved results and
 sends a draft with any failing role back to you.
+
+`sde-task run` takes minutes: while it runs, wait with `"duration": 60` (the maximum) per
+step, never short 10 s polls. Every step resends the whole conversation, so empty polls cost
+the most.

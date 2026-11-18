@@ -68,6 +68,32 @@ patches:
   - target: {kind: ScaledObject, name: executor}
     patch: |-
       - {op: replace, path: /spec/maxReplicaCount, value: 10}
+      # Scale down only after 15 min of a short queue (base: 2 min), longer than a rollout:
+      # a scale-down deletes a pod without knowing it's mid-rollout, and batch aws-agent-b1
+      # lost several in-flight rollouts that way (one dead-lettered after three).
+      - {op: replace, path: /spec/advanced/horizontalPodAutoscalerConfig/behavior/scaleDown/stabilizationWindowSeconds, value: 900}
+  # Spread generation pods evenly over the nodes (soft: never blocks scheduling). Two authoring
+  # sessions' self-checks on one 2-vCPU node pushed its load to 4-8 (batch aws-agent-b1).
+  - target: {kind: Deployment, name: generation}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector: {matchLabels: {app.kubernetes.io/name: generation}}
+  # Spread executor pods too, as KEDA adds them: each runs up to 4 rollouts' builds and
+  # verifiers, and stacking them on one node would starve its neighbours.
+  - target: {kind: Deployment, name: executor}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector: {matchLabels: {app.kubernetes.io/name: executor}}
   - path: generation.yaml
   - path: authoring-image.yaml
     target: {kind: Deployment, name: generation}

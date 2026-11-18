@@ -206,6 +206,48 @@ def test_task_verdict(client, worked_batch):
     assert pending["versions"][0]["pass_count"] is None
 
 
+def test_task_verdict_shows_the_analysis_behind_each_revision(client, backend):
+    tid = create(client, task_id="t-easy")["task_id"]
+    for slot in range(1, 6):
+        rollout(backend, tid, 1, slot, "VALID_PASS", trace_metrics={"llm_calls": 10 + slot, "files_modified": 1})
+    add_job(backend, tid, 1, "analyze", f"{tid}-v1-analyze-wait", outcome="OK",
+            result={"action": "wait", "summary": "4/5 runs scored"})
+    review = {"why_easy": "no test checks that evaluation stays incremental", "simple_strategy": "clear all caches",
+              "fix_applied": "rewrote engine.py", "cues": [{"quote": "A name may be defined more than once.",
+                                                           "where": "instruction"}],
+              "suggestions": [{"technique": "genuine_tradeoff", "change": "bound the recomputation",
+                               "defeats": "recompute-all"}],
+              "cited_evidence": ["E4"], "trusted": True, "runs_reviewed": ["run 1"]}
+    mutation = {"version": 2, "from_version": 1, "pass_count": 5, "direction": "harder",
+                "operators": ["remove_cues", "add_persistent_state"],
+                "why": ["the instruction points at the fix", "the passing fix kept a guard in one process"],
+                "rules": [{"operator": "remove_cues", "rule": "cues_found", "evidence": "pass review cues"},
+                          {"operator": "add_persistent_state", "rule": "process_local_guard",
+                           "evidence": 'pass review said "cache"'}],
+                "target_fix": "rewrote engine.py"}
+    add_job(backend, tid, 1, "analyze", f"{tid}-v1-analyze", outcome="OK", cost_usd=0.2,
+            result={"action": "revise", "summary": "5/5 passed; revising (harder)", "pass_count": 5,
+                    "direction": "harder", "operator": "increase_diagnosis_depth",
+                    "easy_analysis": review, "mutation": mutation})
+    add_job(backend, tid, 2, "world", job_id(tid, 2, "world"), status="LEASED",
+            input={"origin": "mutation", "mutation": {"operators": mutation["operators"]}})
+    rollout(backend, tid, 2, 1, "VALID_PASS")
+    set_task(backend, tid, status="CALIBRATING", current_version=2, stage="WORLD_BUILDING")
+
+    v1, v2 = client.get(f"/v1/tasks/{tid}", headers=AUTH).json()["versions"]
+    a = v1["analysis"]
+    assert (a["job_id"], a["action"], a["direction"]) == (f"{tid}-v1-analyze", "revise", "harder")
+    assert a["mutation"]["rules"][1] == {"operator": "add_persistent_state", "rule": "process_local_guard",
+                                         "evidence": 'pass review said "cache"'}
+    assert a["mutation"]["why"] == mutation["why"] and a["mutation"]["target_fix"] == "rewrote engine.py"
+    assert a["review"]["why_easy"] == review["why_easy"] and a["review"]["trusted"] is True
+    assert a["review"]["suggestions"][0]["technique"] == "genuine_tradeoff"
+    assert "cited_evidence" not in a["review"]
+    assert a["signals"] == {"passing_runs": 5, "files_modified_median": 1, "steps_median": 13, "cues": 1}
+    assert v2["mutation_operators"] == ["remove_cues", "add_persistent_state"]
+    assert v2["analysis"] is None  # not decided yet
+
+
 def test_report_over_named_tasks(client, worked_batch):
     r = client.get("/v1/report", params={"task_id": worked_batch}, headers=AUTH).json()
     assert r["task_ids"] == ["t-01", "t-02", "t-03"] and r["candidates"] == 3

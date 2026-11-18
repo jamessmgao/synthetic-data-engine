@@ -486,6 +486,29 @@ def test_choose_mutations_reads_the_passing_strategy():
                             {"trusted": True, "simple_strategy": "wrote a differential fuzzer and iterated"}, [])
     assert fuzz["operators"] == ["introduce_global_invariant", "generate_counterexample"]
     assert fuzz["rules"][0]["rule"] == "self_checking_agent"
+    # aws-agent-b1-t02: every pass fixed stale cache entries in one file. A cache-invalidation
+    # fix is a one-file patch, not a process-local guard (no add_persistent_state).
+    stale = choose_mutations(5, [run(i, ["engine.py"], 13) for i in range(1, 6)],
+                             {"trusted": True, "cues": [{"quote": "schedules containing redefinitions"}],
+                              "fix_applied": "invalidate the engine's cached results when a name is redefined"}, [])
+    assert stale["operators"] == ["remove_cues", "extend_cross_component_dependency"]
+    assert stale["rules"][1]["rule"] == "one_file_patch"
+    # aws-agent-b1-t08: the greedy heuristic was replaced by a search over the set of jobs;
+    # "set of" names data, not a guard.
+    greedy_set = choose_mutations(5, [run(i, ["planner.c", "solver.c", "report.c"], 20) for i in range(1, 6)],
+                                  {"trusted": True, "cues": [{"quote": "a smaller feasible collection"}],
+                                   "fix_applied": "replaced the greedy value/duration heuristic with a search "
+                                                  "over every subset of the set of jobs"}, [])
+    assert greedy_set["operators"] == ["remove_cues", "generate_counterexample"]
+    assert greedy_set["rules"][1]["rule"] == "locally_plausible_strategy"
+    # ...and its commands wrote C that mentions "the global optimum": not a Python `global`.
+    c_text = ["cat > planner.c <<EOF\n/* the global optimum over all subsets */\nEOF"]
+    greedy_c = choose_mutations(5, [run(i, ["planner.c", "solver.c"], 20, c_text) for i in range(1, 6)],
+                                {"trusted": True, "fix_applied": "replaced the greedy heuristic with an exact search"}, [])
+    assert "add_persistent_state" not in greedy_c["operators"]
+    py_global = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["cat >> w.py <<EOF\ndef f():\n    global SEEN\nEOF"])],
+                                 None, [])
+    assert py_global["operators"][0] == "add_persistent_state"
     # Already applied operators go last; everything chosen is from the contract's list.
     again = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)], None,
                              [{"operators": ["extend_cross_component_dependency"]}])

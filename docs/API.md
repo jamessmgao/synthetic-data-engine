@@ -83,6 +83,16 @@ sde $SDE_URL/v1/tasks/<task_id> | python3 -m json.tool       # one task: stage, 
 sde "$SDE_URL/v1/report?since=2026-11-18T10:00:00Z" | python3 -m json.tool   # yield, cost, time since a moment
 ```
 
+Each version in `/v1/tasks/<task_id>` has an `analysis` once the Trace Parser has decided it
+(null until then):
+- `action`, `summary`, `direction`;
+- `review`: the pass review (`why_easy`, `simple_strategy`, `fix_applied`, `cues`,
+  `suggestions`, `trusted`);
+- `mutation`: what the next version mutates (`operators`, their `why`, the `rules` that fired
+  with their evidence, `target_fix`);
+- `signals`: what those rules read from the passing runs (`files_modified_median`,
+  `steps_median`, `cues`).
+
 A task's `status` is one of:
 - `CALIBRATING` (in progress);
 - `ACCEPTED` (in the 1-3/5 band);

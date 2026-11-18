@@ -51,9 +51,10 @@ _last_warn = float("-inf")
 
 
 def cap_usd() -> float | None:
-    """SDE_BUDGET_USD in dollars, or None for no cap (read on every claim)."""
+    """SDE_BUDGET_USD in dollars, or None for no cap (read on every claim). Unset, empty, "none",
+    "off" or "unlimited" mean no cap (SSM can't store an empty value)."""
     raw = os.environ.get("SDE_BUDGET_USD", "").strip()
-    if not raw:
+    if not raw or raw.lower() in ("none", "off", "unlimited"):
         return None
     cap = float(raw)
     if cap < 0:

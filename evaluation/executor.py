@@ -169,7 +169,7 @@ class Executor:
             if lease_lost.is_set():
                 log.warning("%s: lease lost to another worker; dropped without recording", job_id)
             else:
-                self.queue.release(job_id, token)
+                self.queue.release(job_id, token, refund_attempt=True)
                 log.info("%s: stopped for shutdown; released back to the queue", job_id)
             return
         finally:

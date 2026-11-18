@@ -517,3 +517,18 @@ def test_postgres_lifts_the_old_three_version_cap_once(backend):
     assert definition() == "CHECK ((current_version >= 1))"
     SqlStore(url)  # a second runner booting: nothing to change
     assert definition() == "CHECK ((current_version >= 1))"
+
+
+def test_a_deliberate_release_refunds_the_attempt_a_crash_does_not(backend, jq):
+    """A worker stopped on purpose (e.g. a KEDA scale-down) mustn't use up the job's
+    attempts: three scale-downs dead-lettered a healthy rollout (aws-agent-b1)."""
+    t = add_task(backend)
+    enqueue(backend, jq, t, JobType.ROLLOUT)
+    for _ in range(5):  # more than MAX_JOB_ATTEMPTS deliberate stops
+        job = jq.claim("rollout", "w1")
+        assert job is not None, "a refunded job must stay claimable"
+        assert jq.release(job["id"], job["lease_token"], refund_attempt=True)
+    assert backend.store.job(job["id"])["attempts"] == 0
+    job = jq.claim("rollout", "w1")
+    assert jq.release(job["id"], job["lease_token"], error="crash")
+    assert backend.store.job(job["id"])["attempts"] == 1

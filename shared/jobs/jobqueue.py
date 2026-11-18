@@ -190,15 +190,22 @@ class JobQueue:
         return True
 
     def release(
-        self, job_id: str, token: int, error: str | None = None, delay_sec: float = 0.0
+        self, job_id: str, token: int, error: str | None = None, delay_sec: float = 0.0,
+        refund_attempt: bool = False,
     ) -> bool:
-        """Give a job back unfinished (shutdown, or the handler crashed)."""
+        """Give a job back unfinished (shutdown, or the handler crashed).
+
+        `refund_attempt` for a deliberate stop (a worker shutting down, e.g. a KEDA scale-
+        down): the job wasn't at fault, so its claim shouldn't use up one of its
+        MAX_JOB_ATTEMPTS. Batch aws-agent-b1 dead-lettered a healthy rollout whose pod was
+        scaled away three times. A crash keeps counting, so a poison job still ends."""
         with self.store.tx() as c:
             cur = c.execute(
                 """UPDATE jobs SET status = 'READY', lease_owner = NULL, lease_until = NULL,
-                       due_at = ?, error = COALESCE(?, error), published_at = NULL
+                       due_at = ?, error = COALESCE(?, error), published_at = NULL,
+                       attempts = CASE WHEN ? AND attempts > 0 THEN attempts - 1 ELSE attempts END
                     WHERE id = ? AND lease_token = ? AND status = 'LEASED'""",
-                (time.time() + delay_sec, error, job_id, token),
+                (time.time() + delay_sec, error, refund_attempt, job_id, token),
             )
             ok = cur.rowcount == 1
         if ok:

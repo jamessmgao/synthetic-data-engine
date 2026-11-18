@@ -302,7 +302,8 @@ BLIND_SYSTEM = """You are a strong software engineer. You get only a task's inst
 not its code. Predict, as specifically as the instruction lets you: (1) the change
 that fixes the problem: its mechanism and where it goes, and (2) the sequence of
 events that makes the system fail today. If the instruction does not let you tell,
-say so instead of guessing a generic answer."""
+say so instead of guessing a generic answer. Put your whole answer inside the two
+fields, in a few sentences each; never refer to text outside them."""
 
 BLIND_FORMAT = {
     "type": "json_schema",
@@ -317,7 +318,12 @@ prediction names the real fix's mechanism AND where it applies (or the real fail
 sequence), so that the agent would not need to investigate the code to find it.
 Answer "generic" if it is only a reasonable general remedy any careful engineer
 would list (add validation, make it transactional, add retries), and "none" if it
-does not match."""
+does not match. Both parts must hold for "specific": a right mechanism in the wrong
+module, file or path is "generic". The textbook remedies for the guarantee stated
+(an idempotency key, a lock, fsync or an atomic write for an exactly-once or
+crash-safety guarantee) are "generic" unless the prediction also names where the real
+fix applies. A prediction that is, or includes as its remedy, the task's plausible
+wrong fix is not "specific"."""
 
 JUDGE_FORMAT = {
     "type": "json_schema",
@@ -387,6 +393,13 @@ def _world_context(bundle_dir: Path) -> str:
              f"Observed: {ce.get('observed', '')}", "", f"## Plausible wrong fix\n{meta.get('plausible_wrong_fix', '')}"]
     if (fix := world / "world_fix" / "fix.sh").is_file():
         parts += ["", "## The real fix (world_fix/fix.sh)", fix.read_text()[:CONTEXT_CHARS]]
+    defeats = [m.get("defeats") for m in ((meta.get("lineage") or {}).get("mutations") or [])
+               if isinstance(m, dict) and m.get("defeats")]
+    if defeats:  # aws-agent-b1-t04 v2: a prediction of only the parent's (already solved) fix was judged a leak
+        parts += ["", "## This world is a mutation of a solved parent",
+                  "Agents already solved the parent's defect, so the parent's part of the fix is known: a "
+                  "prediction that names only that part is generic, not specific. What this version adds:",
+                  *(f"- {d}" for d in defeats)]
     return "\n".join(parts)
 
 
@@ -493,13 +506,18 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     return Gate("leak", False, detail, feedback)
 
 
-LEAK_RECORD_VERSION = 3  # 3: a placeholder blind prediction ("...") is retried, then inconclusive
+LEAK_RECORD_VERSION = 4  # 3: a placeholder blind prediction ("...") is retried, then inconclusive; 4: pointers too
+
+_POINTERS = ("see below", "see above", "see detailed", "as above", "as below", "detailed answer below")
 
 
 def _placeholder(text) -> bool:
-    """A model answer with no content: "", "...", "…" (aws-agent-b1: three blind predictions came back
-    as the format's "..." and were judged "none", passing the gate)."""
-    return not isinstance(text, str) or len("".join(ch for ch in text if ch.isalnum())) < 4
+    """A model answer with no content: "", "...", "…", or a pointer to text outside the field ("See
+    detailed answer below."). aws-agent-b1: such blind predictions were judged "none" and passed the gate."""
+    if not isinstance(text, str):
+        return True
+    words = "".join(ch for ch in text if ch.isalnum() or ch == " ")
+    return len(words.replace(" ", "")) < 4 or (len(text) < 80 and any(p in text.lower() for p in _POINTERS))
 
 
 def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:

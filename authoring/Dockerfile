@@ -63,5 +63,9 @@ RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/loc
 # /etc/profile.d/00-image-path.sh (shared/taskformat/materialize.py). Checked by
 # scripts/check_authoring_image.sh.
 RUN echo "export PATH=\"$PATH\"" > /etc/profile.d/00-sde-path.sh
+# In that interactive terminal, `exit` and a later-tripping `set -e` would end the tmux
+# session and kill the trial ("no server running on /tmp/tmux-0/default"): the guard makes
+# both harmless at the prompt (authoring/profile.d/10-sde-terminal.sh; scripts unaffected).
+RUN cp /opt/sde/authoring/profile.d/10-sde-terminal.sh /etc/profile.d/10-sde-terminal.sh
 
 WORKDIR /work

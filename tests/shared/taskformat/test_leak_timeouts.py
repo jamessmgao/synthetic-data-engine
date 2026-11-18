@@ -176,6 +176,15 @@ def test_a_placeholder_prediction_is_retried_then_inconclusive_not_judged(tmp_pa
     assert gate.detail["inconclusive"] == ["blind"] and not gate.detail["blind_leak"]
 
 
+def test_a_pointer_prediction_is_a_placeholder_too(tmp_path, monkeypatch):
+    # aws-agent-b1-t01: "See detailed answer below." in both fields, judged "none", passed.
+    pointer = {"predicted_fix": "See detailed answer below.", "predicted_failure": "See detailed answer below."}
+    model = Scripted({"leak-review": [CLEAN], "leak-blind": [pointer, pointer], "leak-judge": [NO_MATCH]})
+    gate = run(tmp_path, monkeypatch, model)
+    assert "leak-judge" not in model.keys and gate.detail["inconclusive"] == ["blind"]
+    assert not gates._placeholder("index the ledger once, then binary-search each report's range")
+
+
 def test_a_placeholder_then_a_real_prediction_is_judged(tmp_path, monkeypatch):
     model = Scripted({"leak-review": [CLEAN], "leak-blind": [PLACEHOLDER, PREDICTION],
                       "leak-judge": [{"match": "specific", "why": "names it"}]})
