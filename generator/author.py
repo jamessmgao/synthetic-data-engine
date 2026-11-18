@@ -28,6 +28,7 @@ no artifacts) vs "author" (the agent ran but left no usable world).
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -81,6 +82,12 @@ def tree_sha256(root: Path) -> str:
 def _files_under(prefix: str, root: Path) -> dict[str, bytes]:
     return {f"{prefix}/{p.relative_to(root).as_posix()}": p.read_bytes()
             for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def solver_run_files(job_input: dict) -> dict[str, bytes]:
+    """The passing runs' condensed traces (a mutation's `solver_runs`), as /input/solver_runs/."""
+    return {f"solver_runs/{name}": text.encode() for name, text in (job_input.get("solver_runs") or {}).items()
+            if re.fullmatch(r"run\d+\.md", name) and isinstance(text, str)}
 
 
 def render_world_instruction(spec: dict, origin: str = "initial", feedback: str = "") -> str:
@@ -156,6 +163,7 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
         except ValueError as e:  # missing or unknown operators: a bad input, not worth retrying
             return _failed("infra", f"bad mutation input: {e}", None)
         files = _files_under("parent", parent_dir)
+        files.update(solver_run_files(job_input))
         lineage = {"parent_world_sha256": job_input["parent_world_sha256"],
                    "mutations": list(job_input.get("mutations") or [])}
     elif origin == "repair":
@@ -215,6 +223,9 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
     sha, dest = _store(out, work)
     name = meta.get("name") or "-".join(filter(None, (spec.get("family"), spec.get("mechanism")))) or "world"
     authoring = _authoring(trial)
-    authoring["self_check"] = {"by": guard["by"], "outcome": guard["result"].get("outcome")}
+    # The stamp ties the check to this world (world.json's rewrite above leaves it unchanged):
+    # the world_check job adopts it instead of re-running Docker (SDE_ADOPT_AUTHOR_CHECKS).
+    authoring["self_check"] = {"by": guard["by"], "outcome": guard["result"].get("outcome"),
+                               "stamp": guard.get("stamp"), "result": guard["result"]}
     return {"outcome": "OK", "error": None, "cost_usd": trial.get("cost_usd") or 0.0,
             "result": {"world_sha256": sha, "world_path": str(dest), "name": name, "authoring": authoring}}

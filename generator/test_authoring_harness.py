@@ -204,6 +204,20 @@ def test_reasoning_effort_is_passed_only_when_set(tmp_path, monkeypatch):
     assert cmd[cmd.index("--ak") + 1] == "reasoning_effort=medium" and cmd[:4] == [config.HARBOR_BIN, "run", "-p", str(tmp_path)]
 
 
+def test_world_jobs_take_their_own_reasoning_effort_and_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("SDE_AUTHORING_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("SDE_AUTHORING_LLM_TIMEOUT_S", "600")
+    monkeypatch.delenv("SDE_AUTHORING_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("SDE_WORLD_REASONING_EFFORT", "high")
+    monkeypatch.setenv("SDE_WORLD_LLM_TIMEOUT_S", "1200")
+    task = ah.harbor_command(tmp_path, tmp_path)
+    world = ah.harbor_command(tmp_path, tmp_path, world=True)
+    assert "reasoning_effort=medium" in task and '{"timeout": 600.0}' in task[-1]
+    assert "reasoning_effort=high" in world and '{"timeout": 1200.0}' in world[-1]
+    monkeypatch.delenv("SDE_WORLD_REASONING_EFFORT")  # unset: a world job falls back to the authoring setting
+    assert "reasoning_effort=medium" in ah.harbor_command(tmp_path, tmp_path, world=True)
+
+
 def test_llm_timeout_and_max_tokens_go_to_terminus_as_llm_kwargs(tmp_path, monkeypatch):
     for var in ("SDE_AUTHORING_REASONING_EFFORT", "SDE_AUTHORING_LLM_TIMEOUT_S", "SDE_AUTHORING_MAX_TOKENS"):
         monkeypatch.delenv(var, raising=False)
@@ -226,7 +240,7 @@ def _real_trial(monkeypatch, tmp_path, cmd):
     import threading
 
     monkeypatch.setattr(ah.subprocess, "Popen", REAL_POPEN)
-    monkeypatch.setattr(ah, "harbor_command", lambda task_dir, trace: cmd)
+    monkeypatch.setattr(ah, "harbor_command", lambda task_dir, trace, world=False: cmd)
     monkeypatch.setattr(ah, "POLL_SEC", 0.05)
     monkeypatch.setattr(ah, "STOP_GRACE_SEC", 2.0)
     cleaned = []

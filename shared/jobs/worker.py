@@ -385,7 +385,8 @@ def validate_fn(backend: Backend) -> JobFn:
         bundle_dir = backend.artifacts.bundle_path(sha)  # downloads it in S3 mode
         backend.artifacts.fetch_file(leak_review(sha))  # the create job's review, if any: adopted
         trace_dir = backend.artifacts.trace_dir(job["id"])
-        out = run_validate_job(bundle_dir, trace_dir)
+        out = run_validate_job(bundle_dir, trace_dir, author_checks=(job["input"] or {}).get("author_checks"),
+                               bundle_sha256=sha)
         result = {**out["result"], "feedback": out.get("feedback", ""),
                   "failed_gate": out.get("failed_gate")}
         return {
@@ -404,11 +405,14 @@ def world_check_fn(backend: Backend) -> JobFn:
     """world_check (agent mode): run_world_check_job on the world (plan §3.5)."""
     _import_task_builder()
     from validator.gates import run_world_check_job  # validator/gates.py
+    from shared.taskformat.world_check import adopt_author_check
 
     def run(job: dict[str, Any]) -> dict[str, Any]:
         sha = job["input"]["world_sha256"]
         world_dir = backend.artifacts.world_path(sha)  # downloads it in S3 mode
-        out = run_world_check_job(world_dir, backend.artifacts.trace_dir(job["id"]))
+        # The world author's own stamped check, if it is for this world (SDE_ADOPT_AUTHOR_CHECKS).
+        out = (adopt_author_check(job["input"].get("author_check"), world_dir)
+               or run_world_check_job(world_dir, backend.artifacts.trace_dir(job["id"])))
         result = {**(out.get("result") or {}), "feedback": out.get("feedback", ""),
                   "failed_check": out.get("failed_check"), "world_sha256": sha}
         return {

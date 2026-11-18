@@ -45,6 +45,10 @@ $family_brief
   repro, or drive a fault plan the system never documents.
 - **Not announced, not padded**: no comments, logs, names or README text pointing at the
   defect; no filler. Anything a task will need (ports, paths, formats) is discoverable.
+  Names, comments and docstrings on the defective path say what the code is for, never the
+  limit that breaks it (BAD: `findTopLevelAssignments`, `readAll`, "replays only committed
+  entries"): a reader must trace the behavior to find the bug. `sde-world check` warns
+  (`limit_named`) when the fix changes such a function.
 - **Deterministic**: no sleeps as synchronization, fixed seeds, the same answer every run.
 
 # Environment

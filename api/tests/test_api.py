@@ -209,7 +209,9 @@ def test_task_verdict(client, worked_batch):
 def test_task_verdict_shows_the_analysis_behind_each_revision(client, backend):
     tid = create(client, task_id="t-easy")["task_id"]
     for slot in range(1, 6):
-        rollout(backend, tid, 1, slot, "VALID_PASS", trace_metrics={"llm_calls": 10 + slot, "files_modified": 1})
+        # files_modified is a list of paths, as the Trace Parser writes it (aws-iter1-t01: a count crashed this)
+        rollout(backend, tid, 1, slot, "VALID_PASS",
+                trace_metrics={"llm_calls": 10 + slot, "files_modified": ["/app/engine.py"]})
     add_job(backend, tid, 1, "analyze", f"{tid}-v1-analyze-wait", outcome="OK",
             result={"action": "wait", "summary": "4/5 runs scored"})
     review = {"why_easy": "no test checks that evaluation stays incremental", "simple_strategy": "clear all caches",

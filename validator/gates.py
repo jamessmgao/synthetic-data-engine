@@ -25,6 +25,7 @@ Usage: python gates.py <bundle_dir> <trace_dir>
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -305,11 +306,15 @@ events that makes the system fail today. If the instruction does not let you tel
 say so instead of guessing a generic answer. Put your whole answer inside the two
 fields, in a few sentences each; never refer to text outside them."""
 
+# Under the gateway's strict-schema constrained decoding an unescaped " ends a string field
+# early and the answer still parses (evaluation/trace_parser.py NO_DOUBLE_QUOTES).
+_PROSE = {"type": "string", "description": "Quote with single quotes, never double quotes."}
+
 BLIND_FORMAT = {
     "type": "json_schema",
     "json_schema": {"name": "blind_prediction", "strict": True, "schema": {
         "type": "object", "additionalProperties": False, "required": ["predicted_fix", "predicted_failure"],
-        "properties": {"predicted_fix": {"type": "string"}, "predicted_failure": {"type": "string"}}}},
+        "properties": {"predicted_fix": _PROSE, "predicted_failure": _PROSE}}},
 }
 
 JUDGE_SYSTEM = """You compare an engineer's prediction, made from a task's instruction
@@ -333,7 +338,7 @@ JUDGE_FORMAT = {
     "json_schema": {"name": "blind_judgement", "strict": True, "schema": {
         "type": "object", "additionalProperties": False, "required": ["match", "why"],
         "properties": {"match": {"type": "string", "enum": ["specific", "generic", "none"]},
-                       "why": {"type": "string"}}}},
+                       "why": _PROSE}}},
 }
 
 LEAK_FORMAT = {
@@ -343,7 +348,7 @@ LEAK_FORMAT = {
         "properties": {
             "leaks": {"type": "array", "items": {
                 "type": "object", "additionalProperties": False, "required": ["quote", "reveals", "severity"],
-                "properties": {"quote": {"type": "string"}, "reveals": {"type": "string"},
+                "properties": {"quote": {"type": "string"}, "reveals": _PROSE,  # quote: exact text
                                "severity": {"type": "string", "enum": ["direct", "strong_hint"]}}}},
             "verdict": {"type": "string", "enum": ["clean", "leak"]},
         }}},
@@ -475,8 +480,12 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     hints = [x for x in confirmed if x.get("severity") == "strong_hint"]
     blind = record.get("blind") or {}
     blind_leak = (blind.get("judge") or {}).get("match") == "specific"
+    cut = [name for name, text in (("blind.prediction.predicted_fix", (blind.get("prediction") or {}).get("predicted_fix")),
+                                   ("blind.judge.why", (blind.get("judge") or {}).get("why")))
+           if text and re.search(r"(?:\s|[=:(,])$", text)]  # an unescaped " ended it: 'status '
     detail = {"verdict": review.get("verdict"), "leaks": confirmed, "unverified_quotes": unverified,
               "direct": len(direct), "strong_hints": len(hints), "blind": blind, "blind_leak": blind_leak,
+              "cut_fields": cut,
               "had_world": "THE WORLD" in hidden, "calls": record.get("calls", []),
               "request_sha256": record.get("request_sha256"), "cost_usd": record["cost_usd"],
               "adopted": record.get("adopted", False), "inconclusive": inconclusive,
@@ -595,20 +604,53 @@ def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:
             "cost_usd": round(sum(c["cost_usd"] for c in calls), 6), "adopted": False}
 
 
-def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path) -> dict:
+def adopted_runtime_gates(author_checks: dict | None, bundle_sha256: str | None) -> dict[str, Gate] | None:
+    """oracle1, oracle2, nop and wrong_fix from the create job's own sde-task runs, when
+    they may stand in for Harbor's (SDE_ADOPT_AUTHOR_CHECKS=1): the create job checked them
+    against this exact bundle (its stamp is the final draft's, and its bundle sha is this
+    one), and every role came out as the gate requires (the oracle at reward 1 twice with
+    the same per-test results, nop and the wrong fix at 0). Else None: run them as today."""
+    if not config.adopt_author_checks() or not author_checks or not bundle_sha256:
+        return None
+    roles = author_checks.get("roles") or {}
+    stamp = author_checks.get("stamp")
+    if author_checks.get("bundle_sha256") != bundle_sha256 or not stamp:
+        return None
+    if any((roles.get(r) or {}).get("stamp") != stamp for r in ("oracle", "nop", "wrong")):
+        return None
+    oracle, nop, wrong = roles.get("oracle") or {}, roles.get("nop") or {}, roles.get("wrong") or {}
+    repeat = oracle.get("repeat") or {}
+    if not (oracle.get("ok") and oracle.get("reward") == 1.0 and repeat.get("same") and repeat.get("reward") == 1.0
+            and nop.get("ok") and nop.get("reward") == 0.0 and wrong.get("ok") and wrong.get("reward") == 0.0):
+        return None
+    src = {"adopted_from": author_checks.get("job_id"), "stamp": stamp}
+    return {
+        "oracle1": Gate("oracle1", True, {"reward": 1.0, **src}),
+        "oracle2": Gate("oracle2", True, {"reward": 1.0, **src}),
+        "nop": Gate("nop", True, {"reward": 0.0, **src}),
+        "wrong_fix": Gate("wrong_fix", True, {"reward": 0.0, **src}),
+    }
+
+
+def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path, author_checks: dict | None = None,
+                     bundle_sha256: str | None = None) -> dict:
     """Run the gates on one bundle.
 
     Returns {outcome, failed_gate, result: {gates}, feedback, cost_usd}. Only the
-    leak review costs money; its spend is cost_usd (0 when adopted on a retry).
+    leak review costs money; its spend is cost_usd (0 when adopted on a retry). With
+    `author_checks` (the create job's stamped sde-task runs) and SDE_ADOPT_AUTHOR_CHECKS=1,
+    the Docker gates are adopted from them when they match (adopted_runtime_gates);
+    structural, lint and leak always run.
     """
     bundle_dir, trace_dir = Path(bundle_dir), Path(trace_dir)
+    adopted = adopted_runtime_gates(author_checks, bundle_sha256) or {}
     steps = [
         lambda: gate_structural(bundle_dir),
         lambda: gate_lint(bundle_dir),
-        lambda: gate_oracle(bundle_dir, trace_dir, "oracle1"),
-        lambda: gate_oracle(bundle_dir, trace_dir, "oracle2"),
-        lambda: gate_nop(bundle_dir, trace_dir),
-        lambda: gate_wrong_fix(bundle_dir, trace_dir),
+        lambda: adopted.get("oracle1") or gate_oracle(bundle_dir, trace_dir, "oracle1"),
+        lambda: adopted.get("oracle2") or gate_oracle(bundle_dir, trace_dir, "oracle2"),
+        lambda: adopted.get("nop") or gate_nop(bundle_dir, trace_dir),
+        lambda: adopted.get("wrong_fix") or gate_wrong_fix(bundle_dir, trace_dir),
         lambda: gate_leak(bundle_dir, trace_dir),
     ]
     gates: dict[str, dict] = {}

@@ -27,6 +27,7 @@ $parent_summary
 # Why it was too easy
 
 $analysis
+$solver_runs_line
 
 The strategy that passed (it must FAIL on the world you build):
 
@@ -54,7 +55,9 @@ $history
 2. **It defeats the strategy that passed.** Apply `target_fix` (as you understand it
    from the analysis) to your new world and show that an invariant is still violated:
    write that check as a repro and run it. A mutation the old strategy still survives is
-   not a mutation.
+   not a mutation. The new difficulty must be something a careful rewrite still gets
+   wrong, not only a minimal patch: a stated requirement that a from-scratch
+   implementation meets naturally adds nothing (aws-agent-b1-t04 v2 went 5/5 again).
 3. **The world stays solvable and checkable.** A new correct fix exists, written in
    `world_fix/fix.sh`; `repro/repro.sh` exits 1 on the new world and 0 after the fix,
    deterministically, every time.

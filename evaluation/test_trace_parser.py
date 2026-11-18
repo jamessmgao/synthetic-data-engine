@@ -71,7 +71,7 @@ def test_metrics_come_from_the_trajectory_and_result(trial, tmp_path):
     assert m["llm_calls"] == 4 and m["input_tokens"] == 1200 and m["output_tokens"] == 300
     assert m["duration_seconds"] == 210.0 and m["declared_complete"] is True
     assert m["tool_calls"][1]["input"].startswith("sed -i") and m["tool_calls"][2]["output"] == "404 Not Found"
-    assert m["files_modified"] == ["/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/app", "/tmp/out.txt"]
+    assert m["files_modified"] == ["/etc/nginx/nginx.conf", "/etc/nginx/sites-enabled/app"]  # /tmp is scratch
 
 
 def test_evidence_lists_failing_tests_assertions_and_the_agents_last_moves(trial):
@@ -157,10 +157,66 @@ def test_python_and_formatter_writes_are_files():
     assert trace_parser.files_modified(cmds) == ["internal/queue/queue.go", "internal/queue/worker.go"]
 
 
+def test_heredoc_comparisons_scratch_and_backups_are_not_files():
+    """aws-agent-b1-t02's files_modified was ['/tmp/bad.out', 'Type,', 'engine.py', 'evaluated',
+    'parsed', 'set', 'source', …]: a `>` in heredoc code captured words, and /tmp scratch counted,
+    so one_file_patch never fired on a one-file fix."""
+    cmds = ["python3 - <<'PY'\nif depth > evaluated:\n    raise Type, 'x'\nwhile n >= parsed: pass\nPY",
+            "cat > engine.py <<'EOF'\nclass Engine: pass\nEOF",
+            "./minilang run prog.ml > /tmp/bad.out 2>&1; echo $? > /tmp/service-hashes",
+            "cp engine.py engine.py.orig; cp /app/engine.py /tmp/engine.bak",
+            "sed -i 's/a/b/' /app/parser.py"]
+    assert trace_parser.files_modified(cmds) == ["engine.py", "parser.py"]
+
+
 def test_package_installs_and_flags_are_not_files():
     cmds = ["apt-get install -y nginx openssh-server", "git config -g user.name x > /dev/null",
             "sudo cp hook.sh /git/server/hooks/post-receive", "install -m 755 a.sh /usr/local/bin/a"]
     assert trace_parser.files_modified(cmds) == ["/git/server/hooks/post-receive", "/usr/local/bin/a"]
+
+
+# aws-iter1-t01 v1 run 3's stored explanation, whole: an unescaped " ended the string under the
+# gateway's constrained decoding, so the revise prompt said "the task is at fault" with no reason.
+CUT = ("VERDICT: task\n\n1. The instruction and the tests align — no spec/test contradiction. The failing "
+       "tests are test_invariant_1_at_most_one_debit_per_key (E1) and test_counterexample_exact (E7). Their "
+       "assertion lines check exactly what the instruction's Guarantees require: a first submission returns status ")
+
+
+def test_the_conclusion_comes_first_and_a_cut_explanation_is_flagged(trial, tmp_path):
+    assert list(trace_parser.REVIEW_SCHEMA["json_schema"]["schema"]["properties"])[0] == "conclusion"
+    llm = FakeLLM({"conclusion": "The tests insert raw SQL into a 'transactions' table the instruction never "
+                                 "names: a hidden schema requirement.",
+                   "explanation": CUT, "attribution": "task", "pitfall_matched": "none", "cited_evidence": ["E1"]})
+    failure = parse(trial, VALID_FAIL, llm, tmp_path)[1]
+    assert failure["conclusion"].startswith("The tests insert raw SQL") and failure["explanation"] == CUT
+    assert failure["explanation_cut"] is True
+    assert trace_parser.is_cut(CUT) and trace_parser.is_cut("the key was id=")
+    assert not trace_parser.is_cut("It returned status 'accepted' (E3).") and not trace_parser.is_cut("a lock")
+
+
+def test_the_revise_evidence_keeps_the_reason_and_the_assertions():
+    from evaluation.calibration import evidence
+    from shared.contracts.models import Outcome
+
+    failure = {"conclusion": "The tests read a 'transactions' table the instruction never names.",
+               "explanation": CUT, "failing_tests": ["test_outputs.py::test_counterexample_exact"],
+               "evidence": [{"id": "E2", "source": "verifier", "text": "E       sqlite3.OperationalError: no such "
+                                                                       "table: transactions"},
+                            {"id": "E3", "source": "agent", "text": "$ ls /app"}]}
+    text = evidence([{"slot": 3, "outcome": Outcome.VALID_FAIL, "failure": failure}])
+    assert "a 'transactions' table the instruction never names" in text
+    assert "returns status  [the reviewer's explanation is cut off here]" in text
+    assert "failing tests: test_outputs.py::test_counterexample_exact" in text
+    assert "E       sqlite3.OperationalError: no such table: transactions" in text and "$ ls /app" not in text
+
+
+def test_a_solver_run_summary_shows_what_it_read_and_edited_at_which_step(trial, monkeypatch):
+    s = trace_parser.solver_run_summary("run 2", trial)
+    assert s.startswith("# run 2: passed in ") and "### step 1" in s and "    $ " in s
+    assert s.splitlines()[1].startswith("Read (first step): ") and s.splitlines()[2].startswith("Edited (first step): ")
+    monkeypatch.setattr(trace_parser, "SOLVER_RUN_BYTES", 300)  # long runs are cut to the cap
+    assert len(trace_parser.solver_run_summary("run 2", trial)) <= 300 + 60
+    assert trace_parser.solver_run_summary("run 2", trial / "missing") is None
 
 
 def test_a_cached_review_costs_nothing(trial, tmp_path):
@@ -216,6 +272,13 @@ def test_pass_review_keeps_only_real_citations_and_known_techniques(trial):
     assert [s["technique"] for s in analysis["suggestions"]] == ["nonlocal_cause"]
     assert "5 of 5 runs" in llm.prompts[0] and "locally_correct_globally_wrong" in llm.prompts[0]
     assert "rc" in llm.prompts[0]
+
+
+def test_pass_review_flags_fields_cut_mid_sentence(trial):
+    reply = {**pass_reply(), "fix_applied": 'The agents made submit return status '}
+    analysis, _ = trace_parser.review_passes(trace_parser.pass_evidence([("run 1", trial)]), "the task", None,
+                                             passed=5, runs=5, cache_key="k", llm_dir=None, complete=FakeLLM(reply))
+    assert analysis["cut_fields"] == ["fix_applied"]
 
 
 def test_pass_review_citing_nothing_is_untrusted(trial):

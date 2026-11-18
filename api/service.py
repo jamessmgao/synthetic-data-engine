@@ -151,7 +151,9 @@ def _analysis_view(vjobs: list[dict], scored: dict[int, str]) -> dict | None:
     passing = [j for j in vjobs if j["type"] == JobType.ROLLOUT and j["outcome"] == Outcome.VALID_PASS
                and scored.get(j["slot"]) == Outcome.VALID_PASS]
     metrics = [j["trace_metrics"] or {} for j in passing]
-    files = [m["files_modified"] for m in metrics if m.get("files_modified") is not None]
+    # files_modified is the list of paths a run edited (trace_parser.files_modified); count them
+    # as calibration.choose_mutations does.
+    files = [len(m["files_modified"]) for m in metrics if m.get("files_modified") is not None]
     steps = [m["llm_calls"] for m in metrics if m.get("llm_calls")]
     return {
         "job_id": decided[-1]["id"],

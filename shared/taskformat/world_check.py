@@ -36,12 +36,20 @@ skipped). symptom_check.sh and wrong_fix.sh are required files only when enforce
                             agent's own check) and repro.sh still exits 1 (deeper schedules
                             break it)
 
+and one warning, which never fails a world (result.hardness.warnings, details.limit_named):
+
+    limit_named             a function fix.sh changes or removes names its own limit, in its
+                            name or the comment on it (`findTopLevelAssignments`, "Only entries
+                            that have been committed"): an agent reads that and has the bug
+
 The result is stored at <trace_dir>/world_check.json and adopted when the job is
 retried. Failures carry feedback for the world repair job.
 """
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -96,10 +104,13 @@ def docker_label() -> list[str]:
     return ["--label", label] if label else []
 
 
-def _docker(args: list[str], timeout: float) -> tuple[int, str]:
-    """Run a docker command; (exit code, combined output tail). -1 on timeout."""
+def _docker(args: list[str], timeout: float, full: bool = False) -> tuple[int, str]:
+    """Run a docker command; (exit code, combined output tail, or the whole stdout if `full`).
+    -1 on timeout."""
     try:
         p = subprocess.run([docker_bin(), *args], capture_output=True, text=True, timeout=timeout)
+        if full:
+            return p.returncode, p.stdout
         return p.returncode, (p.stdout + p.stderr)[-OUTPUT_CHARS:]
     except subprocess.TimeoutExpired as e:
         out = ((e.stdout or b"") + (e.stderr or b"")) if isinstance(e.stdout, bytes) else (e.stdout or "")
@@ -165,27 +176,147 @@ def _repro(check_image: str, with_fix: bool) -> tuple[int, str]:
     return _run(check_image, f"{FIX} && {REPRO}" if with_fix else REPRO)
 
 
-def _changed_files(check_image: str, script: str) -> tuple[list[str] | None, str]:
+def _changed_files(check_image: str, script: str) -> tuple[list[str] | None, str, dict[str, str]]:
     """The system files `script` changes (docker diff of a container after it), scratch and
     the check's own files left out; directories only listed for their contents are dropped.
-    None if the script fails."""
+    Also the changed source files' new text, {path: text}. None if the script fails."""
     code, out = _docker(["run", "-d", *RUN_LIMITS, *docker_label(), "--entrypoint", "sleep", check_image,
                          "infinity"], 120)
     if code != 0:
-        return None, out
+        return None, out, {}
     cid = out.strip().splitlines()[-1]
     try:
         code, out = _docker(["exec", cid, "bash", "-c", script], REPRO_TIMEOUT_SEC)
         if code != 0:
-            return None, out
+            return None, out, {}
         code, diff = _docker(["diff", cid], 120)
         paths = sorted({line[2:].strip() for line in diff.splitlines() if line[:2] in ("A ", "C ", "D ")})
         files = [p for p in paths
                  if not any(other.startswith(p.rstrip("/") + "/") for other in paths)  # a directory of others
                  and not (p + "/").startswith(_SCRATCH) and "__pycache__" not in p and not p.endswith(".pyc")]
-        return files, ""
+        texts = {}
+        for path in files:
+            if Path(path).suffix in _FUNC_HEADERS:
+                code, text = _docker(["exec", cid, "cat", path], 120, full=True)
+                if code == 0 and len(text) <= MAX_SOURCE_CHARS:
+                    texts[path] = text
+        return files, "", texts
     finally:
         _docker(["rm", "-f", cid], 120)
+
+
+# --- limit-named: the defective code announces its own limit ------------------------
+#
+# iteration 1 (aws-iter1-t02, t06): the instructions passed the leak review, and the solvers
+# still found the bug in a few steps, because the function the fix replaces says what it
+# gets wrong: Go's `findTopLevelAssignments` (misses nested assignments), Python's
+# get_replay_target "Only entries that have been committed …" (drops acknowledged ones).
+# A warning, never a failure: the words are common, and the author is the judge.
+
+MAX_SOURCE_CHARS = 400_000
+# Words (lowercase) that, in a name or the comment on the defective function, describe its limit.
+LIMIT_TOKENS = ("only", "toplevel", "direct", "directly", "first", "shallow", "simple", "committed", "readall",
+                "loadall")
+_LIMIT_IN_TEXT = re.compile(r"\b(only|top[- ]?level|direct(?:ly)?|first|shallow|simple|committed|read_?all|"
+                            r"load_?all)\b", re.I)
+_C_LIKE = re.compile(r"^\s*(?:[\w:<>\[\],.*&?]+\s+)+\**&?(\w+)\s*\([^;]*$")  # C, C++, Java, C#, Kotlin, Scala
+_FUNC_HEADERS = {
+    ".py": (re.compile(r"^\s*(?:async\s+)?def\s+(\w+)\s*\("),),
+    ".rb": (re.compile(r"^\s*def\s+(?:self\.)?(\w+[?!]?)"),),
+    ".go": (re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\("),),
+    ".rs": (re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)"),),
+    ".js": (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*(\w+)\s*\("),
+            re.compile(r"^\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*\{\s*$")),
+    ".kt": (re.compile(r"^\s*(?:[\w]+\s+)*fun\s+(?:<[^>]*>\s*)?(\w+)\s*\("),),
+}
+_FUNC_HEADERS[".ts"] = _FUNC_HEADERS[".js"]
+for _suffix in (".c", ".h", ".cc", ".cpp", ".hpp", ".java", ".cs", ".scala"):
+    _FUNC_HEADERS[_suffix] = (_C_LIKE,)
+_NOT_FUNCTIONS = {"if", "for", "while", "switch", "return", "else", "catch", "sizeof", "new", "throw", "case",
+                  "do", "try", "elif", "with", "match"}
+_COMMENT = re.compile(r"^\s*(#|//|/\*|\*|--)")
+
+
+def _functions(text: str, suffix: str) -> dict[str, tuple[str, str]]:
+    """{name: (body, doc)} for the functions in a source file: the body runs to the next
+    function header; the doc is the comment block right above it plus a Python docstring.
+    Comment lines and Python docstrings are never headers."""
+    lines = text.splitlines()
+    heads = []
+    in_doc = None
+    for i, line in enumerate(lines):
+        if suffix == ".py":
+            quotes = line.count('"""') + line.count("'''")
+            if in_doc is not None:
+                in_doc = None if quotes % 2 else in_doc
+                continue
+            if quotes % 2:
+                in_doc = i
+                continue
+        if _COMMENT.match(line):
+            continue
+        for pattern in _FUNC_HEADERS.get(suffix, ()):
+            m = pattern.match(line)
+            if m and m.group(1) not in _NOT_FUNCTIONS:
+                heads.append((i, m.group(1)))
+                break
+    out = {}
+    for k, (i, name) in enumerate(heads):
+        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
+        above = []
+        j = i - 1
+        while j >= 0 and _COMMENT.match(lines[j]):
+            above.insert(0, lines[j])
+            j -= 1
+        doc = "\n".join(above)
+        body = lines[i:end]
+        rest = "\n".join(body[1:]).lstrip()
+        if rest[:3] in ('"""', "'''"):  # a Python docstring
+            close = rest.find(rest[:3], 3)
+            doc += "\n" + rest[3:close if close > 0 else 400]
+        out.setdefault(name, ("\n".join(body), doc))
+    return out
+
+
+def _name_tokens(name: str) -> set[str]:
+    """camelCase / snake_case words of a name, plus each adjacent pair joined (TopLevel → toplevel)."""
+    words = [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", name)]
+    return set(words) | {a + b for a, b in zip(words, words[1:])}
+
+
+def _original(world: Path, path: str) -> str | None:
+    """The world's own copy of a container path: the environment/ file whose relative path is
+    the longest suffix of it (COPY app/ /app/ → environment/app/engine.py for /app/engine.py)."""
+    env = world / "environment"
+    best = None
+    for p in env.rglob(Path(path).name):
+        rel = p.relative_to(env).as_posix()
+        if p.is_file() and ("/" + path.lstrip("/")).endswith("/" + rel) and (best is None or len(rel) > len(best[0])):
+            best = (rel, p)
+    if best is None:
+        return None
+    try:
+        return best[1].read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _limit_named(path: str, original: str, fixed: str) -> list[dict]:
+    """The functions the fix changes or removes whose name or comment names a limit."""
+    suffix = Path(path).suffix
+    before, after = _functions(original, suffix), _functions(fixed, suffix)
+    found = []
+    for name, (body, doc) in before.items():
+        if name in after and " ".join(after[name][0].split()) == " ".join(body.split()):
+            continue  # unchanged
+        in_name = sorted(set(LIMIT_TOKENS) & _name_tokens(name))
+        if in_name:
+            found.append({"file": path, "function": name, "where": "name", "matched": in_name, "text": name})
+        in_doc = sorted({m.group(0).lower() for m in _LIMIT_IN_TEXT.finditer(doc)})
+        if in_doc:
+            line = next((ln.strip() for ln in doc.splitlines() if _LIMIT_IN_TEXT.search(ln)), "")
+            found.append({"file": path, "function": name, "where": "comment", "matched": in_doc, "text": line[:200]})
+    return found
 
 
 def _hardness(world: Path, check_image: str, expect) -> tuple[dict, list[tuple[str, str]]]:
@@ -215,8 +346,12 @@ def _hardness(world: Path, check_image: str, expect) -> tuple[dict, list[tuple[s
     ])
 
     # The fix must not be one local patch (lever 3): 2+ files, or a dependent the local patch breaks.
-    files, out = _changed_files(check_image, FIX)
+    files, out, texts = _changed_files(check_image, FIX)
     details["fix_files"] = files
+    named = [hit for path, text in texts.items() if (orig := _original(world, path)) is not None
+             for hit in _limit_named(path, orig, text)][:10]
+    if named:
+        details["limit_named"] = named
     has_dependent = (world / "repro" / "dependent_check.sh").is_file()
     if files is None:
         spans_or_dependent = False
@@ -250,7 +385,47 @@ def _hardness(world: Path, check_image: str, expect) -> tuple[dict, list[tuple[s
             "exit 1: the wrong fix still violates an invariant on a deeper schedule."),
     ])
     return ({"symptom_ok": bool(symptom_ok), "spans_or_dependent": spans_or_dependent,
-             "wrong_fix_ok": bool(wrong_fix_ok), "failed": [n for n, _ in failures], "details": details}, failures)
+             "wrong_fix_ok": bool(wrong_fix_ok), "failed": [n for n, _ in failures],
+             "warnings": ["limit_named"] if named else [], "details": details}, failures)
+
+
+# What world_check reads from world.json; the rest of it (spec, lineage, name) the world
+# job rewrites after the author's check, so it can't be part of the stamp.
+_STAMPED_META = ("invariants", "counterexample", "plausible_wrong_fix")
+
+
+def world_stamp(world_dir: str | Path) -> str:
+    """The stamp of a world's check: every file's path, executable bit and bytes (as
+    author.tree_sha256), world.json excepted, plus the world.json fields the check reads.
+    `sde-world` saves it with its result; the pipeline recomputes it on the stored world, so
+    the author's check is adopted only for the world it ran on."""
+    root = Path(world_dir)
+    h = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        if rel == "world.json" or "__pycache__" in rel:
+            continue
+        h.update(f"{rel}\0{int(os.access(path, os.X_OK))}\0".encode())
+        h.update(hashlib.sha256(path.read_bytes()).digest())
+    try:
+        meta = json.loads((root / "world.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    h.update(json.dumps({k: meta.get(k) for k in _STAMPED_META}, sort_keys=True).encode())
+    return h.hexdigest()
+
+
+def adopt_author_check(author: dict | None, world_dir: str | Path) -> dict | None:
+    """The author's saved world_check result, if it may stand in for this job's run
+    (SDE_ADOPT_AUTHOR_CHECKS=1): it passed, and its stamp is this world's. Else None."""
+    if not config.adopt_author_checks() or not author:
+        return None
+    result = author.get("result") or {}
+    stamp = author.get("stamp") or result.get("stamp")
+    if result.get("outcome") != "OK" or not stamp or stamp != world_stamp(world_dir):
+        return None
+    src = {"adopted_from": author.get("job_id"), "stamp": stamp}
+    return {**result, **src, "cost_usd": 0.0, "result": {**(result.get("result") or {}), **src}}
 
 
 def run_world_check_job(world_dir: str | Path, trace_dir: str | Path) -> dict:

@@ -20,15 +20,18 @@ TWO_FILES = "C /app\nC /app/store.py\nC /app/worker.py\nA /tmp/x\nA /app/__pycac
 
 
 class FakeDocker:
-    def __init__(self, codes=None, diff=TWO_FILES):
+    def __init__(self, codes=None, diff=TWO_FILES, files=None):
         self.codes, self.diff, self.calls = {**GOOD, **(codes or {})}, diff, []
+        self.files = files or {}  # the fixed text of a path, as `docker exec <cid> cat <path>` returns it
 
-    def __call__(self, args, timeout):
+    def __call__(self, args, timeout, full=False):
         self.calls.append(args)
         if args[0] == "run" and "-d" in args:
             return 0, "cid1\n"
         if args[0] == "run":
             return self.codes[args[-1]], f"ran {args[-1]}"
+        if args[0] == "exec" and args[2] == "cat":
+            return (0, self.files[args[3]]) if args[3] in self.files else (1, "no such file")
         if args[0] == "exec":
             return 0, ""
         if args[0] == "diff":
@@ -70,7 +73,7 @@ def test_a_good_world_passes_every_check(world, tmp_path, monkeypatch):
     out = check(world, tmp_path, monkeypatch, fake)
     assert out["outcome"] == "OK", out["feedback"]
     assert out["result"]["hardness"] == {"symptom_ok": True, "spans_or_dependent": True, "wrong_fix_ok": True,
-                                         "failed": [], "mode": "enforce",
+                                         "failed": [], "warnings": [], "mode": "enforce",
                                          "details": {"fix_files": ["/app/store.py", "/app/worker.py"], "via": "files"}}
     assert fake.scripts() == [REPRO, REPRO, f"{FIX} && {REPRO}", f"{FIX} && {REPRO}", SYMPTOM,
                               f"{FIX} && {SYMPTOM}", f"{WRONG} && {SYMPTOM}", f"{WRONG} && {REPRO}"]
@@ -184,3 +187,100 @@ def test_the_new_scripts_are_required(world, tmp_path, monkeypatch):
     out = check(world, tmp_path, monkeypatch, FakeDocker())
     assert out["failed_check"] == "structure"
     assert "repro/symptom_check.sh" in out["feedback"] and "world_fix/wrong_fix.sh" in out["feedback"]
+
+
+# --- limit_named: the defective code announces its own limit (aws-iter1-t02, t06) ---------
+
+T02_ORIGINAL = '''package main
+
+// optimize folds constants through let bindings that are never reassigned.
+func optimize(e *Expr) *Expr {
+    assigned := findTopLevelAssignments(e.Body)
+    return substitute(e, assigned)
+}
+
+func findTopLevelAssignments(e *Expr) map[string]bool {
+    assigned := make(map[string]bool)
+    if e.Type == ExprBlock {
+        for _, s := range e.Stmts {
+            if s.Type == ExprAssign {
+                assigned[s.Name] = true
+            }
+        }
+    }
+    return assigned
+}
+'''
+T02_FIXED = (T02_ORIGINAL[:T02_ORIGINAL.index("func findTopLevelAssignments")]
+             .replace("findTopLevelAssignments(e.Body)", "findAllAssignments(e.Body)")
+             + "func findAllAssignments(e *Expr) map[string]bool {\n    assigned := make(map[string]bool)\n"
+               "    walk(e, func(n *Expr) { if n.Type == ExprAssign { assigned[n.Name] = true } })\n"
+               "    return assigned\n}\n")
+
+T06_ORIGINAL = '''"""Recovery and consistency module for replicated KV store."""
+
+
+def get_replay_target(state, commit_index):
+    """Determine the highest safe index to apply during recovery.
+
+    Only entries that have been committed (replicated and acknowledged
+    by a majority) should be applied during recovery to prevent
+    applying uncommitted entries from a failed leader.
+    """
+    return commit_index
+
+
+def on_promote(state, commit_index):
+    """Execute recovery when promoted to leader.
+
+    Apply all committed entries to the state machine.
+    """
+    target = get_replay_target(state, commit_index)
+    if target >= 0:
+        state.apply_through(target)
+    return target
+'''
+T06_FIXED = T06_ORIGINAL.replace("    return commit_index\n", "    return state.wal.last_index\n")
+
+
+def test_a_fixed_function_named_for_its_limit_is_flagged():
+    hits = wc._limit_named("/app/opt.go", T02_ORIGINAL, T02_FIXED)
+    assert hits == [{"file": "/app/opt.go", "function": "findTopLevelAssignments", "where": "name",
+                     "matched": ["toplevel"], "text": "findTopLevelAssignments"}]
+
+
+def test_a_fixed_function_whose_docstring_states_its_limit_is_flagged_and_untouched_ones_are_not():
+    hits = wc._limit_named("/app/recovery.py", T06_ORIGINAL, T06_FIXED)
+    assert [(h["function"], h["where"], h["matched"]) for h in hits] == [
+        ("get_replay_target", "comment", ["committed", "only"])]
+    assert hits[0]["text"].startswith("Only entries that have been committed")
+    # on_promote's docstring says "committed" too, but the fix leaves it alone
+    assert wc._limit_named("/app/recovery.py", T06_ORIGINAL, T06_ORIGINAL) == []
+
+
+def test_limit_words_need_whole_words_and_name_parts():
+    assert "direct" not in wc._name_tokens("readDirectory") and "toplevel" in wc._name_tokens("top_level_items")
+    assert wc._limit_named("/app/x.py", "def redirect_onlyish():\n    return 1\n",
+                           "def redirect_onlyish():\n    return 2\n") == []
+
+
+def test_limit_named_is_recorded_as_a_warning_that_never_fails_the_world(world, tmp_path, monkeypatch):
+    (world / "environment" / "app" / "recovery.py").write_text(T06_ORIGINAL)
+    fake = FakeDocker(diff="C /app\nC /app/recovery.py\nC /app/store.py\n",
+                      files={"/app/recovery.py": T06_FIXED, "/app/store.py": "x = 2\n"})
+    out = check(world, tmp_path, monkeypatch, fake)  # enforce (the autouse fixture)
+    hardness = out["result"]["hardness"]
+    assert out["outcome"] == "OK" and hardness["failed"] == [] and hardness["warnings"] == ["limit_named"]
+    assert hardness["details"]["limit_named"][0]["function"] == "get_replay_target"
+
+
+def test_sde_world_shows_the_limit_named_warning_with_the_matched_text():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "authoring"))
+    from authoring import sde_world
+
+    hit = {"file": "/app/opt.go", "function": "findTopLevelAssignments", "where": "name", "matched": ["toplevel"],
+           "text": "findTopLevelAssignments"}
+    lines = sde_world.hardness_warnings({"failed": [], "warnings": ["limit_named"], "details": {"limit_named": [hit]}})
+    assert lines[1] == "sde-world: 1 naming warning(s) (they never fail the world):"
+    assert lines[2].startswith('WARNING: /app/opt.go: findTopLevelAssignments (name: "findTopLevelAssignments") '
+                               "names its own limit (toplevel), and fix.sh changes it")

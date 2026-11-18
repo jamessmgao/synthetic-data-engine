@@ -591,7 +591,7 @@ class FakeDocker:
         self.calls = []
         self.argv = []
 
-    def __call__(self, args, timeout):
+    def __call__(self, args, timeout, full=False):
         self.calls.append(args[0])
         self.argv.append(list(args))
         if args[0] == "build":

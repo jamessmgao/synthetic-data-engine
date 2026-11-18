@@ -10,7 +10,10 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Distributed systems and concurrency",
         "mechanisms": "interacting guarantees (idempotency, ordering, durability, availability), partial "
                       "failures, races, recovery and temporal reasoning",
-        "lever": "a realistic execution sequence that defeats a seemingly correct protocol",
+        "lever": "a realistic execution sequence that defeats a seemingly correct protocol: at least 3 node "
+                 "processes, and the defect needs two or more interleaved events (a second failover during "
+                 "recovery, a duplicated message across a leader change), so no single straight-line "
+                 "sequence shows it; the loss surfaces on a different node or component than its cause",
         "world": "e.g. a small replicated log or key-value store with a leader, followers, acknowledgements "
                  "and failover; a job queue with leases, retries and at-least-once delivery; a lock or lease "
                  "service with clocks and expiry",
@@ -26,7 +29,9 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Algorithmic and constraint-solving problems",
         "mechanisms": "global optimization, combinatorial interactions, invariants, algorithms that work "
                       "locally but fail globally",
-        "lever": "a counterexample to a plausible greedy or heuristic solution",
+        "lever": "a counterexample to a plausible greedy or heuristic solution, at a stated input size where "
+                 "exhaustive search cannot finish within the time limit (2^n or n! far past it), so the fix is "
+                 "the correct polynomial algorithm or a correct repair, not brute force",
         "world": "e.g. a scheduler, allocator, matcher or planner whose current implementation is a greedy or "
                  "first-fit heuristic that accepts or rejects inputs wrongly",
         "counterexample": "a concrete small input on which the plausible algorithm returns a wrong or "
@@ -42,7 +47,10 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "lever": "a straightforward correct implementation that fundamentally cannot meet a clearly stated "
                  "scalability requirement, where the obvious optimization (stream it, index it, cache it) "
                  "silently changes a result that must stay exact; the hard part is keeping the semantics, "
-                 "not choosing the optimization a stated limit already dictates",
+                 "not choosing the optimization a stated limit already dictates. The exact result is an "
+                 "outcome the standard structure doesn't give for free (an order fixed by a later event, a "
+                 "two-key tie-break, a stable merge of two streams), never a property that names its own "
+                 "structure (\"preserve insertion order\" → LinkedHashMap)",
         "world": "e.g. a query executor, log reconciler, diff or index builder that is correct but quadratic, "
                  "or holds everything in memory",
         "counterexample": "an input shape (adversarial but realistic) where the current code exceeds a stated "
@@ -74,7 +82,9 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
         "title": "Compilers, parsers, and semantic transformations",
         "mechanisms": "preserving exact behavior across complex inputs and interacting language rules",
         "lever": "a transformation or parser that appears valid but changes semantics under a particular "
-                 "combination of aliasing, control flow or parser state",
+                 "combination of aliasing, control flow or parser state; at least two passes or components "
+                 "could plausibly produce the symptom, and no command prints the transformed form (no "
+                 "show/dump/explain mode) that would display the bad rewrite directly",
         "world": "e.g. a small expression language with an optimizer pass, a config/template engine, or a "
                  "streaming protocol parser fed fragmented and overlapping frames",
         "counterexample": "a specific program or byte stream whose output differs between the reference "

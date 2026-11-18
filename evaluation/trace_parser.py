@@ -104,9 +104,20 @@ _PY_PATH = re.compile(r"Path\(\s*['\"]([^'\"]+)['\"]\s*\)")
 _COPY_COMMAND = re.compile(r"(?:^|[;&|(]\s*|\bsudo\s+)(?:cp|mv|install)\s+([^;|&\n]+)", re.M)
 
 
+# What counts as a file the agent changed: an absolute path outside the scratch dirs (config
+# tasks edit /etc, hooks, /usr/local/bin), or a relative path that names a file (an extension
+# or a known name). Not a token a `>` inside heredoc code captured ("y", "Type,", "="), and not
+# a backup or scratch output.
+_ABSOLUTE = re.compile(r"(?:/[\w.@+-]+){2,}")
+_RELATIVE = re.compile(r"(?:[\w.-]+/)*(?:[\w-][\w.-]*\.\w{1,8}|Makefile|Dockerfile)")
+_SCRATCH_DIRS = ("/tmp/", "/var/tmp/", "/proc/", "/dev/", "/logs/", "/run/")
+_BACKUP = re.compile(r"\.(?:orig|bak|old|rej|swp|pid)$|~$")
+
+
 def files_modified(commands: list[str]) -> list[str]:
-    """Paths the agent's commands wrote to. A heuristic over the command text:
-    it cannot see writes made by programs the agent ran."""
+    """Files the agent's commands wrote to: /app's (the working directory) relative to it,
+    others absolute. A heuristic over the command text: it cannot see writes made by
+    programs the agent ran; scratch files (/tmp, …), backups and non-path tokens are left out."""
     found = set()
     for cmd in commands:
         paths = [p for pattern in _WRITE_PATTERNS for p in pattern.findall(cmd)]
@@ -114,9 +125,11 @@ def files_modified(commands: list[str]) -> list[str]:
         if re.search(r"\.write_(?:text|bytes)\(", cmd):
             paths += _PY_PATH.findall(cmd)
         for path in paths:
-            if path.startswith(("/dev/", "&", "$", "-")) or path == "":
+            path = path.rstrip(";,").removeprefix("/app/").removeprefix("./")
+            if path.startswith(_SCRATCH_DIRS) or _BACKUP.search(path):
                 continue
-            found.add(path.rstrip(";"))
+            if (_ABSOLUTE if path.startswith("/") else _RELATIVE).fullmatch(path):
+                found.add(path)
     return sorted(found)
 
 
@@ -217,6 +230,10 @@ def load_instruction(bundle_dir: Path | None) -> str:
 
 # --- LLM review --------------------------------------------------------------------
 
+# Under the gateway's strict-schema constrained decoding an unescaped " ends a string field
+# early and the answer still parses: every free-text field asks for single quotes.
+NO_DOUBLE_QUOTES = " Quote with single quotes, never double quotes."
+
 REVIEW_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
@@ -225,10 +242,17 @@ REVIEW_SCHEMA = {
         "schema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["explanation", "attribution", "pitfall_matched", "cited_evidence"],
+            # conclusion comes first: an unescaped " ends a string under the gateway's
+            # constrained decoding (aws-iter1-t01's explanation stopped at 'returns status '),
+            # so the one sentence the revision needs is written before the long one.
+            "required": ["conclusion", "explanation", "attribution", "pitfall_matched", "cited_evidence"],
             "properties": {
+                "conclusion": {"type": "string",
+                               "description": "One sentence: what is wrong (the agent's mistake, or the task's "
+                                              "defect) and where." + NO_DOUBLE_QUOTES},
                 "explanation": {"type": "string",
-                                "description": "2-4 sentences: what the agent did wrong, citing evidence ids."},
+                                "description": "2-4 sentences: what the agent did wrong, citing evidence ids."
+                                               + NO_DOUBLE_QUOTES},
                 "attribution": {"type": "string", "enum": ["model", "task"],
                                 "description": "model: the agent made a mistake on a fair task. task: the task is "
                                                "defective (ambiguous or contradictory instruction, broken "
@@ -309,7 +333,7 @@ def review(evidence: list[dict], instruction: str, spec: dict | None, *, cache_k
             error = f"{type(e).__name__}: {str(e)[:300]}"
             log.warning("%s: failure review attempt %d/%d failed: %s", cache_key, attempt, REVIEW_ATTEMPTS, error)
     if out is None:
-        return {"explanation": None, "attribution": UNEXPLAINED, "pitfall_matched": None,
+        return {"conclusion": None, "explanation": None, "attribution": UNEXPLAINED, "pitfall_matched": None,
                 "cited_evidence": [], "review_error": error}, cost
 
     known = {e["id"] for e in evidence}
@@ -317,9 +341,16 @@ def review(evidence: list[dict], instruction: str, spec: dict | None, *, cache_k
     attribution = out.get("attribution") if out.get("attribution") in ("model", "task") else UNEXPLAINED
     if not cited:
         attribution = UNEXPLAINED  # an explanation that cites nothing real is not trusted
-    return {"explanation": out.get("explanation"), "attribution": attribution,
+    return {"conclusion": out.get("conclusion"), "explanation": out.get("explanation"),
+            "explanation_cut": is_cut(out.get("explanation")), "attribution": attribution,
             "pitfall_matched": _match_pitfall(out.get("pitfall_matched"), spec),
             "cited_evidence": cited}, cost
+
+
+def is_cut(text: str | None) -> bool:
+    """A model-written field that an unescaped double quote ended early: it stops right where
+    the quote was, after a space or an `=`, `:`, `(` or `,` ('returns status ', 'key=')."""
+    return bool(text) and bool(re.search(r"(?:\s|[=:(,])$", text))
 
 
 # --- why was it easy? (review of passing runs) -------------------------------------------
@@ -338,6 +369,49 @@ def _hardening_techniques() -> dict[str, str]:
     _llm()  # puts generator/ on the path
     from generator import prompting
     return prompting.HARDENING_TECHNIQUES
+
+
+SOLVER_RUN_BYTES = 10_000  # per passing run, for the world-mutation author
+SOLVER_RUN_ANALYSIS_CHARS = 600
+# Commands that show the agent a file: cat / head / tail / less / nl / sed -n … FILE.
+_READ = re.compile(r"\b(?:cat|head|tail|less|more|nl|sed\s+-n\s+(?:'[^']*'|\"[^\"]*\"|\S+))\s+"
+                   r"(?:-\S+\s+)*([\w./-]+\.\w{1,8}|(?:[\w.-]+/)*(?:Makefile|Dockerfile))")
+
+
+def solver_run_summary(label: str, trial_dir: Path) -> str | None:
+    """A passing run, condensed for the world-mutation author (docs: world_mutation.md, "Why it
+    was too easy"): which files it read and edited at which step, then each step's analysis and
+    commands. At most SOLVER_RUN_BYTES; None without a trajectory."""
+    trajectory = load_trajectory(trial_dir)
+    if trajectory is None:
+        return None
+    steps = _agent_steps(trajectory)
+    read: dict[str, int] = {}
+    edited: dict[str, int] = {}
+    body: list[str] = []
+    for n, step in enumerate(steps, 1):
+        cmds = [(c.get("arguments") or {}).get("keystrokes", "") if isinstance(c.get("arguments"), dict) else ""
+                for c in step.get("tool_calls") or []]
+        for cmd in cmds:
+            for path in _READ.findall(cmd):
+                read.setdefault(path.removeprefix("/app/"), n)
+            for path in files_modified([cmd]):
+                edited.setdefault(path, n)
+        lines = [f"### step {n}"]
+        if (msg := (step.get("message") or "").strip()):
+            lines.append(msg[:SOLVER_RUN_ANALYSIS_CHARS].replace("\n", " "))
+        lines += [f"    $ {c.strip()[:CMD_CHARS]}".replace("\n", "\n      ") for c in cmds if c.strip()]
+        body.append("\n".join(lines))
+    head = [f"# {label}: passed in {len(steps)} agent steps",
+            "Read (first step): " + (", ".join(f"{p} ({s})" for p, s in read.items()) or "none detected"),
+            "Edited (first step): " + (", ".join(f"{p} ({s})" for p, s in edited.items()) or "none detected"), ""]
+    text = "\n".join(head)
+    for block in body:
+        if len(text) + len(block) + 1 > SOLVER_RUN_BYTES - 60:
+            text += f"\n… {len(body) - body.index(block)} more steps not shown\n"
+            break
+        text += block + "\n"
+    return text
 
 
 def pass_evidence(runs: list[tuple[str, Path]]) -> list[dict]:
@@ -374,23 +448,23 @@ def _pass_review_schema(techniques: list[str]) -> dict:
         "required": ["why_easy", "simple_strategy", "cues", "fix_applied", "suggestions", "cited_evidence"],
         "properties": {
             "why_easy": {"type": "string", "description": "2-4 sentences: why the agents passed so easily, "
-                                                          "citing evidence ids."},
+                                                          "citing evidence ids." + NO_DOUBLE_QUOTES},
             "simple_strategy": {"type": "string", "description": "The simple strategy that solved it, in one or "
-                                                                 "two sentences."},
+                                                                 "two sentences." + NO_DOUBLE_QUOTES},
             "cues": {"type": "array", "items": {
                 "type": "object", "additionalProperties": False, "required": ["quote", "where"],
                 "properties": {"quote": {"type": "string", "description": "The exact text that pointed the "
                                                                           "agents at the cause or the fix."},
                                "where": {"type": "string", "description": "instruction, a file path, a log, "
                                                                           "an error message, ..."}}}},
-            "fix_applied": {"type": "string", "description": "What the passing agents changed."},
+            "fix_applied": {"type": "string", "description": "What the passing agents changed." + NO_DOUBLE_QUOTES},
             "suggestions": {"type": "array", "items": {
                 "type": "object", "additionalProperties": False, "required": ["technique", "change", "defeats"],
                 "properties": {"technique": {"type": "string", "enum": techniques},
                                "change": {"type": "string", "description": "A concrete semantic change to the "
-                                                                           "task."},
+                                                                           "task." + NO_DOUBLE_QUOTES},
                                "defeats": {"type": "string", "description": "Why the observed strategy would no "
-                                                                            "longer pass."}}}},
+                                                                            "longer pass." + NO_DOUBLE_QUOTES}}}},
             "cited_evidence": {"type": "array", "items": {"type": "string"}},
         }}}}
 
@@ -466,7 +540,9 @@ def _review_passes(evidence: list[dict], instruction: str, spec: dict | None, *,
     cited = [i for i in out.get("cited_evidence") or [] if i in known]
     suggestions = [s for s in out.get("suggestions") or []
                    if isinstance(s, dict) and s.get("technique") in techniques and s.get("change")][:3]
-    return {"why_easy": out.get("why_easy"), "simple_strategy": out.get("simple_strategy"),
+    cut = [k for k in ("why_easy", "simple_strategy", "fix_applied") if is_cut(out.get(k))]
+    cut += [f"suggestions[{i}].change" for i, x in enumerate(suggestions) if is_cut(x.get("change"))]
+    return {"why_easy": out.get("why_easy"), "simple_strategy": out.get("simple_strategy"), "cut_fields": cut,
             "cues": [c for c in out.get("cues") or [] if isinstance(c, dict) and c.get("quote")],
             "fix_applied": out.get("fix_applied"), "suggestions": suggestions, "cited_evidence": cited,
             # Like the failure review: an analysis that cites nothing real is kept but not trusted.

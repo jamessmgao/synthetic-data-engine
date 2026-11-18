@@ -97,11 +97,16 @@ def after_generation(backend: Backend):
             return []
         # A task written from a world keeps it through validate, so its repairs are too.
         world = (job["result"] or {}).get("world_sha256") or (job["input"] or {}).get("world_sha256")
+        # The create job's stamped self-check runs, which validate may adopt.
+        checked = (job["result"] or {}).get("self_check") or {}
+        author = ({"job_id": job["id"], "bundle_sha256": sha, "stamp": checked.get("stamp"),
+                   "roles": checked["roles"]} if checked.get("roles") else None)
         return [{
             "id": job_id(tid, n, "validate", k), "type": JobType.VALIDATE, "task_id": tid, "version": n,
             "bundle_sha256": sha,
             "input": {"bundle_sha256": sha, "bundle_dir": str(backend.artifacts.bundle_path(sha)), "round": k,
-                      **({"world_sha256": world} if world else {})},
+                      **({"world_sha256": world} if world else {}),
+                      **({"author_checks": author} if author else {})},
         }]
 
     return handoff
@@ -154,11 +159,16 @@ def after_world(backend: Backend):
         if not tasks.cas(conn, tid, version=n, stages=live, stage=Stage.WORLD_CHECKING):
             return []
         k = world_round(job)
+        # The world job's stamped self-check, which the world_check job may adopt.
+        checked = ((job["result"] or {}).get("authoring") or {}).get("self_check") or {}
+        author = ({"job_id": job["id"], "stamp": checked.get("stamp"), "result": checked["result"]}
+                  if checked.get("result") else None)
         return [{
             "id": job_id(tid, n, "world-check", k), "type": JobType.WORLD_CHECK, "task_id": tid,
             "version": n,
             "input": {"world_sha256": sha, "world_dir": str(backend.artifacts.world_path(sha)),
-                      "spec": (job["input"] or {}).get("spec"), "round": k},
+                      "spec": (job["input"] or {}).get("spec"), "round": k,
+                      **({"author_check": author} if author else {})},
         }]
 
     return handoff

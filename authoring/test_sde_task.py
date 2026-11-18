@@ -247,6 +247,28 @@ def test_results_are_saved_as_self_check_evidence(tmp_path, monkeypatch, capsys)
     assert json.loads((arts / "sde_task" / "run-nop.json").read_text())["reward"] == 0.0
 
 
+def test_saved_results_are_stamped_with_the_drafts_content_hash(tmp_path, monkeypatch, capsys):
+    """The stamp the pipeline checks a saved result against (materialize.content_sha256):
+    the same for check and every run of one draft, another after any edit to it."""
+    from shared.taskformat.materialize import content_sha256
+    from shared.taskformat.schema import TaskDraft
+
+    arts = tmp_path / "artifacts"
+    arts.mkdir()
+    monkeypatch.setenv("SDE_ARTIFACTS_DIR", str(arts))
+    draft = draft_with(wrong_fix_script=WRONG)
+    d, w = write(tmp_path, draft)
+    stamp = content_sha256(TaskDraft.model_validate(draft))
+    sde_task.main(["check", str(d), "--world", str(w)])
+    monkeypatch.setattr(sde_task, "_docker", FakeDocker(reward="0"))
+    sde_task.main(["run", str(d), "--as", "nop,wrong", "--world", str(w)])
+    saved = [json.loads((arts / "sde_task" / f).read_text()) for f in ("check.json", "run-nop.json", "run-wrong.json")]
+    assert [s["stamp"] for s in saved] == [stamp] * 3
+    d.write_text(json.dumps(draft_with(wrong_fix_script=WRONG, instruction=draft["instruction"] + " More.")))
+    sde_task.main(["check", str(d), "--world", str(w)])
+    assert json.loads((arts / "sde_task" / "check.json").read_text())["stamp"] != stamp
+
+
 def test_schema_lists_every_draft_field(capsys):
     assert sde_task.main(["schema"]) == 0
     schema = json.loads(capsys.readouterr().out)
@@ -255,3 +277,42 @@ def test_schema_lists_every_draft_field(capsys):
 
 def test_valid_fixture_is_unchanged():
     assert "wrong_fix_script" not in VALID  # the fixture predates it; draft_with adds it
+
+
+def test_roles_run_in_parallel_up_to_the_cap_with_progress_and_durations(bundle, monkeypatch, capsys):
+    """`--as all` (oracle, nop, wrong + the oracle repeat) runs PARALLEL containers at once on
+    the one image, keeps the roles' order, records each one's duration, and prints a line per
+    role as it finishes."""
+    import threading
+    import time
+
+    running, peak, lock = [0], [0], threading.Lock()
+
+    def slow_run(bundle_, role, image=None):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.2)
+        with lock:
+            running[0] -= 1
+        return {"as": role, "reward": sde_task.EXPECTED[role], "expected": sde_task.EXPECTED[role], "ok": True,
+                "tests": [], "setup_errors": [], "output_tail": ""}
+
+    monkeypatch.setattr(sde_task, "build_image", lambda b: ("img", "", False))
+    monkeypatch.setattr(sde_task, "_docker", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(sde_task, "run_bundle", slow_run)
+    monkeypatch.setattr(sde_task, "PARALLEL", 2)
+    roles = ["oracle", "nop", "wrong"]
+    runs = sde_task.run_roles(bundle, roles, repeat_oracle=True)
+    assert [r["as"] for r in runs] == roles and peak[0] == 2
+    assert all(r["duration_sec"] >= 0.2 for r in runs) and runs[0]["repeat"]["same"] is True
+    err = capsys.readouterr().err
+    assert err.count("[sde-task] ") == 5 and "oracle (repeat): reward=1.0 ok=True" in err and "all roles done" in err
+
+
+def test_an_image_that_does_not_build_fails_at_once(bundle, monkeypatch):
+    started = []
+    monkeypatch.setattr(sde_task, "_docker", FakeDocker(build=1))
+    monkeypatch.setattr(sde_task, "run_bundle", lambda *a, **k: started.append(a) or {})
+    runs = sde_task.run_roles(bundle, ["oracle", "nop", "wrong"], repeat_oracle=True)
+    assert not started and all(not r["ok"] and r["setup_errors"] == ["environment/ does not build"] for r in runs)

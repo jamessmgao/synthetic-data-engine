@@ -145,7 +145,8 @@ MUTATION_OPERATORS = {
                           "possible (not filler: each must matter to the failure).",
     "introduce_temporal_constraint": "Make correctness depend on the order or timing of operations (expiry, "
                                      "deadlines, happens-before), so an order-blind fix fails.",
-    "remove_cues": "Keep the world's behavior exactly the same; rewrite the cited cue sentences (in the "
+    "remove_cues": "Keep the world's behavior the same except where another operator below changes it; "
+                   "rewrite the cited cue sentences (in the "
                    "instruction-facing docs, README, logs, comments, names) at the interface level, so they "
                    "no longer point at the cause or the fix, nor describe the failing schedule: no step "
                    "sequence, no trigger input or time step, and no documented crash hook or stage names "
@@ -243,7 +244,8 @@ def render_task_author_instruction(world: dict, job_input: dict, shape: str, dia
 
 
 def render_world_mutation_instruction(job_input: dict, parent_world: dict, parent_dir: str = "/input/parent",
-                                      output_dir: str = "/logs/artifacts/world") -> str:
+                                      output_dir: str = "/logs/artifacts/world",
+                                      solver_runs_dir: str = "/input/solver_runs") -> str:
     """prompts/world_mutation.md for a `world` job with origin "mutation" (plan §3.6);
     called by author.run_world_job. Unknown operators raise ValueError."""
     mutation = job_input.get("mutation") or {}
@@ -263,9 +265,12 @@ def render_world_mutation_instruction(job_input: dict, parent_world: dict, paren
         parent_sha=job_input.get("parent_world_sha256") or "",
         parent_summary=world_summary(parent_world),
         analysis=_bullets(analysis_lines + cues),
+        solver_runs_line=(f"\nHow the passing agents found it, step by step: {solver_runs_dir}/ (read them; make "
+                          "sure your world removes the path they took, including names, comments and tools that "
+                          "pointed at the bug)\n") if job_input.get("solver_runs") else "",
         target_fix=job_input.get("target_fix") or analysis.get("fix_applied") or "(not recorded: use the analysis)",
         operators_section="\n".join(f"- **{op}**: {MUTATION_OPERATORS[op]}" for op in operators),
-        why=mutation.get("why") or "(not recorded)",
+        why=("; ".join(w) if isinstance(w := mutation.get("why"), list) else w) or "(not recorded)",
         history=_bullets([json.dumps(m, sort_keys=True) for m in history[:-1]] if history else []),
         techniques="\n".join(f"- {name}: {text}" for name, text in HARDENING_TECHNIQUES.items()),
         hardness=hardness_section(job_input.get("hardness")),
@@ -273,29 +278,40 @@ def render_world_mutation_instruction(job_input: dict, parent_world: dict, paren
 
 
 def hardness_section(hardness: dict | None) -> str:
-    """The parent world's hardness checks (world_check's result.hardness, normalized into the
-    mutation input by the pipeline), as what this mutation must fix. Keys absent or None
-    were not run."""
+    """The parent world's hardness checks (world_check's result.hardness: {symptom_ok,
+    spans_or_dependent, wrong_fix_ok, failed, warnings, details}), as what this mutation must fix."""
     if not hardness:
         return "(not recorded for the parent world)"
+    failed = set(hardness.get("failed") or [])
+    details = hardness.get("details") or {}
     found = []
-    if hardness.get("fix_not_local") is False:
-        files = hardness.get("fix_files")
-        found.append(f"its fix is local (world_fix/fix.sh changes {len(files) if files else 'only one'} file(s)"
-                     f"{': ' + ', '.join(files) if files else ''}, and no dependent breaks): make the correct fix "
-                     "span 2+ modules, or make another module depend on the current behavior, with a "
-                     "repro/dependent_check.sh the one-file patch breaks")
-    if hardness.get("dependent") is False:
-        found.append("its dependent_check.sh did not break under the wrong fix: the local patch must break it")
-    if hardness.get("wrong_fix_passes_symptom") is False:
+    if "fix_not_local" in failed:
+        files = details.get("fix_files")
+        found.append(f"its fix is local (world_fix/fix.sh changes {', '.join(files) if files else 'one file'}): "
+                     "make the correct fix span 2+ modules, or make another module depend on the current "
+                     "behavior, with a repro/dependent_check.sh the one-file patch breaks")
+    if failed & {"dependent_holds", "dependent_holds_with_fix", "dependent_breaks_with_wrong_fix"}:
+        found.append("its repro/dependent_check.sh did not hold on the world and with the fix, or did not break "
+                     "under the wrong fix: the local patch must break the dependent")
+    if failed & {"symptom_visible", "symptom_gone_with_fix"}:
+        found.append("its repro/symptom_check.sh did not show the symptom on the world, or still did after the "
+                     "fix: the visible symptom must appear, and go away with the real fix")
+    if "wrong_fix_passes_symptom" in failed:
         found.append("its plausible wrong fix does not fix the visible symptom, so it is not tempting: the new "
                      "wrong fix must make repro/symptom_check.sh pass")
-    if hardness.get("wrong_fix_fails_repro") is False:
-        found.append("its plausible wrong fix survives repro.sh, so it is not wrong: the new one must fail the deep "
-                     "schedule")
-    others = [n for n in hardness.get("failed") or [] if n not in (
-        "fix_not_local", "dependent_breaks_with_wrong_fix", "wrong_fix_passes_symptom", "wrong_fix_fails_repro")]
-    if others:
+    if "wrong_fix_fails_repro" in failed:
+        found.append("its plausible wrong fix survives repro.sh, so it is not wrong: the new one must fail the "
+                     "deep schedule")
+    if "hardness_files" in failed:
+        found.append(f"it lacked {', '.join(details.get('missing') or ['a hardness file'])}: write them")
+    for hit in details.get("limit_named") or []:
+        found.append(f"{hit.get('file')}: `{hit.get('function')}` names its own limit in its {hit.get('where')} "
+                     f"(\"{hit.get('matched')}\"), and the fix changes it: an agent reads that and has the bug. "
+                     "Rename it and reword its comments by what it is for")
+    known = {"fix_not_local", "dependent_holds", "dependent_holds_with_fix", "dependent_breaks_with_wrong_fix",
+             "symptom_visible", "symptom_gone_with_fix", "wrong_fix_passes_symptom", "wrong_fix_fails_repro",
+             "hardness_files"}
+    if others := sorted(failed - known):
         found.append(f"also failed: {', '.join(others)} (see world.md for each check)")
     if not found:
         return "The parent world passed every hardness check: keep it that way."
@@ -409,7 +425,10 @@ def run_create_job(job_id: str, job_input: dict, work_dir: str | Path | None = N
     # here (deterministic, free): a draft that fails it is repaired now, not after a
     # validate job, and before the leak review spends a model call on it.
     checked = (self_check or _ensure_task_checked)(draft_path, world_dir, Path(trial["artifacts_dir"]))
-    built["self_check"] = {"by": checked["by"], "runs": checked["result"].get("runs")}
+    # The stamp ties the runs to this exact draft (whose bundle is `sha`): validate adopts
+    # them instead of re-running Docker (SDE_ADOPT_AUTHOR_CHECKS).
+    built["self_check"] = {"by": checked["by"], "runs": checked["result"].get("runs"),
+                           "stamp": checked["result"].get("stamp"), "roles": checked["result"].get("roles")}
     if not checked["ok"]:
         failed = _failed("author", checked["feedback"], world_sha, trial)
         failed["result"].update(built, feedback=checked["feedback"])

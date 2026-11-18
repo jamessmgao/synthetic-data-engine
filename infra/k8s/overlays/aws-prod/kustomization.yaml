@@ -28,8 +28,20 @@ configMapGenerator:
       - SDE_MOCK_LLM=0
       - SDE_AUTHOR_MODE=agent
       - SDE_AUTHORING_REASONING_EFFORT=medium  # as round 2 (tune-r3); unset = the provider default
+      # One authoring model call at most 600 s, then terminus-2 retries it (litellm's default is
+      # 6000 s). Iteration 1's worlds lost 10-32 min each to stalled calls (one: 1214 s for 310
+      # tokens); the longest real step tonight was ~19k tokens in ~8 min. Authoring only: the
+      # solver's calls are untouched.
+      - SDE_AUTHORING_LLM_TIMEOUT_S=600
+      # World jobs (world, retries, mutations) think longer: difficulty is designed there (the user's
+      # call, iteration 2). High reasoning makes steps longer, so their call cap is 1200 s.
+      - SDE_WORLD_REASONING_EFFORT=high
+      - SDE_WORLD_LLM_TIMEOUT_S=1200
       - SDE_DB_POOL_MAX=2
       - SDE_WORK_DIR=/opt/sde/work
+      # validate / world_check adopt the author's stamped sde-task / sde-world results
+      # (shared/contracts/config.py adopt_author_checks) instead of re-running them in Docker.
+      - SDE_ADOPT_AUTHOR_CHECKS=1
       - AWS_DEFAULT_REGION=us-east-2
 replicas:
   - {name: generation, count: 10}  # one authoring session per pod: a stray docker kill hits only its own job

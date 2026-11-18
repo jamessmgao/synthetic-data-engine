@@ -43,7 +43,10 @@ class FakeTrial:
         if self.world:
             write_world(arts / "world", **self.meta)
             if self.self_check:
-                (arts / "world_check.json").write_text(json.dumps({"outcome": self.self_check, "feedback": "x"}))
+                from shared.taskformat.world_check import world_stamp
+
+                (arts / "world_check.json").write_text(json.dumps({"outcome": self.self_check, "feedback": "x",
+                                                                   "stamp": world_stamp(arts / "world")}))
         return {"artifacts_dir": str(arts), "trial_dir": str(arts.parent), "cost_usd": 1.25, "steps": 40,
                 "duration_sec": 1800, "n_input_tokens": 900_000, "n_output_tokens": 20_000,
                 "gateway_cost_usd": 5e-05, "exception_type": self.exception,
@@ -60,7 +63,12 @@ def test_initial_world_is_stored_content_addressed_with_spec_and_empty_lineage(t
     meta = json.loads((stored / "world.json").read_text())
     assert meta["spec"] == SPEC and meta["lineage"] == {"parent_world_sha256": None, "mutations": []}
     assert out["result"]["name"] == "inventory-oversell"
-    assert out["result"]["authoring"]["self_check"] == {"by": "author", "outcome": "OK"}
+    checked = out["result"]["authoring"]["self_check"]
+    assert (checked["by"], checked["outcome"]) == ("author", "OK")
+    # the stamp survives the world.json rewrite (spec, lineage): the world_check job can adopt it
+    from shared.taskformat import world_check
+
+    assert checked["stamp"] == checked["result"]["stamp"] == world_check.world_stamp(stored)
     ins = trial.calls[0]["instruction"]
     assert "Database consistency and recovery" in ins and '"mechanism": "isolation_anomaly"' in ins
     assert "$SDE_DOCKER_LABEL" in ins and "sde-world check /logs/artifacts/world" in ins
@@ -108,6 +116,28 @@ def test_mutation_sets_lineage_from_the_input(tmp_path):
     assert "parent/world.json" in trial.calls[0]["files"] and "/input/parent" in trial.calls[0]["instruction"]
     meta = json.loads((Path(out["result"]["world_path"]) / "world.json").read_text())
     assert meta["lineage"] == {"parent_world_sha256": psha, "mutations": mutations}
+
+
+def test_a_mutation_gets_the_passing_runs_traces_in_input_solver_runs(tmp_path):
+    work = tmp_path / "work"
+    parent = write_world(tmp_path / "p")
+    psha = author.tree_sha256(parent)
+    (work / "worlds").mkdir(parents=True)
+    parent.rename(work / "worlds" / psha)
+    job = {"origin": "mutation", "parent_world_sha256": psha, "spec": SPEC,
+           "mutation": {"operators": ["extend_cross_component_dependency"], "why": ["one file"]},
+           "mutations": [{}], "analysis": {"why_easy": "4 small files"}, "target_fix": "fix opt.go",
+           "solver_runs": {"run1.md": "# run 1: passed in 15 agent steps", "../escape.md": "x"}}
+    trial = FakeTrial(tmp_path)
+    assert author.run_world_job("t1-v2-world", job, work, run_trial=trial)["outcome"] == "OK"
+    call = trial.calls[0]
+    assert call["files"]["solver_runs/run1.md"] == b"# run 1: passed in 15 agent steps"
+    assert not any("escape" in f for f in call["files"])  # only run<k>.md names are staged
+    assert "How the passing agents found it, step by step: /input/solver_runs/" in call["instruction"]
+    del job["solver_runs"]
+    trial = FakeTrial(tmp_path)
+    author.run_world_job("t1-v2-world", job, work, run_trial=trial)
+    assert "/input/solver_runs" not in trial.calls[0]["instruction"]
 
 
 def test_a_bad_mutation_input_fails_without_running(tmp_path):
@@ -171,8 +201,10 @@ def test_a_failed_world_check_names_the_check_for_the_retry(tmp_path, monkeypatc
     class SavedFail(FakeTrial):
         def __call__(self, job_id, *a, **kw):
             out = super().__call__(job_id, *a, **kw)
-            (Path(out["artifacts_dir"]) / "world_check.json").write_text(json.dumps(
-                {"outcome": "FAILED", "failed_check": "build", "feedback": "COPY with more than one source file"}))
+            arts = Path(out["artifacts_dir"])
+            (arts / "world_check.json").write_text(json.dumps(
+                {"outcome": "FAILED", "failed_check": "build", "feedback": "COPY with more than one source file",
+                 "stamp": world_check.world_stamp(arts / "world")}))
             return out
 
     saved = author.run_world_job("j1", {"spec": SPEC}, tmp_path / "w1", run_trial=SavedFail(tmp_path))

@@ -244,7 +244,8 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
     stopped = False
     try:
         proc = subprocess.Popen(
-            harbor_command(task_dir, trace), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            harbor_command(task_dir, trace, world="-world" in job_id), stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, env=dict(os.environ),
             start_new_session=True,  # its own process group: stop Harbor and its children together
         )
@@ -272,26 +273,34 @@ STOP_GRACE_SEC = 30.0
 _RUNNING: dict[str, threading.Event] = {}
 
 
-def harbor_command(task_dir: Path, trace: Path) -> list[str]:
+def _stage_env(name: str, world: bool) -> str:
+    """SDE_AUTHORING_<name>, or for a world job (world, world retry/repair, mutation) SDE_WORLD_<name>
+    when that is set: worlds are where difficulty is designed, so they may think longer."""
+    if world and (v := os.environ.get(f"SDE_WORLD_{name}", "").strip()):
+        return v
+    return os.environ.get(f"SDE_AUTHORING_{name}", "").strip()
+
+
+def harbor_command(task_dir: Path, trace: Path, world: bool = False) -> list[str]:
     cmd = [config.HARBOR_BIN, "run", "-p", str(task_dir), "-a", "terminus-2",
            "-m", f"openrouter/{config.MODEL}", "-o", str(trace), "--job-name", JOB_NAME, "-y", "-q"]
     # SDE_AUTHORING_REASONING_EFFORT (e.g. medium): the authoring agent's reasoning effort;
-    # unset = the provider's default.
-    if effort := os.environ.get("SDE_AUTHORING_REASONING_EFFORT", "").strip():
+    # SDE_WORLD_REASONING_EFFORT overrides it for world jobs; unset = the provider's default.
+    if effort := _stage_env("REASONING_EFFORT", world):
         cmd += ["--ak", f"reasoning_effort={effort}"]
-    if llm := llm_kwargs():
+    if llm := llm_kwargs(world):
         cmd += ["--ak", f"llm_kwargs={json.dumps(llm, sort_keys=True)}"]
     return cmd
 
 
-def llm_kwargs() -> dict:
+def llm_kwargs(world: bool = False) -> dict:
     """terminus-2's `llm_kwargs`, which Harbor's LiteLLM spreads into every model call:
     SDE_AUTHORING_LLM_TIMEOUT_S caps one call (litellm's default is 6000 s; in round 1 a
     hung call cost ~600 s before Harbor's retry), SDE_AUTHORING_MAX_TOKENS the output of
     one (litellm has no model info for glm-5.1, so the provider's default applies). Unset
     = not sent. Invalid values raise, so a typo doesn't silently drop the cap."""
     out: dict = {}
-    if raw := os.environ.get("SDE_AUTHORING_LLM_TIMEOUT_S", "").strip():
+    if raw := _stage_env("LLM_TIMEOUT_S", world):  # SDE_WORLD_LLM_TIMEOUT_S overrides for world jobs
         if (timeout := float(raw)) <= 0:
             raise ValueError("SDE_AUTHORING_LLM_TIMEOUT_S must be > 0")
         out["timeout"] = timeout

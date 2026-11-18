@@ -1,0 +1,215 @@
+{
+ "aws-agent-b1-t02": {
+  "trusted": true,
+  "fix_applied": "All passing runs replaced `engine.py` wholesale with a small deterministic engine (E16, E31, E48): on every `define`, discard all cached values and all inferred-type annotations (E4, E39); on `eval`/`all`, recursively evaluate the requested name against the current definitions, computing value and type together on the fly (including the type-dependent division rule via a `_div(a, b, typ)` helper, E16/E31/E48), with explicit cycle detection (E3, E39) and nonzero errors for undefined names and malformed expressions (E51). One run first patched the existing cache/invalidation and then had to further patch type propagation into `_type_env` (E12, E5) before converging on the rewrite; the other runs went straight to the rewrite. Verification was a self-built clean-service oracle plus randomized schedules (E13\u2013E17, E33) and hand regression schedules for ordering, forward references, errors, and `all` (E34, E47, E49\u2013E51).",
+  "simple_strategy": "List the three small files (E7, E25, E41\u2013E44), read `engine.py` and `parser.py`, and spot from the source that (a) redefinition invalidates only one level of reverse dependencies and (b) inferred types are frozen onto AST nodes at define time (E3, E21, E22, E38). Confirm with a 5\u20137-line reproduction schedule each for stale value and stale type (E8\u2013E9, E28, E45\u2013E46). Then rewrite `engine.py` from scratch as a deterministic engine: clear all cached values and inferred types on every definition, lazily recompute value and type recursively on eval, and detect cycles (E4, E16, E31, E48). Finally, verify with a clean-service oracle: build the reference by replaying definitions into a fresh engine (E28, E32) and fuzz random schedules against it (E13\u2013E17, E33), plus regression checks on ordering, errors, and forward references (E47, E49\u2013E51).",
+  "cues": [
+   {
+    "quote": "Analysis: The code has two state-consistency defects. First, redefining a dependency only invalidates one level of reverse dependencies... Second, inferred types are stored on AST nodes... and are not recalculated when a dependency is redefined with a different numeric type.",
+    "where": "E3 (and the same two-defect diagnosis in E21\u2013E22, E38), produced at step 3 from source reading alone"
+   },
+   {
+    "quote": "# Refresh cached results after a definition changes.  self._cache.pop(name, None)  self._invalidate_values(name)",
+    "where": "the original engine.py, visible in E10 \u2014 the invalidation routine and its comment hand over the bug"
+   },
+   {
+    "quote": "def clear_inferred(node): \"\"\"Clear inferred_type on all nodes in the subtree.\"\"\"",
+    "where": "parser.py, E25 and E29 \u2014 names the exact stale state (`inferred_type` on AST nodes)"
+   },
+   {
+    "quote": "A name may be defined more than once.",
+    "where": "instruction \u2014 points directly at redefinition, the trigger of both bugs"
+   },
+   {
+    "quote": "Users reported that a schedule can instead produce a different value or type from such a clean-service request.",
+    "where": "instruction \u2014 the words 'value or type' match the two defects one-to-one, and the preceding sentence defines a complete clean-service oracle agents could implement (E28: `def clean(defs, name): ... for n, expr in defs: e.define(n, expr)`)"
+   },
+   {
+    "quote": "The cache is now cleared after every redefinition, fixing transitive values.",
+    "where": "E4, E39 \u2014 the instruction places no requirement that caching or incremental structure be preserved, so clearing everything is the accepted fix"
+   }
+  ],
+  "suggestions": [
+   {
+    "technique": "genuine_tradeoff",
+    "change": "Add a stated incremental-evaluation requirement so the 'clear all caches and recompute' sledgehammer (which every run used, E4, E16, E31, E48) is no longer valid. State in the instruction: evaluation must be incremental \u2014 a `define` must not invalidate entries whose transitive dependencies are unaffected, and re-evaluating an unchanged name must reuse its cached result without re-parsing or re-walking its expression. Give the requirement teeth with a stated stress workload, e.g. 'the schedule pattern of one redefine followed by one `all`, repeated for a chain of N stated definitions, must complete within the stated time limit; a solution that re-evaluates unaffected definitions on each operation fails it.' The task then requires correct transitive invalidation *plus* correct propagation of both value and inferred type through the dependency graph \u2014 a genuine correctness/efficiency trade-off, since the easy full-clear fix (E4) and the easy but wrong one-level invalidation both fail, and the agent must reason about which cached entries are provably stale and how type changes flow through the graph."
+   },
+   {
+    "technique": "state_and_history",
+    "change": "Make definitions persist across processes, so the instruction's existing kill/retry/concurrency sentences (currently vacuous because each run observed a fresh per-process engine, E37) become operative requirements. State that the service maintains a definition store on disk: `define` updates the store, `eval`/`all` read it, and outputs must be identical whether the whole schedule runs in one process, is retried after the process is killed at an arbitrary moment, or interleaves with another concurrently running complete schedule. Correctness then depends on state over time: a process killed mid-write must leave the store wholly old or wholly new (atomic, crash-safe writes); a store written by a killed process must not be trusted with partially invalidated cache/type entries on recovery; and a retry after a kill must return exactly the same complete output. What is right in one process state (in-memory clear-and-recompute, E16/E31/E48) is wrong in another (post-crash recovery, concurrent writer)."
+   },
+   {
+    "technique": "nonlocal_cause",
+    "change": "Restructure so the symptom surfaces in a different component from the root cause and the source no longer labels the defect. Move type inference into the parser module keyed by AST identity, keep the reverse-dependency invalidation in a separate dependency-tracking module, and have the evaluator consult both only indirectly, so that the visible symptom \u2014 wrong division result or wrong output type on `eval` \u2014 appears in the evaluator while the stale state lives in modules the evaluator never names. Remove the self-incriminating artifacts the agents used: the '# Refresh cached results after a definition changes.' comment next to `self._cache.pop(name, None)` / `_invalidate_values` (E10) and the `infer_type`/`clear_inferred` docstrings naming the stale `inferred_type` field (E25, E29). Keep all information available, but require the agent to trace the data flow (AST identity shared across defines, type environment keyed by node, invalidation graph) and reconcile behavior across components instead of reading the bug off one file at step 3 (E3, E21, E38)."
+   }
+  ]
+ },
+ "aws-agent-b1-t08": {
+  "trusted": true,
+  "fix_applied": "The passing agents rewrote `planner.h`, `planner.c`, `solver.c`, and `report.c` so that both modes route through a single exact, deterministic solver \u2014 a subset dynamic program or bounded exhaustive search over the at-most-12 jobs that reconstructs a valid execution order and a canonical start-time assignment (E5, E12/E13, E22, E51). Several runs additionally hardened the parser (single horizon line, exact field counts, unique IDs, dynamic-length IDs, wider integers, comment/blank handling) as defensive cleanup (E5, E22), and verified help output, exit codes, stdin vs file input, and both modes on small instances (E14\u2013E17, E49). The graded change itself is small: delete the greedy `build_plan` path and make normal mode compute the optimum.",
+  "simple_strategy": "Read all source files; spot that `build_plan` is a greedy heuristic used only by normal mode; replace normal mode's planner with the same exact deterministic search the reference already uses (a subset DP or exhaustive enumeration over the \u226412 jobs with deterministic reconstruction); rebuild; smoke-test both modes on small instances (E5: 'an exact subset dynamic program that reconstructs a deterministic valid execution order'; E22: 'use the same exact deterministic scheduler for both modes'; E38: 'implement a deterministic exhaustive service solver (bounded by only 12 jobs)').",
+  "cues": [
+   {
+    "quote": "Users observed that a normal invocation could print a well-formed schedule whose accepted total was smaller than the best total admitted by that valid input. This must not occur.",
+    "where": "Task instruction"
+   },
+   {
+    "quote": "the reported total is the largest value attainable by any feasible plan for the supplied jobs",
+    "where": "Task instruction"
+   },
+   {
+    "quote": "The reference solver enumerates subsets and checks feasibility, while normal mode calls a separate build_plan.",
+    "where": "Run 3, step 4 analysis (E4)"
+   },
+   {
+    "quote": "the first line is `mode service` vs `mode reference`",
+    "where": "Task instruction output contract \u2014 tells agents the two modes share one contract, so the reference solver is a drop-in fix"
+   },
+   {
+    "quote": "printf 'horizon 4\\njob a 2 3 4 -\\njob b 2 5 4 -\\n' ... ./planner /tmp/suboptimal.txt",
+    "where": "Run 5, step ~9 (E49) \u2014 trivial reproduction"
+   },
+   {
+    "quote": "The defect is confirmed: normal mode greedily selects by value/density, producing total 6 while the exact optimum is 10.",
+    "where": "Run 2, step 5 analysis (E22)"
+   }
+  ],
+  "suggestions": [
+   {
+    "technique": "interacting_requirements",
+    "change": "Add a canonical-plan rule to the instruction: 'Among all feasible plans attaining the maximum total, the invocation must report the one that accepts the largest number of jobs; among those, the one whose accepted-ID sequence, in input order, is lexicographically smallest.' This interacts with the existing guarantees: any exact search with arbitrary tie-breaking yields a *different* optimal plan \u2014 wrong accepted set, wrong execution order, wrong deferred records and reasons \u2014 so 'make normal mode call an exact solver' passes the total checks but fails the plan-identity checks. The agent must design the search/reconstruction to satisfy value, count, and lexicographic objectives jointly, and must reason about how tie-breaks propagate into the deferred-record contract."
+   },
+   {
+    "technique": "nonlocal_cause",
+    "change": "Remove the visibly greedy `build_plan` and make the suboptimality originate upstream of the solver: have both modes share one exact solver, but make the parser mis-resolve `PREREQUISITE` \u2014 e.g., it records the prerequisite's position in an ID-sorted table while the solver indexes jobs by input position. On schedules where sorted and input order differ, some jobs' prerequisites point at the wrong job and are wrongly judged infeasible, so the output is a well-formed plan whose total is smaller than the optimum. The symptom still appears only in the reported totals; nothing in the solver is greedy or wrong. The instruction stays exactly as written, and the hidden tests use schedules whose two orderings differ. The agent must trace the parser\u2192solver data flow (why an optimal job is deferred) instead of diffing two planner functions."
+   },
+   {
+    "technique": "state_and_history",
+    "change": "Give the existing kill/retry clause real semantics: state in the instruction that a normal invocation appends each accepted job (ID, start, end) to a journal file at a fixed path under /app before printing, that committed entries are immutable and permanently occupy the machine timeline, and that a later invocation \u2014 including one started after a kill mid-journal-write, or concurrently with another writer \u2014 must reconcile the journal and still print a complete plan that is optimal given the committed intervals and satisfies every other guarantee. What is right with an empty journal (the fresh-run optimum) is wrong with a partially or fully committed one; recovery, idempotency, and interleaving under concurrent processes all become part of correctness. All of this is stated in the instruction, and the one-shot pure-function rewrite that passed in all five runs fails the kill-point and concurrency tests."
+   }
+  ]
+ },
+ "aws-agent-b1-t06": {
+  "trusted": true,
+  "fix_applied": "A full rewrite of the store and handlers into a transactional model: every successful operation (order accept, charge, process, ack) mutates the in-memory state and persists it in one atomic save under a single store lock, with debit idempotency keyed by request/order rather than by `api:<order_id>` and `charge:<delivery_id>` separately; process durably claims a delivery, records exactly one debit, marks the order fulfilled, and removes the delivery in one transaction, so crashes and concurrent charge+process on the same order cannot produce a second debit [E5][E15][E50][E51]. Originals were backed up (`store.go.orig`, `main.go.orig`) [E15] and the binary was rebuilt and vetted [E16][E17], followed by self-run sequence, crash-restart and race tests against the guarantees [E1][E18][E35].",
+  "simple_strategy": "Read the two source files, notice that the charge API and delivery processing record debits under different ledger keys and in separate durable writes, then rewrite `store.go` (and `main.go`) so each public operation performs exactly one mutation+atomic-save under one lock, with idempotency keyed at the request/order level instead of per-API or per-delivery: 'implement an idempotency model keyed by request/order rather than delivery/API path, and make process state transitions persist atomically' [E5]; 'implement a single-store-transaction model that makes every successful operation durable and uses one request-level debit instead of multiple key-based debits' [E39]; executed as a full rewrite via `cat > store.go` and `cat > main.go` [E15][E50][E51], then `go build` [E16] and verification against a few self-written crash/concurrency scripts [E1][E18][E35].",
+  "cues": [
+   {
+    "quote": "The same order can be operated on by the charge API and by delivery processing. No matter how retries, simultaneous calls, crashes, restarts, or those operations are combined, its request has exactly one debit.",
+    "where": "task instruction, guarantee 3 \u2014 tells the agent exactly which two operations must be reconciled"
+   },
+   {
+    "quote": "The grep already reveals likely unsafe separate mutations in handleProcess (mark charged and acknowledge delivery as distinct operations) and a charge ledger keyed by delivery ID.",
+    "where": "run 4 agent analysis, step 3 [E3]"
+   },
+   {
+    "quote": "RecordCharge keys API charges by order ID and delivery charges by delivery ID, so an order with a retried delivery can potentially be charged multiple times.",
+    "where": "run 1 agent analysis, step 5 [E22]"
+   },
+   {
+    "quote": "delivery processing records `charge:<delivery_id>` while the charge API records `api:<order_id>`, so one order can receive two debits. `TakeDelivery` also only peeks rather than durably claiming a delivery.",
+    "where": "run 3 agent analysis, step 5 [E39]"
+   },
+   {
+    "quote": "TakeDelivery only reads the first delivery; RecordCharge, MarkCharged, and AckDelivery each save independently; and process performs them across separate persistence points.",
+    "where": "run 4 agent analysis, step 4 [E4]"
+   }
+  ],
+  "suggestions": [
+   {
+    "technique": "nonlocal_cause",
+    "change": "Move delivery processing out of the order service's request path into a separate delivery component: a background delivery worker (its own goroutine with its own journal file, e.g. `<DATA_DIR>/delivery.json`) that picks up pending deliveries and records its debits through its own ledger-writing code path. The duplicate-debit symptom then appears only in `GET /check` totals, while the root cause (the worker's per-delivery charge keying and its independent journal flush) lives in a different component and state file from the charge API's ledger code. Add the stated requirement that the worker autonomously processes pending deliveries (e.g., within a bounded time after order acceptance, without any `/process` call), and that both its debits and the charge API's debits land in the same request total. The 'grep store.go, unify the two key schemes' strategy fails because the second keying scheme is no longer in the file the symptom points at; the agent must trace the request total back through the worker's journal and reconcile two persistence mechanisms."
+   },
+   {
+    "technique": "state_and_history",
+    "change": "Make process correctness depend on crash timing and recovery state rather than only on the atomicity of a single operation. Add stated requirements: (a) if the service is SIGKILLed during `/process` before its response is delivered, the delivery must still be pending after restart with its `attempt` incremented by one, so the client can retry `/process`; (b) the retried process on the incremented-attempt delivery must still result in exactly one debit for the request, including when a `/charge` on the same order raced or intervened between crash and retry; (c) `POST /order` must still report that order's pending delivery with its current attempt. The naive fix \u2014 one atomic transaction that marks the order fulfilled, deletes the delivery, and records the debit \u2014 satisfies the normal path but violates (a): after a crash before the response it leaves no pending delivery to retry (delivery lost), or, if the fix instead leaves the delivery pending but records the debit early, the retry double-debits. Correctness now depends on distinguishing 'crashed before commit' from 'crashed after response' and on the delivery's attempt history, which requires a claim/commit protocol with recovery logic, not just a bigger lock."
+   },
+   {
+    "technique": "interacting_requirements",
+    "change": "Introduce a stated compatibility requirement that interacts directly with the unified-key fix: the ledger entry format is a public contract \u2014 an entry produced by `/charge` must keep `key` of the form `api:<order_id>` and an entry produced by delivery processing must keep `key` of the form `charge:<delivery_id>` (e.g., an external billing reconciler, tested by a regression suite, reads these keys to attribute debits to the charging channel, and rejects unknown key formats). Guarantee 3 (exactly one debit per request across both channels) then has to be achieved without merging the two key schemes: the fix must add an idempotency/order-level marker that prevents the second channel from adding an entry while each channel still emits its own correctly-keyed entry \u2014 and must decide, for a charge that races a process, which channel's entry is reported and what the other operation returns, so responses stay consistent with the surviving entry. The straightforward 'one request-keyed debit entry' rewrite now violates the key-format requirement, forcing a design where the dedup layer and the entry format are separate concerns that must be reconciled."
+   }
+  ]
+ },
+ "aws-agent-b1-t09": {
+  "trusted": true,
+  "fix_applied": "Each passing run rewrote `Reconciler.java` wholesale (E12, E29, E44) into a streaming implementation: no event retention, per-line parsing with immediate strict-sequence-increase validation, a per-account HashMap (run 5 used a custom open-addressing table, E4) holding count/total/first/last sequence and timestamp/checksum, lexicographic sort of account states at the end, and the report rendered/written only after the full pass and all validation succeed. Run 5 also adjusted `Main` to catch diagnostics cleanly and flush only a fully rendered report (E4). The existing `EventLog` parser and checksum logic were kept unchanged to preserve exact reference compatibility (E22: 'Keep the existing report model and checksum logic unchanged').",
+  "simple_strategy": "Read the three source files; replace `Reconciler.reconcile` with a single-pass streaming implementation over a BufferedReader: parse and strictly-validate each line as read, keep only a per-account map/table of running summaries, reject empty and non-increasing ledgers, sort the small account set lexicographically at the end, and emit the report only after the whole pass succeeds; keep the existing checksum/validation semantics; compile, compare a small ledger against `expected`, run the rejection cases, then run the 6,000,000-event ledger under `-Xmx128m` and `cmp` it against `java Main expected 6000000 6000`. This is exactly what all three recorded runs did (E12\u2013E17, E29\u2013E34, E44\u2013E51).",
+  "cues": [
+   {
+    "quote": "Users have seen a reconciliation of a valid large ledger terminate unsuccessfully without a report\u2026 within 75 seconds while the Java process is limited to a 128 MiB heap.",
+    "where": "Task instruction \u2014 points directly at resource exhaustion of a valid input, excluding correctness bugs."
+   },
+   {
+    "quote": "For the required 6,000,000-event ledger, use the output path /tmp/sde-ledger-events.log; this input has 6000 accounts.",
+    "where": "Task instruction \u2014 guarantees the aggregation state is tiny, so 'stream once, aggregate per account' is known in advance to fit the heap."
+   },
+   {
+    "quote": "loads every event via `EventLog.readAll()`\u2026 stores all 6,000,000 `Event` objects and account strings in an `ArrayList`",
+    "where": "The starter source itself (E21, E38; `readAll` and `ArrayList` also appear in the run file lists E1, E18, E35) \u2014 the method name literally announces the bug."
+   },
+   {
+    "quote": "The parser already validates field structure, numeric ranges, account syntax, and nonnegative values.",
+    "where": "Run 3's analysis (E22) \u2014 the invalid-input requirements were already implemented, so the agent only had to solve memory."
+   }
+  ],
+  "suggestions": [
+   {
+    "technique": "interacting_requirements",
+    "change": "Make the per-account checksum depend on an order different from the stream order, while keeping the 128 MiB heap bound: state in the interface that timestamps within an account's events are not necessarily monotonic in the ledger, and define each account's checksum over that account's events sorted by ascending timestamp (ties by sequence), while the ledger itself is in ascending global-sequence order; the `expected` reference implements this definition. The single running-checksum streaming pass that all passing runs wrote (E12, E29, E44) is then locally correct but produces a wrong checksum whenever timestamp order differs from sequence order, and since 6,000,000 events cannot be held in a 128 MiB heap, matching the reference exactly forces a real trade-off between ordered aggregation and bounded memory (e.g., per-account spill files or a two-pass scheme). Every requirement stays stated: exact match against `expected`, rejection rules, heap limit, and time budget are unchanged."
+   },
+   {
+    "technique": "state_and_history",
+    "change": "Make the kill/restart clause operative instead of decorative: require that `reconcile <log>` periodically persist progress to a checkpoint file next to the ledger, and that a rerun after a kill resumes from it, finishing within the 75-second budget across both processes and producing a report byte-identical to an uninterrupted run. State explicitly what correct resume means: an event already applied before the kill must not be re-applied, yet every line must still be validated exactly once, and the on-disk checkpoint must never itself make a rerun accept a non-increasing sequence it already rejected. The naive single-pass rewrite has no checkpoint at all, and the naive way of adding one (appending applied events or raw running totals without atomically recording the last validated sequence and file offset) double-counts amounts on resume \u2014 what is right on a fresh run (apply the line) is wrong on a resumed run (skip it), and vice versa."
+   },
+   {
+    "technique": "nonlocal_cause",
+    "change": "Relocate the root cause out of the file the symptom points at: restructure the starter so `Reconciler` itself already streams, but `Main.reconcile` routes input through a shared `LedgerReader` (also used by `expected`, whose byte-identical reference output requirement 2 already makes load-bearing) that buffers the full event list \u2014 so the OOM symptom still appears in reconcile while the allocating code lives two components away, and gutting the shared reader would corrupt the reference generator. Add one explicit sentence to the interface: 'The `prepare` and `expected` commands must continue to produce byte-identical output.' The evidence shows the current passes succeeded precisely by reading `Reconciler.java` and rewriting it (E4, E21, E38); with the cause in a shared dependency that hidden dependents rely on, the agent must trace the data flow from symptom to reader and add a streaming path without perturbing the reference, instead of patching where the symptom shows."
+   }
+  ]
+ },
+ "aws-iter1-t06": {
+  "trusted": true,
+  "fix_applied": "All passing agents made the same core change plus hardening. (1) WAL appends are fsynced (run 5 rewrote `WAL.append` to open with fsync, E12\u2013E13; run 2 added `_fsync_dir` and durable append helpers, E29, E32\u2013E33). (2) The commit index is atomically persisted (write tmp + fsync + rename) before SET/DEL/FLUSH return OK, via a commit-and-apply-through-index helper (E4: 'the local commit marker is saved before returning OK'; run 2's `_save_commit`/`_load_commit`, E33). (3) The follower applies and durably commits entries when REPLICATE arrives, before ACKing, so promotion/restart of the follower preserves acknowledged writes (E21: 'have REPLICATE durably commit and apply on the follower before ACK'). (4) Leader writes were serialized and replication made index-aware \u2014 run 5's replication 'rejects index gaps/mismatches instead of corrupting the follower WAL' (E5, E4). Run 2 ultimately rewrote kvstore.py wholesale via heredoc after its first scripted edit failed to apply (E22, E32\u2013E34).",
+  "simple_strategy": "Read kvstore.py and recovery.py once; observe that `_cmd_set`/`_cmd_del` append a WAL entry, apply it in memory, and return OK, while only `_cmd_flush` saves the commit index; then patch the write path so that before returning OK the leader fsyncs the WAL append and atomically persists the commit index (tmp file + rename + fsync). Optionally also apply/commit replicated entries on the follower as they arrive and serialize leader writes. Then start a leader/follower pair, run SET/GET/DEL/FLUSH, kill and restart the nodes, and confirm the values survive (E15\u2013E17, E47\u2013E50).",
+  "cues": [
+   {
+    "quote": "Keys that were successfully written return NIL instead of their values. The SET command returned OK ... but later GET commands return NIL",
+    "where": "Instruction, Symptom section \u2014 the symptom is the exact behavior of the missing-commit-persist bug, no investigation needed"
+   },
+   {
+    "quote": "Every write acknowledged by the leader (SET or DEL returning an OK response) is durable",
+    "where": "Instruction, Guarantees \u2014 states the fix as a property of the acknowledgment path"
+   },
+   {
+    "quote": "FLUSH on a leader durably persists all acknowledged writes; after FLUSH, writes survive a node restart",
+    "where": "Instruction, What Must Keep Working \u2014 implies durability currently exists only at FLUSH, i.e. the location of both bug and fix. Run 5's analysis even paraphrased it back: 'A FLUSH is required before durability' (E3)"
+   },
+   {
+    "quote": "data/node_7001.wal, data/node_7001.commit, data/node_7001.commit.tmp",
+    "where": "Data file names seen in E11/E27/E45 \u2014 'commit' as a separate persisted artifact immediately suggests a commit-index-vs-WAL-last-index gap"
+   },
+   {
+    "quote": "self.commit_index: vs self.state.wal.last_index: (and f-string 'commit={self.commit_index}')",
+    "where": "Code identifiers the agents grepped for (E1, E18, E35, E31) \u2014 two adjacent counters in the same class invite the one-line question 'why do they diverge?', and STATUS prints both (E48)"
+   },
+   {
+    "quote": "Recovery only replays through the saved commit index",
+    "where": "recovery.py behavior, confirmed at first read in E3/E21 \u2014 the replay rule that makes the divergence fatal, with recovery.py itself exonerated"
+   }
+  ],
+  "suggestions": [
+   {
+    "technique": "interacting_requirements",
+    "change": "Make three guarantees interact explicitly. Add to the instruction: (a) if a write is acknowledged while the follower is reachable, then after the leader is killed the follower, once PROMOTEd, must serve that write; (b) if the follower is unreachable, SET/DEL must still return OK promptly (the leader may not hang or return an error while the peer is down); (c) a write that was never acknowledged must never become visible after any restart or promotion. This defeats all three variants of the current simple fix: run 5's 'replicate and commit on the peer before locally committing' (E5) violates (b) as soon as the follower is stopped; a local-commit-only fix violates (a); and committing at WAL-append time (before the response is sent) violates (c) if the process dies mid-request. The agent must understand the trade-off and design an acknowledgment rule that satisfies all three at once (e.g. synchronous peer commit only when the peer is reachable, plus local durability, plus promotion-safe catch-up), rather than moving one save-commit call earlier."
+   },
+   {
+    "technique": "state_and_history",
+    "change": "Add a stated crash-timing requirement: the leader may crash at any point between sending REPLICATE for index N and persisting its own commit marker for N; after the leader restarts and the next write is issued, the follower and leader must end up identical and every entry exactly-once applied. In that state the follower's WAL already contains committed index N while the leader recovers with commit < N, so run 5's hardening \u2014 'replication now rejects index gaps/mismatches' (E5, E4) \u2014 turns every subsequent REPLICATE into a rejection and replication deadlocks; naive re-appending produces divergent WALs at the same index. What is right in the clean state (reject a mismatched index to avoid corruption) is wrong in the crash state (idempotently re-accept and reconcile the duplicate/uncommitted tail). Recovery must also tolerate a torn final WAL line from a crash mid-append. The fix must be conditioned on the recovered state of both nodes, not a single unconditional rule."
+   },
+   {
+    "technique": "partial_observability",
+    "change": "Restructure where the defect and the symptom live, keeping all evidence available. Make the leader's own persistence correct at ack time (leader kill/restart tests pass as-is) but have the REPLICATE message omit any commit advancement, so the follower appends entries without ever committing or applying them. The loss then surfaces only when the follower is restarted or PROMOTEd, and recovery.py still looks locally correct on both nodes. Additionally, spread the confirming evidence: the leader's `.commit` file is up to date, the follower's `.commit` lags its WAL, and only diffing both nodes' data files (as the agents did in E11/E27/E49) plus the follower's STATUS output reveals the divergence. The current one-read diagnosis \u2014 'SET doesn't persist the commit index' (E3, E20) \u2014 now matches the wrong site and passes the easy leader-restart test while failing the follower-restart and promotion tests, so the agent must reconcile state across two components instead of patching the first suspicious line."
+   }
+  ]
+ }
+}

@@ -201,3 +201,72 @@ All are on main; they deploy before iteration 1.
 | aws-iter1-t04 | database_consistency / write_skew / SQLite |
 | aws-iter1-t06 | distributed_concurrency / linearizability_violation / Python |
 | aws-iter1-alg-t01 | algorithmic_constraints / global_constraint_interaction / C |
+
+### Result (ended 16:20 UTC, the ~3 h cap; spend on the books $53.5 → ~$92)
+
+- **In band: 0 of 6.** Closer than iteration 0: t01 v1 4/5 and t06 v2 4/5; every scored v1
+  was 4–5/5 (iteration 0: 5/5).
+- **Lost:** t03 rejected (leak review ×3); t04 cancelled (its create wedged in an oversized
+  heredoc).
+
+| Task | Passes per version | End | Finding | Change (iteration 1 → 2) |
+|---|---|---|---|---|
+| t01 (Go ledger, SQLite) | v1 4/5 → v2 (repair_ambiguity) 5/5 settled | cancelled at the cap | Run 3's ✗ was a genuine miss of crash-time PENDING recovery, but its tests insert raw SQL into a `transactions` table the instruction never names (a hidden requirement). The repair missed it because the failure explanation was cut at 303 chars: an unescaped `"` ended the strict-schema string. | task_author.md Tests: never write the system's DB tables or state files directly. Plus: the failure review's `conclusion` comes first, uses single quotes, and the cut is flagged (r6-explanation-uncapped). |
+| t02 (Go interpreter) | v1 5/5 → v2 not evaluated | cancelled at the cap | The instruction was leak-clean, but the CODE gave it away: `findTopLevelAssignments`, 4 small files read in full by step 2, and a `show` command that prints the bad rewrite. The v2 mutation's operator misfired ("reorder"), and the cue moved to `collectDirectWrites`. | families.py compilers: 2+ components could plausibly produce the symptom; no command prints the transformed form. Plus `limit_named` (below). |
+| t03 (Java perf) | none | REJECTED (blind leak ×3) | The perf trap (a HashMap loses the required order) is guessable once the instruction states the order: `LinkedHashMap` every time. | families.py perf: the exact result is an outcome no standard structure gives for free. |
+| t04 (Py staffing, SQLite) | none | cancelled (stopping rule) | The world took 61 min (32 of it stalled provider calls). Its create then wedged in an oversized heredoc for 15+ min ($4.59, the most expensive job). | task_author.md Environment: keep each command under ~4 KB. |
+| t06 (Py KV store, WAL) | v1 5/5 → **v2 4/5** | cancelled at the cap (v3 starting) | v1: recovery.py's docstring said "Only entries that have been committed": the bug. v2's mutation (another misfire, "in memory") still made a real two-path defect, and remove_cues cleaned the docstrings. Its one ✗ broke standalone startup, not the hard part. | world.md: names, comments and docstrings on the defective path never state the limit; `sde-world check` warns `limit_named` (tb3d-limit-names). |
+| alg-t01 (C allocator) | v1 5/5 → v2 building | cancelled at the cap | The instances are small, so the solver writes its own exhaustive search; the world rule held (brute force only in repro/). Its create was 54 min / $7: 39 min of model writing and debugging. | families.py algorithms: stated sizes where exhaustive search can't finish in the time limit. |
+
+**In-band per family:** 0 everywhere (performance 0/2, compilers 0/1, algorithms 0/1,
+database 0/1, distributed 0/1).
+
+**Revisions:**
+- t06 5 → 4 (toward the band, no overshoot);
+- t01 4 → 5 (repair_ambiguity; the truncated explanation made it fix the wrong thing);
+- t02 and alg-t01 cancelled before evaluation.
+- Keyword misfires: 2 of 3 mutations ("in memory", "reorder"). Every finished mutated world
+  passed world_check on the first try.
+
+**Measurements (api-service, executor-worker, and the manager's trace timelines):**
+- **Leak, 12 reviews:** blind specific 5 (iteration 0: 8 of 9), generic 6, none 1; 0
+  placeholders. The "failing sequence" escape was cited 3× (fixed on main 9895089). Repairs
+  converge when they DELETE sentences (t02 r1, t06 r2).
+- **Polling:** 10 s polls gone (60 s waits); empty steps 28% (36%), 29% of prompt tokens (46%).
+- **World time:** 32–64 min. Trace timelines: t04's 61 min = 32.5 min of stalled model calls
+  (one took 1214 s for 310 tokens) + 27 min of work; t02's 49 min = 10.3 min stalled + 32 min.
+  SDE_AUTHORING_LLM_TIMEOUT_S was unset, so litellm's 6000 s default applied.
+- **Create time:** t01's 36 min = 21 min waiting on 3 `sde-task run`s (4 roles run one after
+  another; #1 hung 12 min on its own test's bug). alg-t01's 54 min = 39 min model work + 7
+  runs of 1–2 min.
+- **Infrastructure:** release-refund's 900 s scale-down window works (2 scale-downs, 0
+  re-claims, 0 new dead-letters). The analysis view returned HTTP 500 for decided versions with
+  an even number of passing runs (fixed: tb3d-analysis-files-fix).
+
+### Shipping in iteration 2 (main, deployed before aws-iter2)
+
+- **Difficulty:**
+  - dial 3;
+  - world authoring at reasoning **high** (task authoring stays medium; the user's call);
+  - the per-task changes above;
+  - the distributed brief (3+ node processes, a defect needing 2+ interleaved events, the loss
+    away from its cause).
+- **Mutations:**
+  - 2 difficulty operators per mutation (remove_cues no longer takes a slot);
+  - the trusted review's first suggestion outranks keyword rules (r6-calib-reorder);
+  - files_modified counts real files only (r6-files-modified);
+  - the mutation author gets the passing runs' condensed traces (r7-solver-runs) and the parent
+    world's hardness results (was always "(not recorded)");
+  - world_mutation.md: the new difficulty must defeat a careful rewrite.
+- **Speed:**
+  - authoring call timeout 600 s (worlds 1200 s);
+  - `sde-task run` runs the roles in parallel, 2 at a time (−28% measured), with progress lines;
+  - iterate with `--as oracle` first;
+  - validate and world_check adopt the author's stamped checks instead of re-running Docker
+    (tb3d-adopt-author-checks).
+- **Leak:**
+  - the judge's location rule without the escape;
+  - "remove sentences, never add" in repair feedback;
+  - pointer placeholders retried.
+- **Not yet (the user's call):** the world-time leak check, the repro/explore.py schedule
+  explorer, merging world and task authoring (kept separate).

@@ -22,7 +22,7 @@ from pathlib import Path
 SDE = Path(__file__).resolve().parent.parent  # /opt/sde in the image, the repo root locally
 sys.path[:0] = [str(SDE / "validator"), str(SDE / "generator")]
 
-from shared.taskformat.world_check import run_world_check_job  # noqa: E402
+from shared.taskformat.world_check import run_world_check_job, world_stamp  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="sde-world-") as trace:
         result = run_world_check_job(args.world_dir, Path(trace))
+    # The world this result is for: the pipeline uses the saved check only if it still matches.
+    result = {**result, "stamp": world_stamp(args.world_dir)}
     text = json.dumps(result, indent=1)
     artifacts = Path(os.environ.get("SDE_ARTIFACTS_DIR", "/logs/artifacts"))
     if artifacts.is_dir():
@@ -49,9 +51,15 @@ def main(argv: list[str] | None = None) -> int:
 def hardness_warnings(hardness: dict | None) -> list[str]:
     """One WARNING per failed hardness check, each with what to change. In warn mode they
     don't fail the check, but a world that misses them makes an easier task."""
-    if not hardness or not hardness.get("failed"):
+    if not hardness or not (hardness.get("failed") or hardness.get("warnings")):
         return []
     details = hardness.get("details") or {}
+    named = [f"WARNING: {hit['file']}: {hit['function']} ({hit['where']}: \"{hit['text']}\") names its own limit "
+             f"({', '.join(hit['matched'])}), and fix.sh changes it: an agent reads that and has the bug. Name and "
+             "comment the code by what it is for, never by the limit that breaks it"
+             for hit in details.get("limit_named") or []]
+    if not hardness.get("failed"):
+        return ["", f"sde-world: {len(named)} naming warning(s) (they never fail the world):"] + named
     files = details.get("fix_files")
     say = {
         "hardness_files": f"missing {details.get('missing')}: write repro/symptom_check.sh (the visible symptom) "
@@ -77,7 +85,7 @@ def hardness_warnings(hardness: dict | None) -> list[str]:
     head = ["", f"sde-world: {len(hardness['failed'])} hardness warning(s) (mode {mode}"
                 + (": the world still passes" if mode == "warn" else "") + "). Fix every WARNING before finishing "
                 "if time allows:"]
-    return head + [f"WARNING: {say.get(name, name)}" for name in hardness["failed"]]
+    return head + [f"WARNING: {say.get(name, name)}" for name in hardness["failed"]] + named
 
 
 if __name__ == "__main__":

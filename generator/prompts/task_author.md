@@ -43,7 +43,8 @@ executions:
 Random inputs obey every rule the instruction states (an acyclic graph, unique IDs, value
 ranges): assert it in the generator, and never require success on an input the instruction
 calls invalid (a real draft's generator could make a job its own prerequisite).
-Drive the system only through its interface (never import internals); crashes come from the
+Drive the system only through its interface (never import internals, never write its
+database tables or state files directly: a solver may change their schema); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
 under 60 s on 1 CPU. Timing assertions need a 5x margin; no test relies on wall-clock speed.
 
@@ -87,6 +88,8 @@ twice: a flaky test fails it), nop (reward 0) and the wrong fix (reward 0), and 
 test with its status. A nop or wrong run that fails only on setup errors (import, missing file,
 no reward) does not count: the counterexample test must be among nop's failures. Write files
 with one heredoc each or a Python script in `/tmp`; never nest heredocs sharing a delimiter.
+Keep each command under ~4 KB: write a large file in several appends, or with a short Python
+script you write in parts; one oversized heredoc can wedge the terminal for good.
 Your terminal is one interactive shell: never type `exit` or `set -e` at the prompt (they end
 the session); put multi-step checks in a script or `bash -c '…'`.
 Never weaken or delete a test to make a check pass.
@@ -103,6 +106,8 @@ You are not done until both exit 0, on the final draft. If one fails, fix that o
 re-run both. Never finish with a failing check: the pipeline re-checks the saved results and
 sends a draft with any failing role back to you.
 
+While you fix the draft, check only the reference solution (`sde-task run … --as oracle`,
+about a third of the time) until it passes; run `--as all` once that's green.
 `sde-task run` takes minutes: while it runs, wait with `"duration": 60` (the maximum) per
 step, never short 10 s polls. Every step resends the whole conversation, so empty polls cost
 the most.

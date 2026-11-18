@@ -428,16 +428,17 @@ def test_the_mutation_is_told_what_the_parents_hardness_checks_found():
     job = {"origin": "mutation", "parent_world_sha256": "w1", "spec": WORLD["spec"],
            "mutation": {"operators": ["extend_cross_component_dependency"], "why": "local fix"},
            "mutations": [], "analysis": {}, "target_fix": "x",
-           "hardness": {"fix_not_local": False, "fix_files": ["/app/worker.py"], "dependent": None,
-                        "wrong_fix_passes_symptom": False, "wrong_fix_fails_repro": True,
-                        "failed": ["fix_not_local", "wrong_fix_passes_symptom", "symptom_visible"]}}
+           # world_check's own record shape (shared/taskformat/world_check.py _hardness)
+           "hardness": {"symptom_ok": False, "spans_or_dependent": False, "wrong_fix_ok": False,
+                        "failed": ["fix_not_local", "wrong_fix_passes_symptom", "symptom_visible"],
+                        "warnings": [], "details": {"fix_files": ["/app/worker.py"]}}}
     text = at.render_world_mutation_instruction(job, WORLD)
     assert "The parent world's checks found the following; the mutation must fix these:" in text
-    assert "its fix is local (world_fix/fix.sh changes 1 file(s): /app/worker.py" in text
+    assert "its fix is local (world_fix/fix.sh changes /app/worker.py)" in text
     assert "its plausible wrong fix does not fix the visible symptom, so it is not tempting" in text
-    assert "survives repro.sh" not in text and "also failed: symptom_visible" in text
+    assert "survives repro.sh" not in text and "did not show the symptom on the world" in text
     assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"]
-    clean = {**job, "hardness": {"fix_not_local": True, "wrong_fix_passes_symptom": True, "failed": []}}
+    clean = {**job, "hardness": {"failed": [], "warnings": [], "details": {}}}
     assert "passed every hardness check" in at.render_world_mutation_instruction(clean, WORLD)
     assert "(not recorded for the parent world)" in at.render_world_mutation_instruction(
         {k: v for k, v in job.items() if k != "hardness"}, WORLD)
@@ -480,21 +481,31 @@ def _real_guard(draft_path, world_dir, artifacts_dir, roles=None):
     return ensure_task_checked(draft_path, world_dir, artifacts_dir, run_roles=roles or FakeRoles())
 
 
-class Saved(FakeHarness):
-    """A trial whose author saved its sde-task results (check.json + run-<role>.json)."""
+def _stamp(artifacts: Path) -> str:
+    """What sde-task stamps its saved results with: the final draft's content hash."""
+    from shared.taskformat.materialize import content_sha256
+    from shared.taskformat.schema import TaskDraft
 
-    def __init__(self, *a, check_ok=True, runs=None, **kw):
+    return content_sha256(TaskDraft.model_validate_json((Path(artifacts) / "draft.json").read_text()))
+
+
+class Saved(FakeHarness):
+    """A trial whose author saved its sde-task results (check.json + run-<role>.json), stamped
+    for the draft it wrote (`stamp`: override, e.g. None for an old trial or a stale one)."""
+
+    def __init__(self, *a, check_ok=True, runs=None, stamp="current", **kw):
         super().__init__(*a, **kw)
-        self.check_ok, self.runs = check_ok, runs
+        self.check_ok, self.runs, self.stamp = check_ok, runs, stamp
 
     def __call__(self, job_id, *a, **kw):
         out = super().__call__(job_id, *a, **kw)
         evidence = Path(out["artifacts_dir"]) / "sde_task"
         evidence.mkdir()
-        (evidence / "check.json").write_text(json.dumps({"ok": self.check_ok, "errors": [] if self.check_ok
-                                                         else ["tests: no `# invariant: 1` marker"]}))
+        stamp = _stamp(out["artifacts_dir"]) if self.stamp == "current" else self.stamp
+        (evidence / "check.json").write_text(json.dumps({"ok": self.check_ok, "stamp": stamp, "errors": [] if
+                                                         self.check_ok else ["tests: no `# invariant: 1` marker"]}))
         for run in self.runs or [_run(r) for r in ("oracle", "nop", "wrong")]:
-            (evidence / f"run-{run['as']}.json").write_text(json.dumps(run))
+            (evidence / f"run-{run['as']}.json").write_text(json.dumps({**run, "stamp": stamp}))
         return out
 
 
@@ -519,7 +530,9 @@ def test_without_saved_runs_the_guard_runs_every_role_once(work):
     out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)),
                     self_check=lambda d, w, a: _real_guard(d, w, a, roles))
     assert out["outcome"] == "OK", out["error"]
-    assert out["result"]["self_check"] == {"by": "pipeline", "runs": {"oracle": True, "nop": True, "wrong": True}}
+    checked = out["result"]["self_check"]
+    assert (checked["by"], checked["runs"]) == ("pipeline", {"oracle": True, "nop": True, "wrong": True})
+    assert checked["stamp"] and all(r["stamp"] == checked["stamp"] for r in checked["roles"].values())
     assert len(roles.calls) == 1 and roles.calls[0]["roles"] == ["oracle", "nop", "wrong"]
     assert roles.calls[0]["repeat_oracle"] is True  # the flake check, as `--as all` does
 
@@ -551,12 +564,35 @@ def test_a_saved_failing_oracle_fails_the_create_with_its_tests(work):
 @pytest.mark.parametrize("missing", ["nop", "wrong"])
 def test_a_missing_role_means_the_guard_runs_them_and_a_failure_counts(work, missing):
     runs = [_run(r) for r in ("oracle", "nop", "wrong") if r != missing]
-    roles = FakeRoles(wrong=("test_invariant_1_each_order_reserves_at_most_one",))
+    roles = FakeRoles(**{missing: ("test_invariant_1_each_order_reserves_at_most_one",)})
     valid = draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)  # the guard re-checks it before running
     out, _ = create(work, Saved(draft=valid, runs=runs), self_check=lambda d, w, a: _real_guard(d, w, a, roles))
-    assert len(roles.calls) == 1 and out["outcome"] == "FAILED"
+    # only the missing role runs here; the author's other stamped runs stand
+    assert [c["roles"] for c in roles.calls] == [[missing]] and out["outcome"] == "FAILED"
     assert "run here, it fails" in out["result"]["feedback"]
-    assert "wrong: reward 0.0" in out["result"]["feedback"]
+    assert f"{missing}: reward 0.0" in out["result"]["feedback"]
+
+
+@pytest.mark.parametrize("stamp", [None, "0" * 64], ids=["old-trial-no-stamp", "stale-draft-changed-after"])
+def test_saved_runs_count_only_for_the_final_draft(work, stamp):
+    """A saved check or run whose stamp isn't the final draft's content hash (an old trial
+    without stamps, or an author who edited after running) is run again here."""
+    roles = FakeRoles()
+    valid = draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)
+    out, _ = create(work, Saved(draft=valid, stamp=stamp), self_check=lambda d, w, a: _real_guard(d, w, a, roles))
+    assert out["outcome"] == "OK" and out["result"]["self_check"]["by"] == "pipeline"
+    assert [c["roles"] for c in roles.calls] == [["oracle", "nop", "wrong"]]
+    assert roles.calls[0]["repeat_oracle"] is True
+
+
+def test_exactly_stamped_saved_runs_are_used_and_recorded_for_validate(work):
+    roles = FakeRoles()
+    valid = draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)
+    out, _ = create(work, Saved(draft=valid), self_check=lambda d, w, a: _real_guard(d, w, a, roles))
+    checked = out["result"]["self_check"]
+    assert out["outcome"] == "OK" and checked["by"] == "author" and roles.calls == []
+    assert checked["stamp"] and {r["stamp"] for r in checked["roles"].values()} == {checked["stamp"]}
+    assert checked["roles"]["oracle"]["reward"] == 1.0 and checked["roles"]["nop"]["reward"] == 0.0
 
 
 def test_a_saved_failing_check_fails_the_create(work):
@@ -598,3 +634,20 @@ def test_authoring_time_boxes_are_env_overridable(module, var, default):
         return float(out.strip().splitlines()[-1])
 
     assert timeout({}) == default and timeout({var: "900"}) == 900.0
+
+
+# --- the parent world's hardness, as the mutation author sees it ----------------------------
+
+
+def test_the_hardness_section_reads_world_checks_record():
+    # world_check's own shape (shared/taskformat/world_check.py _hardness), from aws-iter1-t06's world.
+    hardness = {"symptom_ok": True, "spans_or_dependent": False, "wrong_fix_ok": False,
+                "failed": ["fix_not_local", "wrong_fix_fails_repro"], "warnings": ["limit_named"],
+                "details": {"fix_files": ["recovery.py"], "limit_named": [
+                    {"file": "/app/recovery.py", "function": "get_replay_target", "where": "comment",
+                     "matched": ["committed", "only"], "text": "Only entries that have been committed"}]}}
+    text = at.hardness_section(hardness)
+    assert "changes recovery.py" in text and "the new one must fail the deep schedule" in text
+    assert "`get_replay_target` names its own limit" in text and "passed every hardness check" not in text
+    assert at.hardness_section({"failed": [], "warnings": [], "details": {}}).startswith("The parent world passed")
+    assert at.hardness_section(None) == "(not recorded for the parent world)"

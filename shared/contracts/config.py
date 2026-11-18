@@ -111,6 +111,14 @@ LEAK_INCONCLUSIVE = os.environ.get("SDE_LEAK_INCONCLUSIVE", "warn").strip() or "
 if LEAK_INCONCLUSIVE not in ("warn", "fail"):
     raise ValueError(f"SDE_LEAK_INCONCLUSIVE must be warn or fail, not {LEAK_INCONCLUSIVE!r}")
 
+
+def adopt_author_checks() -> bool:
+    """SDE_ADOPT_AUTHOR_CHECKS=1: a validate job adopts the create job's stamped sde-task runs
+    for oracle1/oracle2/nop/wrong_fix, and a world_check job the world author's stamped
+    sde-world check, instead of re-running them (off by default; on in aws-prod). Read per
+    call, so tests can set it."""
+    return os.environ.get("SDE_ADOPT_AUTHOR_CHECKS", "0").strip() == "1"
+
 # Data-provenance canary. Harbor strips leading canary comment lines from
 # instruction.md before showing it to an agent (see harbor/.../task/task.py).
 # Use one stable GUID per dataset you generate.

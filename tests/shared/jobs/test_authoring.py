@@ -349,6 +349,48 @@ def test_a_world_task_keeps_its_world_through_validate_and_repair(backend):
     assert repair["input"]["origin"] == "repair" and repair["input"]["world_sha256"] == "w1"
 
 
+def test_the_authors_stamped_self_checks_travel_to_validate_and_world_check(backend, jq):
+    """What validate / world_check may adopt (SDE_ADOPT_AUTHOR_CHECKS) reaches their input:
+    the create job's stamped sde-task runs, the world job's stamped sde-world check."""
+    from shared.jobs import handoffs
+
+    t = add_task(backend)
+    roles = {"oracle": {"ok": True, "reward": 1.0, "stamp": "s1", "repeat": {"reward": 1.0, "same": True}},
+             "nop": {"ok": True, "reward": 0.0, "stamp": "s1"}, "wrong": {"ok": True, "reward": 0.0, "stamp": "s1"}}
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'GENERATING' WHERE id = ?", (t,))
+        [validate] = handoffs.after_generation(backend)(c, {
+            "id": f"{t}-v1-create", "task_id": t, "version": 1, "outcome": "OK", "bundle_sha256": "b1",
+            "input": {"origin": "initial", "world_sha256": "w1"},
+            "result": {"world_sha256": "w1", "self_check": {"by": "author", "runs": {}, "stamp": "s1", "roles": roles}}})
+    assert validate["input"]["author_checks"] == {"job_id": f"{t}-v1-create", "bundle_sha256": "b1", "stamp": "s1",
+                                                  "roles": roles}
+
+    with backend.store.tx() as c:
+        insert_job(c, id=f"{t}-v2-world", task_id=t, version=2, type=JobType.WORLD, input={"spec": {}})
+        c.execute("UPDATE tasks SET stage = 'WORLD_BUILDING', current_version = 2 WHERE id = ?", (t,))
+    jq.publish([f"{t}-v2-world"])
+    checked = {"outcome": "OK", "stamp": "ws", "checks": {}}
+    run_job(backend, jq, "world", {"outcome": "OK", "result": {"world_sha256": "w2", "authoring": {
+        "self_check": {"by": "author", "outcome": "OK", "stamp": "ws", "result": checked}}}},
+            handoffs.after_world(backend))
+    check = jobs_of(backend, t)[f"{t}-v2-world-check-r0"]
+    assert check["input"]["author_check"] == {"job_id": f"{t}-v2-world", "stamp": "ws", "result": checked}
+
+
+def test_without_a_stamped_self_check_nothing_is_passed_for_adoption(backend):
+    """An old trial's result (no stamp or roles): validate and world_check run as today."""
+    from shared.jobs import handoffs
+
+    t = add_task(backend)
+    with backend.store.tx() as c:
+        c.execute("UPDATE tasks SET stage = 'GENERATING' WHERE id = ?", (t,))
+        [validate] = handoffs.after_generation(backend)(c, {
+            "id": f"{t}-v1-create", "task_id": t, "version": 1, "outcome": "OK", "bundle_sha256": "b1",
+            "input": {"origin": "initial"}, "result": {"self_check": {"by": "author", "runs": {"oracle": True}}}})
+    assert "author_checks" not in validate["input"]
+
+
 def test_a_trial_is_saved_even_when_the_authoring_function_raises(backend, monkeypatch):
     """A raising run_world_job releases the job; the retry (maybe elsewhere) must find the
     partial trial instead of starting over and paying again."""
@@ -387,7 +429,7 @@ def test_the_create_jobs_leak_review_is_shared_with_validate(backend, monkeypatc
                                              "input": {"origin": "initial", "world_sha256": world}})["bundle_sha256"]
     assert f"leak_reviews/{sha}/review.json" in registered
     monkeypatch.setitem(sys.modules, "gates", types.SimpleNamespace(
-        run_validate_job=lambda b, t: {"outcome": "OK", "result": {"gates": {}}, "feedback": ""},
+        run_validate_job=lambda b, t, **kw: {"outcome": "OK", "result": {"gates": {}}, "feedback": ""},
         run_world_check_job=None))
     worker.validate_fn(backend)({"id": "t-v1-validate-r0", "bundle_sha256": sha, "input": {}})
     assert f"leak_reviews/{sha}/review.json" in fetched

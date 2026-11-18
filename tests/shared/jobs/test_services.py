@@ -362,11 +362,13 @@ def test_too_easy_revisions_mutate_the_world_and_keep_its_history(backend, tmp_p
     build(backend, 1, "sha1")
     score(backend, parser, 1, "11111")
     v2 = backend.store.job(job_id(T, 2, "revise"))["input"]
-    # Cues mean the instruction leaks: remove them first, then defeat the in-memory guard.
-    assert v2["mutation_operators"] == ["remove_cues", "add_persistent_state"]
+    # Cues mean the instruction leaks: remove them first, then defeat the in-memory guard
+    # (remove_cues doesn't count toward the two difficulty operators).
+    assert v2["mutation_operators"] == ["remove_cues", "add_persistent_state", "inject_partial_failure"]
     assert v2["target_fix"] == "a process-local set of processed job ids"
     assert [m["version"] for m in v2["mutations"]] == [2]
-    assert [r["rule"] for r in v2["mutations"][0]["rules"]] == ["cues_found", "process_local_guard"]
+    assert [r["rule"] for r in v2["mutations"][0]["rules"]] == ["cues_found", "process_local_guard",
+                                                                "process_local_guard"]
     assert v2["mutations"][0]["rules"][1]["evidence"] == 'pass review said "process-local"'
 
     build(backend, 2, "sha2")
@@ -390,7 +392,7 @@ def test_too_hard_and_repair_revisions_mutate_nothing(backend, parser):
     assert rev["mutations"][0]["direction"] == "easier"
 
 
-def _next(direction, world_sha="w1", operators=("add_persistent_state",)):
+def _next(direction, world_sha="w1", operators=("add_persistent_state",), solver_runs=None):
     from evaluation.trace_parser_service import next_job
 
     mutation = {"version": 2, "from_version": 1, "pass_count": 5, "direction": direction,
@@ -398,7 +400,34 @@ def _next(direction, world_sha="w1", operators=("add_persistent_state",)):
     return next_job({"id": T, "slot": {"family": "database_consistency"}}, 1, "sha1", world_sha,
                     direction=direction, operator="increase_diagnosis_depth", mutation=mutation,
                     history=[{"version": 1, "operators": []}], analysis={"why_easy": "x"},
-                    result="5 of 5 runs passed.", evidence="- run 1: passed")
+                    result="5 of 5 runs passed.", evidence="- run 1: passed", solver_runs=solver_runs)
+
+
+def test_only_the_world_mutation_carries_the_passing_runs_traces(monkeypatch):
+    """The world author gets the solver's condensed traces; the task author (revise) never does."""
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "agent")
+    runs = {"run1.md": "# run 1: passed in 3 agent steps"}
+    assert _next("harder", solver_runs=runs)["input"]["solver_runs"] == runs
+    assert "solver_runs" not in _next("harder")["input"]
+    for direction in ("easier", "repair"):
+        assert "solver_runs" not in _next(direction, operators=(), solver_runs=runs)["input"]
+
+
+def test_the_world_mutation_carries_the_parent_worlds_hardness(monkeypatch):
+    from evaluation.trace_parser_service import _world_hardness, next_job
+    from shared.contracts.models import JobType
+
+    monkeypatch.setenv("SDE_AUTHOR_MODE", "agent")
+    jobs = [{"version": 1, "type": JobType.WORLD_CHECK, "result": {"hardness": {"failed": ["fix_not_local"]}}},
+            {"version": 1, "type": JobType.WORLD_CHECK, "result": {"hardness": {"failed": []}}},  # the last one
+            {"version": 1, "type": JobType.VALIDATE, "result": {"hardness": {"failed": ["x"]}}},
+            {"version": 2, "type": JobType.WORLD_CHECK, "result": {"hardness": {"failed": ["y"]}}}]
+    assert _world_hardness(jobs, 1) == {"failed": []} and _world_hardness(jobs, 3) is None
+    mutation = {"version": 2, "from_version": 1, "pass_count": 5, "direction": "harder",
+                "operators": ["remove_cues"], "why": ["w"], "target_fix": "x"}
+    job = next_job({"id": T, "slot": {}}, 1, "sha1", "w1", direction="harder", operator=None, mutation=mutation,
+                   history=[], analysis=None, result="", evidence="", hardness={"failed": ["fix_not_local"]})
+    assert job["input"]["hardness"] == {"failed": ["fix_not_local"]}
 
 
 def test_agent_mode_too_easy_mutates_the_world(monkeypatch):
@@ -451,6 +480,48 @@ def test_verdict_shows_mutations_and_model_judged_gates():
     assert "- v1 → v2 (5/5 passed, harder): add_persistent_state" in text and "aimed at: a seen-set" in text
 
 
+@pytest.mark.parametrize("task, harder, third_rule", [
+    # the cluster chose remove_cues + add_persistent_state for all but t09
+    ("aws-agent-b1-t02", ["tighten_resource_bound", "introduce_global_invariant"], "self_checking_agent"),
+    ("aws-agent-b1-t08", ["introduce_global_invariant", "generate_counterexample"], "locally_plausible_strategy"),
+    ("aws-agent-b1-t06", ["extend_cross_component_dependency", "add_concurrent_execution"],
+     "local_reorder_or_serialize"),
+    ("aws-agent-b1-t09", ["introduce_global_invariant", "add_persistent_state"], "pass_review_suggestion"),
+    ("aws-iter1-t06", ["introduce_global_invariant", "add_concurrent_execution"], "local_reorder_or_serialize"),
+])
+def test_a_trusted_reviews_suggestion_outranks_keyword_rules(task, harder, third_rule):
+    """Tonight's real pass reviews (tests/shared/data/pass_reviews.json): remove_cues, then the
+    reviewer's first suggestion, then the next rule (its later suggestions only after the rules);
+    a stray phrase or a `= set()` in the agents' test scripts no longer makes it add_persistent_state.
+    remove_cues adds no difficulty, so it doesn't count toward MAX_MUTATIONS."""
+    from pathlib import Path
+
+    from evaluation.calibration import MAX_MUTATIONS, choose_mutations
+
+    review = json.loads((Path(__file__).parent / "data" / "pass_reviews.json").read_text())[task]
+    # t08's passing runs really ran this (it fired process_local_guard on the cluster).
+    cmds = [{"input": "python3 - <<'PY'\nseen = set()\nPY"}] if task == "aws-agent-b1-t08" else []
+    runs = [{"slot": i, "outcome": "VALID_PASS",
+             "trace_metrics": {"files_modified": ["a.go", "b.go"], "llm_calls": 20, "tool_calls": cmds}}
+            for i in range(1, 6)]
+    chosen = choose_mutations(5, runs, review, [])
+    assert chosen["operators"] == ["remove_cues", *harder] and len(harder) == MAX_MUTATIONS
+    assert [r["rule"] for r in chosen["rules"]] == ["cues_found", "pass_review_suggestion", third_rule]
+
+
+def test_specific_rules_come_before_the_guard_and_self_check_rules():
+    from evaluation.calibration import choose_mutations
+
+    run = {"slot": 1, "outcome": "VALID_PASS", "trace_metrics": {"files_modified": ["a.py", "b.py"], "llm_calls": 30}}
+    said = {"trusted": True, "fix_applied": "replaced the greedy heuristic, checked with a differential fuzzer, "
+                                            "and kept the seen set in memory"}
+    chosen = choose_mutations(5, [run], said, [])
+    assert [r["rule"] for r in chosen["rules"]] == ["locally_plausible_strategy", "process_local_guard"]
+    # "in memory" alone no longer names a guard.
+    store = choose_mutations(5, [run], {"trusted": True, "fix_applied": "rebuild the store in memory from the WAL"}, [])
+    assert "add_persistent_state" not in store["operators"]
+
+
 def test_choose_mutations_reads_the_passing_strategy():
     from evaluation.calibration import MUTATION_OPERATORS, choose_mutations
 
@@ -491,7 +562,7 @@ def test_choose_mutations_reads_the_passing_strategy():
     stale = choose_mutations(5, [run(i, ["engine.py"], 13) for i in range(1, 6)],
                              {"trusted": True, "cues": [{"quote": "schedules containing redefinitions"}],
                               "fix_applied": "invalidate the engine's cached results when a name is redefined"}, [])
-    assert stale["operators"] == ["remove_cues", "extend_cross_component_dependency"]
+    assert stale["operators"][:2] == ["remove_cues", "extend_cross_component_dependency"]
     assert stale["rules"][1]["rule"] == "one_file_patch"
     # aws-agent-b1-t08: the greedy heuristic was replaced by a search over the set of jobs;
     # "set of" names data, not a guard.
@@ -499,7 +570,7 @@ def test_choose_mutations_reads_the_passing_strategy():
                                   {"trusted": True, "cues": [{"quote": "a smaller feasible collection"}],
                                    "fix_applied": "replaced the greedy value/duration heuristic with a search "
                                                   "over every subset of the set of jobs"}, [])
-    assert greedy_set["operators"] == ["remove_cues", "generate_counterexample"]
+    assert greedy_set["operators"][:2] == ["remove_cues", "generate_counterexample"]
     assert greedy_set["rules"][1]["rule"] == "locally_plausible_strategy"
     # ...and its commands wrote C that mentions "the global optimum": not a Python `global`.
     c_text = ["cat > planner.c <<EOF\n/* the global optimum over all subsets */\nEOF"]

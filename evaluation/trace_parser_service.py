@@ -151,6 +151,8 @@ class TraceParserService:
         # World mutation for the next version (plan §3.5): which operators, aimed at which
         # fix. The history travels in the revise inputs, so nothing shared is rewritten.
         mutation, history = None, _mutation_history(jobs)
+        solver_runs = (self._solver_runs(enriched) if action == "revise" and direction == "harder"
+                       and author_mode() == "agent" and _world_sha256(jobs, n) else None)
         if action == "revise":
             chosen = (calibration.choose_mutations(passes, enriched, analysis, history) if not blamed_task
                       else {"operators": [], "why": [], "rules": [], "target_fix": None})
@@ -179,7 +181,8 @@ class TraceParserService:
                 followups.append(next_job(
                     task, n, sha, _world_sha256(jobs, n), direction=direction, operator=operator,
                     mutation=mutation, history=history, analysis=analysis,
-                    result=f"{passes} of {self.n_runs} runs passed.", evidence=calibration.evidence(enriched)))
+                    result=f"{passes} of {self.n_runs} runs passed.", evidence=calibration.evidence(enriched),
+                    solver_runs=solver_runs, hardness=_world_hardness(jobs, n)))
             if not ok:  # another copy decided this version first: record that, not our decision
                 conn.execute("UPDATE jobs SET result = ? WHERE id = ?", (json.dumps(
                     {"action": "stale", "summary": f"another analysis decided v{n} first ({summary})"}), row["id"]))
@@ -241,6 +244,15 @@ class TraceParserService:
             passed=passes, runs=self.n_runs, cache_key=f"pass-review:{tid}-v{n}",
             llm_dir=self.backend.work_dir / "llm", complete=self.complete)
         return {**analysis, "runs_reviewed": [label for label, _ in chosen]}, cost
+
+    def _solver_runs(self, enriched: list[dict[str, Any]]) -> dict[str, str]:
+        """{"run<slot>.md": condensed trace} per passing run, for the world-mutation author."""
+        out = {}
+        for r in sorted(enriched, key=lambda r: r["slot"]):
+            if r["outcome"] == Outcome.VALID_PASS and (d := self._trial_dir(r)) is not None:
+                if (text := trace_parser.solver_run_summary(f"run {r['slot']}", d)):
+                    out[f"run{r['slot']}.md"] = text
+        return out
 
     def _parse(self, run: dict[str, Any]) -> tuple[dict | None, dict | None, float]:
         """trace_parser.parse over one scored run's trace, fetched from the artifact store."""
@@ -327,6 +339,14 @@ def _world_sha256(jobs: list[dict[str, Any]], n: int) -> str | None:
     return built[-1]["result"]["world_sha256"] if built else None
 
 
+def _world_hardness(jobs: list[dict[str, Any]], n: int) -> dict | None:
+    """Version n's world hardness record (the last world_check that recorded one), for the
+    mutation author: which hardness checks the parent failed or warned on (limit_named …)."""
+    checked = [j for j in jobs if j["version"] == n and j["type"] == JobType.WORLD_CHECK
+               and (j.get("result") or {}).get("hardness")]
+    return checked[-1]["result"]["hardness"] if checked else None
+
+
 def _world_spec(task: dict[str, Any]) -> dict[str, Any]:
     """The task's spec for a world job; the hand-off copies shape and dial into create, so
     both are always set (a spec v2 has them; an older one gets fix / its difficulty dial)."""
@@ -342,7 +362,8 @@ def author_mode() -> str:
 
 def next_job(task: dict[str, Any], n: int, sha: str, world_sha: str | None, *, direction: str | None,
              operator: str | None, mutation: dict[str, Any], history: list[dict[str, Any]],
-             analysis: dict | None, result: str, evidence: str) -> dict[str, Any]:
+             analysis: dict | None, result: str, evidence: str,
+             solver_runs: dict[str, str] | None = None, hardness: dict | None = None) -> dict[str, Any]:
     """The job that produces version n+1 (plan §3.6).
 
     Agent mode, task written from a world: too easy → a `world` mutation job (change the
@@ -358,7 +379,10 @@ def next_job(task: dict[str, Any], n: int, sha: str, world_sha: str | None, *, d
                 "input": {"origin": "mutation", "parent_world_sha256": world_sha, "spec": _world_spec(task),
                           "mutation": {"operators": mutation["operators"], "why": mutation["why"]},
                           "mutations": mutations, "analysis": analysis, "target_fix": mutation["target_fix"],
-                          "result": result, "evidence": evidence}}
+                          "result": result, "evidence": evidence,
+                          # the world author's only: the task author never sees the solver's traces
+                          **({"solver_runs": solver_runs} if solver_runs else {}),
+                          **({"hardness": hardness} if hardness else {})}}
     base ={"id": job_id(tid, n + 1, "revise"), "type": JobType.REVISE, "task_id": tid, "version": n + 1,
             "bundle_sha256": sha}
     if agent and direction in ("easier", "repair"):

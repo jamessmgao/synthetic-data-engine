@@ -30,7 +30,10 @@ build (the harness prunes labeled images after the trial).
 Everything built or started is labeled with $SDE_DOCKER_LABEL and removed after.
 Each check / run result is also saved to $SDE_ARTIFACTS_DIR/sde_task/<check|run-ROLE>.json
 (default /logs/artifacts, if it exists): the pipeline reads those as the evidence
-that the author self-checked.
+that the author self-checked. Each carries a `stamp`, the draft's content hash
+(materialize.content_sha256): a saved result counts only for the exact final draft, and
+validate may adopt the runs instead of repeating them (SDE_ADOPT_AUTHOR_CHECKS). A run on a
+bundle dir has no draft, so no stamp: the pipeline runs it again.
 """
 
 import argparse
@@ -41,7 +44,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SDE = Path(__file__).resolve().parent.parent  # /opt/sde in the image, the repo root locally
@@ -49,13 +54,16 @@ sys.path[:0] = [str(SDE / "generator"), str(SDE / "validator")]
 
 from pydantic import ValidationError  # noqa: E402
 
-from shared.taskformat.materialize import materialize  # noqa: E402
+from shared.taskformat.materialize import content_sha256, materialize  # noqa: E402
 from shared.taskformat.schema import AGENT_USER, TaskDraft  # noqa: E402
 
 DEFAULT_WORLD = Path("/input/world")
 EXPECTED = {"oracle": 1.0, "nop": 0.0, "wrong": 0.0}
 SCRIPT = {"oracle": "solve.sh", "wrong": "wrong_fix.sh"}
 RUN_LIMITS = ["--cpus", "1", "--memory", "2g"]
+# Roles' containers run in parallel on the one image. Each is capped at 1 CPU / 2 GB, so on
+# a 2-vCPU / 8 GB instance (shared with other pods) more than 2 at once risks memory.
+PARALLEL = max(1, int(os.environ.get("SDE_TASK_PARALLEL", "2")))
 STEP_TIMEOUT_SEC = 1800
 OUTPUT_CHARS = 3000
 # A failing test whose message says one of these failed for a setup reason, not the bug.
@@ -128,6 +136,7 @@ def check_draft(draft_path: Path, world_dir: Path | None, out_dir: Path) -> dict
     except ValidationError as e:
         return {"ok": False, "errors": _format(e), "bundle_dir": None}
 
+    stamp = content_sha256(draft)
     errors = []
     tests = "\n".join([draft.test_outputs, *(f.content for f in draft.test_support_files
                                              if f.path.endswith(".py"))])
@@ -150,9 +159,9 @@ def check_draft(draft_path: Path, world_dir: Path | None, out_dir: Path) -> dict
                 errors.append("wrong_fix_script must implement the world's plausible_wrong_fix and say so in a "
                               f"comment line `# plausible_wrong_fix: {plausible}` (quoted from world.json)")
     if errors:
-        return {"ok": False, "errors": errors, "bundle_dir": None}
+        return {"ok": False, "errors": errors, "bundle_dir": None, "stamp": stamp}
     bundle = materialize(draft, out_dir / draft.name)
-    return {"ok": True, "errors": [], "bundle_dir": str(bundle)}
+    return {"ok": True, "errors": [], "bundle_dir": str(bundle), "stamp": stamp}
 
 
 def _tests(ctrf: dict | None) -> list[dict]:
@@ -198,10 +207,18 @@ def run_roles(bundle: Path, roles: list[str], repeat_oracle: bool = False) -> li
             failed = {"reward": None, "ok": False, "tests": [], "output_tail": out[-OUTPUT_CHARS:],
                       "setup_errors": ["environment/ does not build"], "image_reused": False}
             return [{"as": r, "expected": EXPECTED[r], **failed} for r in roles]
-        runs = [{**run_bundle(bundle, r, image=image), "image_reused": reused or i > 0} for i, r in enumerate(roles)]
+        # Each role in its own fresh container on the same image, up to PARALLEL at once; the
+        # oracle's repeat (the flake check) is one more independent run.
+        jobs = [(r, r) for r in roles] + ([("oracle (repeat)", "oracle")] if repeat_oracle and "oracle" in roles else [])
+        t0 = time.monotonic()
+        with ThreadPoolExecutor(max_workers=min(PARALLEL, len(jobs))) as pool:
+            done = dict(zip([name for name, _ in jobs],
+                            pool.map(lambda job: _timed_run(bundle, job[0], job[1], image, t0), jobs)))
+        print(f"[sde-task] all roles done in {time.monotonic() - t0:.0f}s", file=sys.stderr, flush=True)
+        runs = [{**done[r], "image_reused": reused or i > 0} for i, r in enumerate(roles)]
         if repeat_oracle and "oracle" in roles:
             first = next(r for r in runs if r["as"] == "oracle")
-            again = run_bundle(bundle, "oracle", image=image)
+            again = done["oracle (repeat)"]
             outcome = lambda r: {t["name"]: t["status"] for t in r["tests"]}  # noqa: E731
             changed = sorted(n for n in outcome(first).keys() | outcome(again).keys()
                              if outcome(first).get(n) != outcome(again).get(n))
@@ -215,6 +232,17 @@ def run_roles(bundle: Path, roles: list[str], repeat_oracle: bool = False) -> li
     finally:
         if image is not None and not _keep_images():
             _docker(["rmi", "-f", image], 120)
+
+
+def _timed_run(bundle: Path, name: str, role: str, image: str, t0: float) -> dict:
+    """run_bundle with its wall time (`duration_sec`) and a progress line on stderr as it
+    finishes: an agent waiting on `sde-task run --as all` once saw nothing for 11 min."""
+    start = time.monotonic()
+    result = run_bundle(bundle, role, image=image)
+    result["duration_sec"] = round(time.monotonic() - start, 1)
+    print(f"[sde-task] {name}: reward={result['reward']} ok={result['ok']} {result['duration_sec']}s "
+          f"(elapsed {time.monotonic() - t0:.0f}s)", file=sys.stderr, flush=True)
+    return result
 
 
 def run_bundle(bundle: Path, role: str, image: str | None = None) -> dict:
@@ -294,8 +322,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=1))
             return 0 if result["ok"] else 1
         bundle = args.target
+        stamp = None  # a run on a bundle dir can't be tied to a draft: the pipeline re-runs it
         if not bundle.is_dir():
             checked = check_draft(args.target, world, Path(tmp))
+            stamp = checked.get("stamp")
             if not checked["ok"]:
                 runs = [{"as": r, "ok": False, "setup_errors": ["the draft fails `sde-task check`"], **checked}
                         for r in args.role]
@@ -304,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             # The full self-check (all three roles) also runs the oracle twice: the flake check.
             runs = run_roles(bundle, args.role, repeat_oracle=set(args.role) == set(EXPECTED))
         for r in runs:
+            r["stamp"] = stamp
             save(f"run-{r['as']}.json", json.dumps(r, indent=1))
         result = runs[0] if len(runs) == 1 else {"ok": all(r["ok"] for r in runs), "runs": runs}
         print(json.dumps(result, indent=1))

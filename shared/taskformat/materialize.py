@@ -211,6 +211,14 @@ def bundle_sha256(files: dict[str, str]) -> str:
     return h.hexdigest()
 
 
+def content_sha256(draft: TaskDraft) -> str:
+    """The stamp of a draft's self-check: the bundle hash of its rendered files without the
+    generation metadata (task.toml's [generation], which only the pipeline knows: job id,
+    prompt hash). `sde-task` writes it into its saved results; the pipeline recomputes it on
+    the final draft, so a result counts only for the exact draft it ran on."""
+    return bundle_sha256(render_files(draft, {}))
+
+
 def _write_tree(files: dict[str, str], task_dir: Path) -> None:
     """Assemble under a temp name, then rename into place (fails if it exists)."""
     task_dir.parent.mkdir(parents=True, exist_ok=True)
