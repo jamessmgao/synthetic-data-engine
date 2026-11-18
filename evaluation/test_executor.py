@@ -233,6 +233,41 @@ def test_shutdown_releases_every_running_job_immediately(backend):
     assert [(j["status"], j["outcome"]) for j in jobs(backend)] == [("READY", None), ("READY", None)]
 
 
+# --- drain on SIGTERM (a deploy or a KEDA scale-in): running agent runs finish -------------
+
+
+def drain_run(backend, *, drain_s, delay, interrupted=lambda: False, signals=1, wait_s=0.0, runs=2):
+    seed(backend, runs=runs)
+    ex = make(backend, FakeHarbor(delay=delay), heartbeat_sec=60, drain_s=drain_s, interrupted=interrupted)
+    server = threading.Thread(target=ex.serve, kwargs={"n_workers": 2})
+    server.start()
+    time.sleep(0.3)  # both runs claimed and running
+    for _ in range(signals):
+        ex.on_signal()
+    time.sleep(wait_s)
+    server.join(timeout=10)
+    assert not server.is_alive()
+    return [(j["status"], j["outcome"]) for j in jobs(backend)]
+
+
+def test_a_drain_lets_the_running_agent_runs_finish_and_claims_nothing(backend):
+    # 3 runs, 2 workers: the 2 running finish; the third, waiting, is never claimed.
+    out = drain_run(backend, drain_s=30, delay=0.8, runs=3)
+    assert sorted(out) == [("DONE", VALID_PASS), ("DONE", VALID_PASS), ("READY", None)]
+
+
+def test_the_drain_deadline_hands_the_runs_back(backend):
+    assert drain_run(backend, drain_s=0.3, delay=30, wait_s=0.5) == [("READY", None), ("READY", None)]
+
+
+def test_a_spot_interruption_hands_the_runs_back_at_once(backend):
+    assert drain_run(backend, drain_s=60, delay=30, interrupted=lambda: True) == [("READY", None), ("READY", None)]
+
+
+def test_a_second_signal_hands_the_runs_back(backend):
+    assert drain_run(backend, drain_s=60, delay=30, signals=2) == [("READY", None), ("READY", None)]
+
+
 def test_ctrl_c_waits_for_every_worker_to_release_its_job(backend):
     """Regression: KeyboardInterrupt inside Thread.join() let the process exit mid-cleanup."""
     seed(backend, runs=2)

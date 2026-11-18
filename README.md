@@ -17,7 +17,9 @@ A terminus-2 + glm-5.1 agent session (in the `sde-authoring` image) builds an ex
 a plausible wrong fix. A deterministic **world_check** proves it: the world builds, the repro
 fails, the fix passes, the symptom is visible, the fix isn't local, and the wrong fix fools the
 symptom (hardness checks set by `SDE_WORLD_HARDNESS`). A failing world goes to world-repair
-(≤2). See [docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md).
+(≤2). When a task is too easy, the **world** is mutated, not the wording. See
+[docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md) and
+[docs/AGENTIC_AUTHORING_PLAN.md](docs/AGENTIC_AUTHORING_PLAN.md).
 
 ### 2. Creates tasks
 
@@ -55,7 +57,7 @@ Every arrow in the loop is a job on a durable, Postgres-backed scheduler:
 - workers are stateless; claims are leased and fenced by a token, with heartbeats that survive
   store errors (`shared/jobs/worker.py:run_one`, `evaluation/executor.py:Executor._heartbeat`);
 - hand-offs commit the next job in the same transaction as the settle
-  (`shared/jobs/handoffs.py`);
+  (`shared/jobs/handoffs.py:after_world`, `after_world_check`, `after_generation`, `after_validate`);
 - a reconciler re-publishes lost queue entries and dead-letters jobs that keep failing (and
   rejects their task);
 - Docker slots, agent slots, a memory guard and a CPU guard gate each claim
@@ -162,8 +164,8 @@ curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H"   # stop the batch: 
 
 Single tasks: `POST /v1/tasks` takes an empty body (sampled spec), a `prompt`, a `spec` or a
 `raw_prompt`. Then `GET /v1/tasks/{id}` (versions, worlds, gates, mutations) and
-`POST /v1/tasks/{id}/cancel`. `scripts/run_tasks.py --batch b1 --count 10` creates a batch,
-follows it and writes `output/reports/<batch>/summary.json`. Accepted tasks are published to
+`POST /v1/tasks/{id}/cancel`. `scripts/run_tasks.py --batch b1 --count 10` runs a whole batch: it creates the batch, follows it and writes
+`output/reports/<batch>/summary.json`. Accepted tasks are published to
 `output/accepted/<task>/` with a `verdict.md` (`evaluation/verdict.py`).
 
 ### Deploy
@@ -174,10 +176,14 @@ follows it and writes `output/reports/<batch>/summary.json`. Accepted tasks are 
 - **AWS:** Terraform under `deploy/terraform` creates the EC2 instances, RDS Postgres,
   ElastiCache Redis, S3 and SSM-only access, operated with `deploy/aws_ops.py` / `make aws-*`.
   `make aws-k8s-up` installs K3s and KEDA across the EC2 instances; `make aws-k8s-deploy
-  OVERLAY=aws-prod` applies the production overlay (`infra/k8s/overlays/aws-prod`).
+  OVERLAY=aws-prod` applies the production overlay (`infra/k8s/overlays/aws-prod`). Agent
+  mode: `make aws-author-mode MODE=agent`.
 
-See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment and every runtime setting, and
-[docs/CAPACITY.md](docs/CAPACITY.md) for the cluster's size, concurrency limits and cost.
+See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment and every runtime setting,
+[docs/AGENT_MODE_DEPLOY.md](docs/AGENT_MODE_DEPLOY.md) for agent mode,
+[docs/CAPACITY.md](docs/CAPACITY.md) for the cluster's size, concurrency limits and cost, and
+[docs/LOAD_TEST.md](docs/LOAD_TEST.md) for the load test with mocked models. CPU is the
+bottleneck; there were 0 INVALID in 230 agent runs.
 
 ## Docs
 
@@ -187,7 +193,7 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment and every runtime setting, a
 | [`docs/AGENTIC_AUTHORING_PLAN.md`](docs/AGENTIC_AUTHORING_PLAN.md) | the world-first plan: job types, contracts (spec v2, worlds, gates, mutation inputs), status |
 | [`docs/WORLD_CONSTRUCTION.md`](docs/WORLD_CONSTRUCTION.md) | the method: worlds, invariants, counterexamples, mutation operators |
 | [`docs/HILLCLIMBING_ALGORITHM.md`](docs/HILLCLIMBING_ALGORITHM.md) | the sliding-window tuning loop on the production cluster |
-| [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | every pilot and live run: outcomes, cost, time, bugs found |
+| [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | every pilot and live run: outcomes, cost, time, bugs found (§11: the deployed runs, §12: P1, the aws-b1 diagnosis, the nop flake) |
 | [`docs/API.md`](docs/API.md) | every route with its request and response shapes |
 | [`web/README.md`](web/README.md) | the dashboard: status and results of every batch, task and job (`make ui`, `make ui-aws`) |
 | [`docs/VALIDATION_GATES.md`](docs/VALIDATION_GATES.md) | the validate gates (wrong_fix, leak) and world_check, incl. the hardness checks |

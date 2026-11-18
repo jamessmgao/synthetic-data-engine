@@ -125,7 +125,7 @@ the dashboard's Prod numbers and of the yield.
 - No budget cap (the user removed it on 2026-11-18): be reasonably frugal (/healthz shows the
   spend). When the gateway key runs out ("API key spend limit exceeded"), switch to the backup key
   (outside the repo; its file says how).
-- Never set a short solver timeout: timeouts don't count as the model failing.
+- Never shorten the solver timeout (1 hour, as in the examples' task.toml). A timeout is not a failure by itself ("Timeouts don't count as the model failing"): a timed-out agent run goes to the Trace Parser, which rules it a model failure (wedged its own terminal, looping, abandoning the task) and then it counts as a fail, or not (still making progress, slow infrastructure) and then it is INVALID and retried.
 
 ## Infrastructure
 

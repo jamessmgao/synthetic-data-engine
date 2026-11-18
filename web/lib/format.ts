@@ -39,6 +39,21 @@ export function localTime(iso: string | null | undefined): string {
   });
 }
 
+// A compact elapsed time for a live view: "45s", "23m", "1h 15m".
+export function short(seconds: number | null | undefined): string {
+  if (seconds == null) return "—";
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+// The absolute time in UTC, for a tooltip: "2026-11-18 14:03:07 UTC".
+export function utcTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return `${parseTime(iso).toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

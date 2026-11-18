@@ -54,11 +54,17 @@ from shared.storage import Backend, describe, from_env
 from shared.storage.sql import rollout_job_id
 from shared.jobs.jobqueue import JobQueue
 from shared.contracts.models import DOCKER_SLOTS, HEARTBEAT_S, LEASE_TTL_S, MAX_ROLLOUT_RETRIES, POLL_S, JobType
+from shared.jobs.worker import spot_interruption_pending
 
 log = logging.getLogger("executor")
 HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the normal interval
 LOOP_ERROR_WAIT_S = 5.0  # after an unexpected error in a worker loop
 STARTUP_WAIT_S = 600.0  # how long a starting executor waits for the database
+# On SIGTERM (a deploy, a KEDA scale-in), how long running agent runs may finish before they're
+# handed back (0: at once, as before). aws-prod sets it with terminationGracePeriodSeconds above
+# it: a deploy re-ran every in-flight run from scratch (up to an hour and 4M tokens each).
+DRAIN_ON_TERM_S = float(os.environ.get("SDE_DRAIN_ON_TERM_S", "0"))
+SPOT_CHECK_S = 10.0  # while draining, how often to look for a Spot interruption notice
 
 
 def rollout_job(task_id: str, version: int, slot: int, bundle_sha256: str, retry: int = 0,
@@ -128,8 +134,13 @@ class Executor:
     def __init__(self, backend: Backend, run_trial: RunTrial = harbor.run_trial,
                  agent: harbor.AgentConfig | None = None, docker_slots: int = DOCKER_SLOTS,
                  lease_sec: float = LEASE_TTL_S, heartbeat_sec: float = HEARTBEAT_S,
-                 poll_sec: float = POLL_S):
+                 poll_sec: float = POLL_S, drain_s: float | None = None,
+                 interrupted: Callable[[], bool] | None = None):
         self.backend = backend
+        # On SIGTERM, how long running agent runs may go on (on_signal); 0 = cancel at once.
+        self.drain_s = DRAIN_ON_TERM_S if drain_s is None else drain_s
+        self.interrupted = interrupted or spot_interruption_pending
+        self._draining, self._drained = threading.Event(), threading.Event()
         self.queue = JobQueue(backend)
         self.artifacts = backend.artifacts
         self.traces_dir = backend.artifacts.trace_dir("_").parent
@@ -308,7 +319,7 @@ class Executor:
         previous = {}
         if threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGINT, signal.SIGTERM):
-                previous[sig] = signal.signal(sig, lambda *_: self.shutdown())
+                previous[sig] = signal.signal(sig, lambda *_: self.on_signal())
         try:
             for t in threads:
                 t.start()
@@ -316,8 +327,35 @@ class Executor:
                 while t.is_alive():
                     t.join(timeout=0.5)
         finally:
+            self._drained.set()
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
+
+    def on_signal(self) -> None:
+        """SIGTERM / SIGINT. With a drain (SDE_DRAIN_ON_TERM_S: a deploy or a KEDA scale-in), stop
+        claiming and let the running agent runs finish, up to that long; at the deadline, on a
+        second signal, or once EC2 schedules a Spot interruption of this instance (the instance
+        goes ~2 min later), shut down: cancel what still runs and hand it back (refunded).
+        Without a drain, shut down at once."""
+        if self.drain_s > 0 and not self._draining.is_set() and not self.interrupted():
+            self._draining.set()
+            self.stop.set()
+            with self._running_lock:
+                running = len(self._running)
+            log.warning("drain: no new claims; %d running agent run(s) get up to %.0fs", running, self.drain_s)
+            threading.Thread(target=self._drain_deadline, name="drain-deadline", daemon=True).start()
+            return
+        self.shutdown()
+
+    def _drain_deadline(self) -> None:
+        end = time.monotonic() + self.drain_s
+        while not self._drained.wait(min(SPOT_CHECK_S, max(0.0, end - time.monotonic()))):
+            if self.interrupted():
+                log.warning("drain: a Spot interruption is now scheduled; handing back what still runs")
+                return self.shutdown()
+            if time.monotonic() >= end:
+                log.warning("drain: %.0fs passed; handing back what still runs", self.drain_s)
+                return self.shutdown()
 
     def shutdown(self) -> None:
         """Stop claiming, cancel every running trial and release its job."""

@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { Suspense } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BatchesTable } from "@/components/batches-table";
 import { ScopeToggle, scopeQuery, useScope } from "@/components/dev-toggle";
-import { JobsTable, jobTypeLabel } from "@/components/jobs-table";
+import { jobTypeLabel } from "@/components/jobs-table";
+import { RunningNow } from "@/components/running-board";
 import { QueryState, Stat } from "@/components/status";
 import { ApiError, useApi } from "@/lib/api";
 import { duration, pct, usd } from "@/lib/format";
@@ -49,6 +51,24 @@ export default function Overview() {
         </div>
       )}
       {noTasks && <p className="text-sm text-muted-foreground">No tasks yet.</p>}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Running now</CardTitle>
+          <CardDescription>
+            {queue.data
+              ? `${queue.data.running.length} leased job${queue.data.running.length === 1 ? "" : "s"}, one card per task and stage`
+              : "Leased jobs"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {queue.data && (
+            <Suspense fallback={null}>
+              <RunningNow jobs={queue.data.running} now={queue.dataUpdatedAt} />
+            </Suspense>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <Card>
@@ -97,29 +117,19 @@ export default function Overview() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Running now</CardTitle>
-            <CardDescription>{queue.data ? `${queue.data.running.length} leased jobs, oldest first` : "Leased jobs"}</CardDescription>
+            <CardTitle>Recent batches</CardTitle>
+            <CardDescription>
+              <Link href="/batches" className="underline-offset-4 hover:underline">
+                All batches →
+              </Link>
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            {queue.data && <JobsTable jobs={queue.data.running} showTask empty="Nothing running." />}
+            <QueryState error={batches.error} isLoading={batches.isLoading} />
+            {batches.data && <BatchesTable batches={batches.data.slice(0, 8)} />}
           </CardContent>
         </Card>
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Recent batches</CardTitle>
-          <CardDescription>
-            <Link href="/batches" className="underline-offset-4 hover:underline">
-              All batches →
-            </Link>
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <QueryState error={batches.error} isLoading={batches.isLoading} />
-          {batches.data && <BatchesTable batches={batches.data.slice(0, 8)} />}
-        </CardContent>
-      </Card>
     </div>
   );
 }

@@ -118,6 +118,16 @@ patches:
   - target: {kind: Deployment, name: executor}
     patch: |-
       - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DOCKER_SLOTS, value: "4"}}
+  # Drain on SIGTERM, like generation: a deploy or a KEDA scale-in lets running agent runs finish
+  # (up to 3700 s: the 3600 s agent timeout plus the verifier) instead of re-running each from
+  # scratch; a Spot interruption still hands them back at once (evaluation/executor.py on_signal).
+  # New pods come up first; draining pods claim nothing, and the claim's CPU guard keeps new pods
+  # from overloading a node while old runs finish.
+  - target: {kind: Deployment, name: executor}
+    patch: |-
+      - {op: add, path: /spec/template/spec/containers/0/env/-, value: {name: SDE_DRAIN_ON_TERM_S, value: "3700"}}
+      - {op: replace, path: /spec/template/spec/terminationGracePeriodSeconds, value: 3800}
+      - {op: add, path: /spec/strategy, value: {type: RollingUpdate, rollingUpdate: {maxSurge: 2, maxUnavailable: 0}}}
   - target: {kind: ScaledObject, name: executor}
     patch: |-
       - {op: replace, path: /spec/maxReplicaCount, value: 10}  # 3 agent runs a pod x 1 vCPU each: 30 runs ≈ the CPU 17 runners have left after authoring

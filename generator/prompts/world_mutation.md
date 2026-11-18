@@ -118,7 +118,9 @@ Write the new world to `$output_dir/`, in the same layout as the parent:
     sde-world check $output_dir       # build; repro fails twice, then passes twice after the fix
 
 Also run your check that `target_fix` fails on the new world, and keep its output in
-your notes. Your terminal is one interactive shell: never type `exit` or `set -e` at the
+your notes. Keep each command under ~4 KB: write any file over ~120 lines in 2+ parts (`cat > f <<'EOF'`,
+then `cat >> f <<'EOF'`), and never nest heredocs (a 35 KB heredoc wedged a mutation's terminal).
+Your terminal is one interactive shell: never type `exit` or `set -e` at the
 prompt (they end the session); put multi-step checks in a script or `bash -c '…'`. Finish only when `sde-world check` exits 0 and the old strategy fails.
 
 `sde-world check $output_dir` must exit 0. You are not done until it does; if it fails, fix

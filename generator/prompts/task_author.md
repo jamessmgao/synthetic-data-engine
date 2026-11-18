@@ -42,14 +42,15 @@ executions:
 3. Regression and edge cases for what must keep working, with exact expected values.
 Random inputs obey every rule the instruction states (an acyclic graph, unique IDs, value
 ranges): assert it in the generator, and never require success on an input the instruction
-calls invalid (a real draft's generator could make a job its own prerequisite).
+calls invalid.
 Make the suite comprehensive: cover the request's plain meaning broadly (many seeds and input
 shapes, edge cases, restarts, every command it touches), so a fix that handles only the obvious
 case fails. Every assertion traces to the request's plain meaning or to behavior the environment
 documents (README, `--help`), never to a detail neither states (what each command optimizes).
 Assert outcomes; pin one answer among equally valid ones only if the tie-break is stated.
-A test needing a DB starts its own (temp dir, free port, `pg_ctl -w start`), never
-the environment's: the agent may leave a server or stale `postmaster.pid` there.
+Each test starts from clean state it creates (fresh data dir, DB, state files, service; a DB:
+temp dir, free port, `pg_ctl -w start`): the agent's experiments leave files, rows and a stale
+`postmaster.pid` behind.
 Drive the system only through its interface (never import internals, never write its
 database tables or state files directly: a solver may change their schema); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
@@ -59,19 +60,20 @@ under 60 s on 1 CPU. Timing assertions need a 5x margin; no test relies on wall-
 message to a colleague: what went wrong, and what must be true once it is fixed, in plain
 outcome terms ("an order is never charged twice, even if the service crashes"). Name only what
 a user would name: the command they run, the file or URL they read, the output format they
-expect. Never mention tools, modules, how the system is built or where to look: the
-agent gets the lay of the land and discovers the tools itself. No enumerated list of guarantees.
+expect. Never mention tools, modules, how it's built or where to look: the agent
+discovers the tools itself. No enumerated list of guarantees.
 Say what a command must report, never the checks it applies or the criteria an answer meets
 (BAD: "`verify` (checks every job starts after its prerequisites)"). Anything else the tests
 use must be discoverable in the environment (its README, `--help`, the code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
 board. It is currently white to move. Write the best move for white to play to /app/move.txt in
-the form [src][dst], for example, e2e4. If there are multiple winning moves, print them all, one
-per line." NEVER: the counterexample (its steps, schedule or
+the form [src][dst], for example, e2e4." NEVER: the counterexample (its steps, schedule or
 trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
 that workers can be killed at any moment and restarted), the cause, the files to change, or
-the shape of the fix. The leak review rejects all of these. The symptom is what
+the shape of the fix. The symptom is what
 users saw (a wrong total, a double charge), never the inputs, sequence or state that trigger
 it; for a mutated world, never the case the mutation added. An outcome holds on every path.
+For a speedup, today's output is the requirement: say "the same output as now", never the
+orderings, tie-breaks or edge cases to keep (finding them is the task).
 
 Every event, field, file or output the tests rely on is REQUIRED wherever it is described (the
 request, or the environment's README / `--help`), never a "may" an agent can ignore (BAD: "the

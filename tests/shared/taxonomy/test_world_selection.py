@@ -20,16 +20,18 @@ def test_domains_from_world_names():
     assert domain("mystery-box") == domain("") == "other"
 
 
-def test_a_live_domain_and_mechanism_is_skipped_and_rare_domains_go_first():
-    worlds = [w("ledger-live", uses=[Use(pass_count=5, live=True)], name="payment-settlement-recovery"),
-              w("ledger-2", uses=[Use(pass_count=4)], name="charge-ledger-retry"),  # same domain + m1: skipped
+def test_repeats_of_a_live_scenario_go_after_novel_worlds_and_rare_domains_go_first():
+    worlds = [w("ledger-live", uses=[Use(pass_count=5, live=True, task="t1"), Use(pass_count=5, task="t2")],
+                name="payment-settlement-recovery"),  # 2 tasks with one live: full
+              w("ledger-2", uses=[Use(pass_count=4)], name="charge-ledger-retry"),  # repeats ledger + m1
               w("ledger-m2", mechanism="m2", uses=[Use(pass_count=4)], name="ledger-dedup-cache"),
               w("booking", mechanism="m3", uses=[Use(pass_count=4)], name="booking-isolation")]
-    picks = select_worlds(worlds, [CC], 3)
-    # ledger/payments already has a live task, so booking (no live task) goes first; then the
-    # ledger world on another mechanism; ledger-2 repeats a live scenario and is never picked.
-    assert [p.world_sha256 for p in picks] == ["booking", "ledger-m2"]
+    picks = select_worlds(worlds, [CC], 4)
+    # ledger/payments already has a live task, so booking goes first; then the ledger world on
+    # another mechanism; ledger-2 repeats a live scenario, so it comes last but still serves.
+    assert [p.world_sha256 for p in picks] == ["booking", "ledger-m2", "ledger-2"]
     assert "domain booking/reservation" in picks[0].reason
+    assert "repeats a live ledger/payments + m1 scenario" in picks[2].reason
 
 
 def test_blind_leak_and_greedy_worlds_go_last():
@@ -66,10 +68,24 @@ def test_greedy_defect_reads_the_wrong_fix_and_counterexample(tmp_path):
     assert greedy_worlds(Store(), ["g1", "x1", "bad", "missing"]) == {"g1"}
 
 
-def test_one_call_does_not_pick_two_worlds_of_one_scenario():
+def test_a_world_with_a_live_task_is_shared_last_and_only_up_to_two_tasks():
+    live = w("live", uses=[Use(live=True, task="t1")], name="zebra-crossing")
+    full = w("full", mechanism="m3", uses=[Use(live=True, task="t1"), Use(pass_count=5, task="t2")],
+             name="zebra-crossing")
+    idle = w("idle", mechanism="m2", uses=[Use(pass_count=5, task="t3")], name="zebra-crossing")
+    picks = select_worlds([live, full, idle], [CC], 3)
+    # The idle world first; the live world (one task so far) after it; never the full one.
+    assert [p.world_sha256 for p in picks] == ["idle", "live"]
+    assert "shares the world with a live task (1 so far)" in picks[1].reason
+    assert domain("bank-write-skew") == "ledger/payments"
+
+
+def test_a_second_world_of_a_scenario_picked_in_the_same_call_comes_after():
     worlds = [w("a", uses=[Use(pass_count=4)], name="durable-quorum-ledger"),
-              w("b", uses=[Use(pass_count=4)], name="replicated-kv-linearizability")]
-    assert [p.world_sha256 for p in select_worlds(worlds, [CC], 2)] == ["a"]
+              w("b", uses=[Use(pass_count=4)], name="replicated-kv-linearizability"),
+              w("c", mechanism="m9", uses=[Use(pass_count=5)], name="booking-isolation")]
+    # b repeats a's replication + m1 once a is picked, so c (a 5/5 world) goes before it.
+    assert [p.world_sha256 for p in select_worlds(worlds, [CC], 3)] == ["a", "c", "b"]
 
 
 def test_accepted_new_prompt_leaks_failed_and_capped_worlds_are_excluded():

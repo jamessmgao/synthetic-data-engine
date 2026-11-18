@@ -39,14 +39,40 @@ def test_pick_follows_the_selection_policy_then_falls_back():
             {"world_sha256": "near", "family": "f1", "source_status": "REJECTED", "reuses": 0},
             {"world_sha256": "g", "family": "f2", "source_status": "REJECTED", "reuses": 2}]
     uses = {"acc": [Use(pass_count=2, accepted=True)], "easy": [Use(pass_count=5)], "near": [Use(pass_count=4)]}
-    picks = submit.pick_worlds(pool, 4, uses=uses)
-    # The policy: f1's 4/5 world, then its 5/5 one (acc has an accepted task; g is at the reuse
-    # cap). Then the fallback spreads the rest: f2's only world, twice.
-    assert [(w["world_sha256"], w["tier"]) for w in picks] == [
-        ("near", "near"), ("easy", "easy"), ("g", "fallback"), ("g", "fallback")]
+    picks = submit.pick_worlds(pool, 2, uses=uses)
+    # f1's 4/5 world, then its 5/5 one; acc has an accepted task and g is at the reuse cap.
+    assert [(w["world_sha256"], w["tier"]) for w in picks] == [("near", "near"), ("easy", "easy")]
     assert "4/5" in picks[0]["reason"]
+    # Nothing else may serve: never an accepted or capped world to fill the count.
+    with pytest.raises(ValueError, match="only 2 of 4 worlds"):
+        submit.pick_worlds(pool, 4, uses=uses)
     with pytest.raises(ValueError, match="no checked world"):
         submit.pick_worlds(pool, 1, area="f3")
+
+
+def test_novel_worlds_first_then_repeats_then_a_world_shared_with_its_live_task():
+    pool = [{"world_sha256": s, "family": "f1", "mechanism": "m", "name": n, "source_status": "REJECTED",
+             "reuses": 0} for s, n in (("live", "durable-order-ledger"), ("same", "retry-ledger-commit"),
+                                       ("new", "booking-isolation"))]
+    uses = {"live": [Use(live=True, task="src")], "same": [Use(pass_count=4, task="a")],
+            "new": [Use(pass_count=5, task="b")]}
+    picks = submit.pick_worlds(pool, 3, uses=uses)
+    # The booking world is novel; the other ledger world repeats live ledger + m; the live world
+    # itself (one task so far) shares last. Each pick's reason says so.
+    assert [w["world_sha256"] for w in picks] == ["new", "same", "live"]
+    assert "repeats a live" in picks[1]["reason"] and "shares the world" in picks[2]["reason"]
+
+
+def test_the_domain_cap_counts_every_familys_live_tasks():
+    ledger = [{"world_sha256": f"l{i}", "family": "other_family", "mechanism": f"m{i}", "name": "x-ledger",
+               "source_status": "REJECTED", "reuses": 0} for i in range(10)]
+    mine = [{"world_sha256": s, "family": "f1", "mechanism": "k", "name": n, "source_status": "REJECTED",
+             "reuses": 0} for s, n in (("ledger", "charge-ledger"), ("plan", "slot-scheduler"))]
+    uses = {f"l{i}": [Use(live=True)] for i in range(10)}
+    uses["ledger"], uses["plan"] = [Use(pass_count=4)], [Use(pass_count=5)]
+    # 10 of 10 live tasks are ledgers: a ledger world is over the cap even though its own tier is better.
+    picks = submit.pick_worlds(ledger + mine, 1, area="f1", uses=uses)
+    assert [w["world_sha256"] for w in picks] == ["plan"]
 
 
 def test_world_uses_reads_each_versions_world_and_score_from_the_jobs(backend):
@@ -57,7 +83,8 @@ def test_world_uses_reads_each_versions_world_and_score_from_the_jobs(backend):
     with backend.store.tx() as conn:
         uses = world_selection.world_uses(conn)
     # Its task is still in flight, so the use is live (its domain + mechanism is being built).
-    assert uses == {"w1": [Use(pass_count=4, accepted=False, leak_rejected=False, new_prompts=True, live=True)]}
+    assert uses == {"w1": [Use(pass_count=4, accepted=False, leak_rejected=False, new_prompts=True, live=True,
+                               task="src")]}
 
 
 def test_a_rejection_only_the_blind_predictor_caused_is_a_blind_leak(backend):

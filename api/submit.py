@@ -205,43 +205,32 @@ def world_pool(conn: Any) -> list[dict[str, Any]]:
     return list(pool.values())
 
 
-# The fallback once the policy has no eligible world left: worlds whose task didn't make it,
-# then accepted ones, and last those whose task is still in flight.
-_SOURCE_RANK = {str(TaskStatus.REJECTED): 0, str(TaskStatus.CANCELLED): 0, str(TaskStatus.ACCEPTED): 1}
-
-
 def pick_worlds(pool: list[dict[str, Any]], count: int, area: Any = None,
                 uses: dict[str, list[world_selection.Use]] | None = None,
                 greedy: set[str] | None = None) -> list[dict[str, Any]]:
     """`count` worlds for new tasks within `area` (a family or a list): world_selection's policy
     over each world's history (`uses`, from world_selection.world_uses), each pick carrying its
-    `tier` and `reason`. Once the policy has no eligible world left, the rest are spread across
-    the families (the one with the fewest picks next), each the least-reused world of its family,
-    preferring a rejected source task (tier "fallback"); a world may then be picked again."""
+    `tier` and `reason`. Every family's worlds count toward the domain cap. If the policy finds
+    too few, ValueError: an accepted, leaked or reuse-capped world is never handed out to fill a batch."""
     areas = [area] if isinstance(area, str) else list(area or [])
-    cands = [dict(w) for w in pool if not areas or w["family"] in areas]
-    if not cands:
+    if not any(not areas or w["family"] in areas for w in pool):
         raise ValueError(f"no checked world to reuse{f' in {sorted(areas)}' if areas else ''}")
-    families = sorted({w["family"] for w in cands})
-    by_sha = {w["world_sha256"]: w for w in cands}
+    families = sorted({w["family"] for w in pool if not areas or w["family"] in areas})
+    by_sha = {w["world_sha256"]: dict(w) for w in pool}
     worlds = [world_selection.World(w["world_sha256"], w["family"], w.get("mechanism") or "",
                                     list((uses or {}).get(w["world_sha256"], [])), w["reuses"],
                                     name=w.get("name") or "", greedy=w["world_sha256"] in (greedy or set()))
-              for w in cands]
+              for w in pool]
+    found = world_selection.select_worlds(worlds, families, count)
+    if len(found) < count:
+        raise ValueError(f"only {len(found)} of {count} worlds in {sorted(families)} can be reused now "
+                         "(the rest have an accepted or leaked task, hit the reuse cap or the domain cap, "
+                         "or already share with a live task); ask for fewer")
     picks: list[dict[str, Any]] = []
-    per_family: dict[str, int] = {}
-    for p in world_selection.select_worlds(worlds, families, count):
+    for p in found:
         best = by_sha[p.world_sha256]
         best["reuses"] += 1
         picks.append({**best, "tier": p.tier, "reason": p.reason})
-        per_family[p.family] = per_family.get(p.family, 0) + 1
-    while len(picks) < count:
-        fam = min(families, key=lambda f: (per_family.get(f, 0), f))
-        best = min((w for w in cands if w["family"] == fam),
-                   key=lambda w: (w["reuses"], _SOURCE_RANK.get(w["source_status"], 2), w["world_sha256"]))
-        best["reuses"] += 1
-        picks.append({**best, "tier": "fallback", "reason": "no world in the policy's tiers left"})
-        per_family[fam] = per_family.get(fam, 0) + 1
     return picks
 
 

@@ -22,13 +22,18 @@ Preferred, in this order (a lower tier first):
             its defect is greedy / first-fit / a heuristic where an exact answer is needed (from
             world.json's plausible_wrong_fix and counterexample): any honest instruction for it
             names the textbook remedy (L2's finding: aws-w1-l2-t02, aws-w1-l5-t03, aws-iter2-t05)
-Novelty: each world has a domain (ledger/payments, scheduling/planning, replication, …; from
-its name, see `domain`). A world whose domain + mechanism is already live (a task in flight or
-accepted since window 1) or already picked in this call is skipped: a new task there repeats a
-scenario someone is already building.
-Spread: the requested families round-robin; within a family's best tier, the least-represented
-domain first (live and picked), then the least-used mechanism (counting this call's own picks),
-then the least-reused world, then the world sha (deterministic).
+Sharing (the user's rule: no new worlds, novelty from what each task asks; L3's reuse-distinct
+makes the author ask for a different guarantee): a world with a live task of its own may still
+serve while it has fewer than MAX_TASKS_SHARED tasks (so at most that many after the pick), never
+twice in one call.
+Domain cap: once the window has CAP_MIN_LIVE live tasks, a world is skipped if picking it would
+put its domain above DOMAIN_CAP of them (every family's live tasks count). Each world has a
+domain (ledger/payments, scheduling/planning, replication, …) from its name, see `domain`.
+Order: the requested families round-robin; within a family, a world that repeats nothing live
+first (neither its own task nor another world's domain + mechanism is live), then the least-
+represented domain (live and picked, across tiers), then the best tier, then the least-used
+mechanism (counting this call's own picks), then the least-reused world, then the world sha.
+Too few eligible worlds is the caller's to refuse: an accepted, leaked or capped world never serves.
 
 `world_uses(conn)` reads that history from the jobs: a version's world is the world_sha256 of its
 create / revise / world_check inputs, its pass count the VALID_PASS of its five scored agent runs.
@@ -41,6 +46,12 @@ from typing import Any
 TIERS = ("near", "hard", "unscored", "old_leak", "easy", "last")
 GREEDY_WORDS = ("greedy", "first-fit", "first fit", "firstfit", "heuristic")
 MAX_REUSES = 2
+# A world whose own task is live serves only while it has fewer tasks than this (manager, 22:50).
+MAX_TASKS_SHARED = 2
+# No domain above this share of the window's live tasks (once there are CAP_MIN_LIVE of them):
+# 13 of 46 in-flight tasks were ledgers at 22:45 (L3's finding).
+DOMAIN_CAP = 0.20
+CAP_MIN_LIVE = 10
 # Window 1's prompts went live with the generation pods of 2026-11-18 ~20:48 UTC (release
 # 5e1073985063); a version whose create started earlier was authored under the old prompts.
 NEW_PROMPTS_SINCE = "2026-11-18T20:48"
@@ -58,7 +69,7 @@ DOMAINS = (
                                  "assignment", "matching", "pool", "lease", "inventory")),
     ("booking/reservation", ("booking", "reservation", "seat", "ticket")),
     ("ledger/payments", ("ledger", "charge", "payment", "settlement", "credit", "billing", "reconciler",
-                         "invoice", "refund", "wallet")),
+                         "invoice", "refund", "wallet", "bank", "account", "transfer", "balance", "debit")),
     ("orders/workflow", ("order", "workflow", "dispatch", "compensation", "saga", "pipeline")),
     ("cache/storage", ("cache", "storage", "snapshot", "compaction", "index", "log")),
 )
@@ -83,6 +94,7 @@ class Use:
     new_prompts: bool = True        # authored under the current prompt set (window 1+)
     live: bool = False              # its task is in flight or accepted, and the version is window 1+
     blind_leak: bool = False        # leak-rejected while the semantic review was clean (the blind one failed it)
+    task: str = ""                  # the task the version belongs to
 
 
 @dataclass
@@ -99,6 +111,11 @@ class World:
     @property
     def domain(self) -> str:
         return domain(self.name)
+
+    @property
+    def tasks(self) -> int:
+        """Distinct tasks built on it (a use without a task id counts as its own task)."""
+        return len({u.task or f"#{i}" for i, u in enumerate(self.uses)})
 
 
 @dataclass
@@ -140,8 +157,9 @@ def tier(world: World, max_reuses: int = MAX_REUSES) -> tuple[str | None, str]:
 
 
 def select_worlds(worlds: list[World], families: list[str], count: int,
-                  max_reuses: int = MAX_REUSES) -> list[Pick]:
-    """Up to `count` worlds for new tasks in `families`, best tier first, families round-robin."""
+                  max_reuses: int = MAX_REUSES, domain_cap: float = DOMAIN_CAP) -> list[Pick]:
+    """Up to `count` worlds for new tasks in `families`, families round-robin. `worlds` is the
+    whole pool (every family's live tasks count toward the domain cap); only `families` are picked."""
     rank = {t: i for i, t in enumerate(TIERS)}
     by_family: dict[str, list[tuple[str, str, World]]] = {f: [] for f in families}
     for w in worlds:
@@ -161,8 +179,20 @@ def select_worlds(worlds: list[World], families: list[str], count: int,
             domain_live[w.domain] = domain_live.get(w.domain, 0) + live
             scenario_live.add((w.domain, w.mechanism))
 
-    def novel(w: World) -> bool:
-        return w.domain == OTHER or (w.domain, w.mechanism) not in scenario_live
+    def own_live(w: World) -> bool:
+        return any(u.live for u in w.uses)
+
+    def repeats(w: World) -> bool:
+        return own_live(w) or (w.domain != OTHER and (w.domain, w.mechanism) in scenario_live)
+
+    def eligible(w: World) -> bool:
+        if own_live(w) and w.tasks >= MAX_TASKS_SHARED:
+            return False
+        if w.domain == OTHER:
+            return True
+        total = sum(domain_live.values())
+        # The domain cap: once the window has CAP_MIN_LIVE live tasks, no domain past `domain_cap`.
+        return not (total >= CAP_MIN_LIVE and (domain_live.get(w.domain, 0) + 1) / (total + 1) > domain_cap)
 
     picks: list[Pick] = []
     taken: set[str] = set()
@@ -171,14 +201,17 @@ def select_worlds(worlds: list[World], families: list[str], count: int,
         for family in families:
             if len(picks) >= count:
                 break
-            pool = [c for c in by_family[family] if c[2].sha not in taken and novel(c[2])]
+            pool = [c for c in by_family[family] if c[2].sha not in taken and eligible(c[2])]
             if not pool:
                 continue
-            best_tier = min(rank[c[0]] for c in pool)
-            pool = [c for c in pool if rank[c[0]] == best_tier]
-            pool.sort(key=lambda c: (domain_live.get(c[2].domain, 0), mechanism_uses[(family, c[2].mechanism)],
-                                     c[2].reuses, c[2].sha))
+            # Non-repeats first; then the least-represented domain, across tiers; then the best tier.
+            pool.sort(key=lambda c: (repeats(c[2]), domain_live.get(c[2].domain, 0), rank[c[0]],
+                                     mechanism_uses[(family, c[2].mechanism)], c[2].reuses, c[2].sha))
             t, why, w = pool[0]
+            if own_live(w):
+                why = f"{why}; shares the world with a live task ({w.tasks} so far)"
+            elif repeats(w):
+                why = f"{why}; repeats a live {w.domain} + {w.mechanism} scenario"
             picks.append(Pick(w.sha, w.family, w.mechanism, t, f"{why}; domain {w.domain}"))
             taken.add(w.sha)
             mechanism_uses[(family, w.mechanism)] += 1
@@ -235,7 +268,8 @@ def world_uses(conn: Any) -> dict[str, list[Use]]:
             new_prompts=new_prompts,
             live=new_prompts and task["status"] not in ("REJECTED", "CANCELLED")
             and (task["status"] != "ACCEPTED" or task["accepted_version"] == n),
-            blind_leak=leak and jobs[-1][2]))
+            blind_leak=leak and jobs[-1][2],
+            task=tid))
     return uses
 
 
