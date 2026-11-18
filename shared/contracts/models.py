@@ -32,11 +32,18 @@ class RejectReason(StrEnum):
 
 
 class JobType(StrEnum):
-    GENERATE = "generate"
-    VALIDATE = "validate"
-    ROLLOUT = "rollout"
-    ANALYZE = "analyze"  # the Analysis service: accept / revise / reject (PRD §5)
+    """One queue per type (Redis key `sde:<type>`), PRD §5.1."""
+
+    CREATE = "create"  # Generation Service: a new task from its spec (the create queue)
+    REVISE = "revise"  # Generation Service: a repair or a revision (the revise queue)
+    VALIDATE = "validate"  # Build + Validate
+    ROLLOUT = "rollout"  # Executor (the run queue)
+    ANALYZE = "analyze"  # Trace Parser: accept / revise / reject
     SMOKE = "smoke"  # `python -m shared.jobs.smoke` only; no worker claims it
+
+
+# The Generation Service's queues, revisions first.
+GENERATION_TYPES = (JobType.REVISE, JobType.CREATE)
 
 
 class JobStatus(StrEnum):
@@ -57,12 +64,13 @@ class Outcome(StrEnum):
 TERMINAL_TASK_STATUSES = (TaskStatus.ACCEPTED, TaskStatus.REJECTED)
 SCORED_OUTCOMES = (Outcome.VALID_PASS, Outcome.VALID_FAIL)
 
-# Finish what's started: decisions, then rollouts, validations, new drafts (PRD §6.11).
+# Finish what's started: decisions, rollouts, validations, revisions, new drafts (PRD §6.11).
 PRIORITY = {
     JobType.ANALYZE: 40,
     JobType.ROLLOUT: 30,
     JobType.VALIDATE: 20,
-    JobType.GENERATE: 10,
+    JobType.REVISE: 15,
+    JobType.CREATE: 10,
     JobType.SMOKE: 0,
 }
 # Job types that hold a Docker slot while leased.

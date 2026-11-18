@@ -162,10 +162,14 @@ def row_dict(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def job_id(task_id: str, version: int, kind: str, n: int = 0) -> str:
-    """Deterministic job ids, e.g. `b1-t03-v2-repair1`. Also the Harbor job name."""
+    """Deterministic job ids, e.g. `b1-t03-v2-repair1`. Also the Harbor job name.
+
+    `create` starts v1; `revise` starts a later version (a revision); `repair<n>`
+    (also type revise) fixes a version whose gates failed; `validate-r<n>` checks
+    draft n of a version (0 = its create / revise, n = repair n)."""
     match kind:
-        case "generate":
-            return f"{task_id}-v{version}-generate"
+        case "create" | "revise":
+            return f"{task_id}-v{version}-{kind}"
         case "repair":
             return f"{task_id}-v{version}-repair{n}"
         case "validate":
@@ -290,12 +294,26 @@ def claim(
 
 
 def mark_handled(conn: Conn, job_id: str) -> bool:
-    """Job Service: record that it reacted to a settled job (same transaction as the
-    reaction). False if it was already handled, so a second reaction is skipped."""
+    """Record that a settled job was reacted to (operator bookkeeping: `unhandled()`
+    shows a backlog). False if it was already marked."""
     cur = conn.execute(
         "UPDATE jobs SET handled_at = ? WHERE id = ? AND handled_at IS NULL", (utcnow(), job_id)
     )
     return cur.rowcount == 1
+
+
+def _split_generate_jobs(conn: Conn) -> None:
+    """Migrate rows from before the create / revise split: no worker claims type
+    `generate` any more. Repairs and revisions become `revise`, the rest `create`.
+    Idempotent: a second run finds nothing to change."""
+    conn.execute(  # patterns as parameters: `%` is psycopg's placeholder character
+        """UPDATE jobs SET type = ?, priority = ?
+            WHERE type = 'generate' AND (id LIKE ? OR input LIKE ? OR input LIKE ?)""",
+        (str(JobType.REVISE), PRIORITY[JobType.REVISE],
+         "%-repair%", '%"origin": "repair"%', '%"origin": "revision"%'),
+    )
+    conn.execute("UPDATE jobs SET type = ?, priority = ? WHERE type = 'generate'",
+                 (str(JobType.CREATE), PRIORITY[JobType.CREATE]))
 
 
 # --- the store ----------------------------------------------------------------
@@ -315,6 +333,7 @@ class SqlStore:
             have = {d[0] for d in conn.execute("SELECT * FROM jobs LIMIT 0").description}
             if "isolated" not in have:
                 conn.execute("ALTER TABLE jobs ADD COLUMN isolated INTEGER NOT NULL DEFAULT 0")
+            _split_generate_jobs(conn)
 
     @property
     def conn(self) -> _SqliteConn | _PostgresConn:

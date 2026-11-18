@@ -5,8 +5,10 @@ Each pass:
 1. Dead-letters jobs that were claimed MAX_JOB_ATTEMPTS times without settling
    (each lease expired: the job keeps killing its worker). They become DEAD with
    `handled_at` NULL. A dead rollout also gets `<id>-analyze` in the same
-   transaction, the follow-up its worker never settled, so the Analysis service
-   resolves its version instead of waiting for it forever.
+   transaction, the follow-up its worker never settled, so the Trace Parser
+   retries the slot or resolves the version instead of waiting forever. A dead
+   create / revise / validate job rejects its task (`infra_unresolved`): no
+   service would ever hand that version on.
 2. Re-adds every claimable job to the queue backend (Redis mode), which covers a
    crash between commit and publish, a dead worker's popped job, and Redis
    losing its data. A no-op for the database queue.
@@ -27,13 +29,22 @@ import threading
 import time
 from pathlib import Path
 
+from shared.jobs import tasks
 from shared.storage import REPO_ROOT, Backend, describe, from_env
 from shared.storage.artifacts import sweep_staging
 from shared.storage.sql import insert_job, utcnow
 from shared.jobs.jobqueue import JobQueue
-from shared.contracts.models import LEASE_TTL_S, MAX_JOB_ATTEMPTS, RECONCILE_S, JobType
+from shared.contracts.models import (
+    GENERATION_TYPES,
+    LEASE_TTL_S,
+    MAX_JOB_ATTEMPTS,
+    RECONCILE_S,
+    JobType,
+    RejectReason,
+    Stage,
+)
 
-# Where accepted bundles are published; the Job Service reads the same variable.
+# Where accepted bundles are published; the Trace Parser reads the same variable.
 ACCEPTED_DIR = Path(os.environ.get("SDE_ACCEPTED_DIR") or REPO_ROOT / "output" / "accepted")
 
 log = logging.getLogger("reconciler")
@@ -56,6 +67,10 @@ def reconcile(backend: Backend, accepted_dir: Path = ACCEPTED_DIR) -> dict[str, 
                 if insert_job(c, id=aid, task_id=row["task_id"], version=row["version"],
                               type=JobType.ANALYZE, input={"trigger": row["id"]}):
                     analyze.append(aid)
+            elif row["type"] in (*GENERATION_TYPES, JobType.VALIDATE):
+                # No service will ever hand this version on: the task can't finish.
+                tasks.reject(c, row["task_id"], RejectReason.INFRA_UNRESOLVED, Stage.UNRESOLVED,
+                             version=row["version"])
     for row in dead:
         log.warning("%s: dead-lettered after %d claims", row["id"], MAX_JOB_ATTEMPTS)
     JobQueue(backend).publish(analyze)

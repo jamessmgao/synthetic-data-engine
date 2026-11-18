@@ -3,7 +3,7 @@
 # writes runtime.env from SSM Parameter Store, and brings the app up.
 #
 # Usage: remote-deploy.sh <git-sha> <artifacts-bucket> <region> <docker-slots> <role>
-#   role=control  api + worker-control (generation, Job Service, the one reconciler)
+#   role=control  api + worker-control (Generation Service, Trace Parser, the one reconciler)
 #                 + worker-runner
 #   role=runner   worker-runner only (Docker jobs)
 set -euo pipefail
@@ -39,13 +39,13 @@ umask 077
   echo "SDE_WORK_DIR=/opt/sde/work"
   echo "SDE_DOCKER_SLOTS=$slots"
   echo "SDE_RELEASE=$sha"
-  # worker-control always runs the one reconciler, with the generation worker if present.
+  # worker-control always runs the one reconciler, with the Generation Service if present.
   if [ -e "$release/generator/worker.py" ]; then
-    echo "SDE_GENERATE_CMD=python -m generator.service generate --with-reconciler"
+    echo "SDE_GENERATION_CMD=python -m generator.service generation --with-reconciler"
   else
-    echo "SDE_GENERATE_CMD=python -m shared.jobs.reconciler"
+    echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
   fi
-  cmd job_service SDE_JOB_SERVICE_CMD "python -m job_service run"
+  cmd evaluation/trace_parser_service.py SDE_TRACE_PARSER_CMD "python -m evaluation.trace_parser_service"
   cmd validator/gates.py SDE_VALIDATE_CMD "python -m validator.service validate"
   cmd evaluation/executor.py SDE_EXECUTOR_CMD "python -m evaluation.executor"
   cmd api SDE_API_CMD "python -m api --host 0.0.0.0 --port 8000"

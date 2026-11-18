@@ -36,10 +36,10 @@ can check each verdict without reading code, and the pipeline survives being kil
    validator, `harbor lint`, Docker build, oracle = 1 (twice), nop = 0.
 8. The system evaluates each valid version with 5 valid `terminus-2` / `glm-5.3-flash` /
    `reasoning_effort=high` rollouts. Timeouts and infrastructure errors are retried, never scored.
-9. For each failed rollout, the Analysis service records why the model failed, with evidence
+9. For each failed rollout, the Trace Parser records why the model failed, with evidence
    (failing tests, last commands). If a failure shows a task defect, the version goes back for a
    repair; it is not counted as hard.
-10. The Analysis service accepts 1–3/5; otherwise it sends the task back to the generation
+10. The Trace Parser accepts 1–3/5; otherwise it sends the task back to the generation
     workers as a revision (harder or easier) up to v3, then rejects it with reason `exhausted`.
 11. Only accepted tasks are written to `output/accepted/<name>/`, each with its `verdict.md`.
 
@@ -71,7 +71,7 @@ reusing or adapting public tasks.
 |---|---|---|---|
 | N1 | **Durability of evidence** | Zero lost results once a trial or LLM call is recorded. Bundles, LLM transcripts and Harbor job dirs are immutable and never deleted; an abandoned Harbor dir is renamed, not removed. | A trial costs minutes of Docker time and real spend, and a verdict is only as good as the evidence that can be re-checked. |
 | N2 | **Reliable, idempotent processing** | At-least-once execution, exactly-once *effects*: a reclaimed, retried or concurrently claimed row never produces a second scored slot, a duplicate version, a second hand-off (next-stage job), a second accepted bundle or a second terminal transition. After a restart, no finished trial or LLM call is re-run; only a call in flight at the kill can repeat, and the report says so. | A kill at any point, a restart, and two copies at once must all leave the same result. |
-| N3 | **Fast acknowledgement** | `sde run --count N` commits the tasks and their `generate` jobs in < 1 s, before any LLM call, so a kill right after it loses nothing. `sde status` / `sde inspect` answer in < 1 s while workers run (WAL readers never block on writers). | The operator, including during kill tests, can see and trust state at any moment. |
+| N3 | **Fast acknowledgement** | `sde run --count N` commits the tasks and their `create` jobs in < 1 s, before any LLM call, so a kill right after it loses nothing. `sde status` / `sde inspect` answer in < 1 s while workers run (WAL readers never block on writers). | The operator, including during kill tests, can see and trust state at any moment. |
 | N4 | **Processing latency** | With a free slot, claimable work starts within 5 s (poll ≤ 2 s), including the next stage's job a worker just handed off. An expired lease is reclaimed within its TTL (10 min) + one poll. Pipeline overhead (everything except LLM and Harbor time) is < 5% of wall time. | Time, not money, is the constraint (§ back-of-the-envelope); the pipeline itself must not be the bottleneck. |
 | N5 | **Throughput scales with slots** | Roughly linear from 1 → 2 → 4 Docker slots on one batch; drafting overlaps evaluation so slots never sit idle while work exists. Measured in M5. | A 10-candidate batch is ~140 Harbor runs; slot use decides wall time. |
 | N6 | **Large artifacts stay out of the database** | Bundles (≤ 2 MB, enforced by `schema.py`), Harbor job dirs (trajectories, possibly tens of MB) and transcripts are files referenced by path + sha256. DB rows stay in the KB range. | Keeps SQLite fast and the DB small enough to inspect by hand. |
@@ -92,7 +92,7 @@ transaction (compare-and-set). Reports and `status` can be a few seconds stale.
   ~8 min average → 10 candidates × 14 runs × 8 min / 4 slots ≈ **4.7 h**.
 - Eval cost: ~$0.002 for the 78 s smoke trial; assume ≤ $0.05 for a long trial → ≤ $7 per
   10-candidate batch. Authoring (GLM-5.1, ~30–80 k tokens per draft including repairs) is
-  measured in M1. Analysis is one GLM-5.1 review per version (measured live at $0.005–0.01).
+  measured in M1. Trace parsing is one GLM-5.1 review per failed run (measured live at $0.005–0.01 each).
   Time, not money, is the constraint.
 
 ---
@@ -104,7 +104,7 @@ Two tables, the diagram's two core entities:
 - **`tasks`**: one original idea (candidate), where its current version is, and its verdict.
   The diagram's *Task*.
 - **`jobs`**: one unit of work **and its result**: what it was asked to do, who ran it, when, the
-  outcome, the trace and the cost. A job is created on a queue (`generate`, `validate`,
+  outcome, the trace and the cost. A job is created on a queue (`create`, `revise`, `validate`,
   `rollout`, `analyze`), claimed under a lease and settled once. A rollout job *is* one Harbor run of
   terminus-2: the diagram's *Job* (`jobId, taskId, status, pass/fail, traces_s3_uri,
   trace_metrics, inference_cost`). Retries are new rows, so **the jobs table is the full,
@@ -113,7 +113,7 @@ Two tables, the diagram's two core entities:
 What we deliberately don't have:
 
 - **No versions table.** A version is `(task_id, version)` on the jobs that built and measured it.
-  Its bundle sha and origin are the output of its `generate` job, its gates are the result of its
+  Its bundle sha and origin are the output of its `create` or `revise` job, its gates are the result of its
   `validate` job, and its pass count is a count of its `rollout` jobs. Only the *current*
   version's stage needs a column (`tasks.stage`).
 - **No events/audit table.** Job rows already record every step; task decisions are on `tasks`;
@@ -149,7 +149,7 @@ output/reports/<batch_id>/   summary.json + report.md
 | `reason` | text, nullable | Why it was rejected: `exhausted` (out of band at v3), `invalid` (repairs spent), `infra_unresolved`. |
 | `current_version` | int | 1–3 (check constraint). Advanced only by compare-and-set, which is what stops two processes creating the same revision. |
 | `stage` | text | Stage of the current version: `QUEUED → GENERATING → BUILDING → VALIDATING → EVALUATING → BAND_OK \| OUT_OF_BAND`, or `INVALID` / `UNRESOLVED`. |
-| `bundle_sha256`, `name` | text, nullable | The current version's bundle and slug (copied from its latest successful `generate` job, for cheap reads). |
+| `bundle_sha256`, `name` | text, nullable | The current version's bundle and slug (copied from its latest successful `create` / `revise` job, for cheap reads). |
 | `accepted_version` | int, nullable | |
 | `created_at`, `updated_at` | text (UTC ISO) | |
 
@@ -157,14 +157,14 @@ output/reports/<batch_id>/   summary.json + report.md
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | text PK | Deterministic: `t03-v2-generate`, `t03-v2-repair1`, `t03-v2-validate-r0`, `t03-v2-rollout3-r1`, `t03-v2-rollout3-r1-analyze` (the ping a rollout's settle enqueues). Also the Harbor `--job-name` and the `traces/<id>/` prefix. Creating a job twice is `INSERT OR IGNORE`, a no-op. |
+| `id` | text PK | Deterministic: `t03-v1-create`, `t03-v2-revise` (a revision), `t03-v2-repair1` (a repair, also type `revise`), `t03-v2-validate-r0`, `t03-v2-rollout3-r1`, `t03-v2-rollout3-r1-analyze` (the ping a rollout's settle enqueues). Also the Harbor `--job-name` and the `traces/<id>/` prefix. Creating a job twice is `INSERT OR IGNORE`, a no-op. |
 | `task_id`, `version` | | The version this job works on. |
-| `type` | text | `generate` (draft, repair or revision) \| `validate` (build, gates, oracle × 2, nop) \| `rollout` (one terminus-2 run) \| `analyze` (a rollout finished: check the version, decide when it has 5 valid rollouts). Each type is one queue: one Redis sorted set in production. |
+| `type` | text | `create` (new task from a spec) \| `revise` (repair after failed gates, or revision after the Trace Parser) \| `validate` (build, gates, oracle × 2, nop) \| `rollout` (one terminus-2 run) \| `analyze` (a rollout finished: check the version, decide when it has 5 valid rollouts). Each type is one queue: one Redis sorted set in production. |
 | `slot`, `retry` | int | Rollouts: slot 1–5. An `INVALID` rollout is settled and a new row with `retry + 1` is created. |
 | `input` | json | What the job was asked to do. Generate: `{origin: initial\|repair\|revision, operator?, spec, errors?}`. Rollout: the pinned agent/model/kwargs. |
 | `status` | text | `READY → LEASED → DONE \| DEAD`. |
 | `due_at` | text | Claimable from; also the retry backoff. The sorted-set score. |
-| `priority` | int | `analyze` > `rollout` > `validate` > `generate`: finish what's started (§6.11). |
+| `priority` | int | `analyze` > `rollout` > `validate` > `revise` > `create`: finish what's started (§6.11). |
 | `lease_owner`, `lease_until`, `lease_token` | | Claim, heartbeat and fencing (§6.7). |
 | `attempts` | int | Times claimed. More than 1 means a lease was reclaimed; above the limit → `DEAD`. |
 | `bundle_sha256`, `config_hash` | text | Exactly what was run (for generate: what was produced). |
@@ -173,8 +173,8 @@ output/reports/<batch_id>/   summary.json + report.md
 | `reward` | real, nullable | Rollout only; null when invalid. |
 | `error` | text, nullable | Harbor exception type (`AgentTimeoutError`, …) or the gate/parse error summary. |
 | `trace_uri` | text, nullable | `traces/<id>/`. The diagram's `traces_s3_uri`. |
-| `trace_metrics` | json, nullable | Rollouts. Written by the Analysis service's trace parser (§6.5): `{llm_calls, input_tokens, output_tokens, tool_calls: [{tool, input, output, exit_code}], files_modified, duration_seconds}` (last N tool calls). |
-| `failure` | json, nullable | `VALID_FAIL` rollouts only, written by the Analysis service: `{failing_tests, evidence: [...], explanation, attribution: model\|task\|unexplained, pitfall_matched, cited_evidence}` (§6.5). |
+| `trace_metrics` | json, nullable | Rollouts. Written by the Trace Parser's trace parser (§6.5): `{llm_calls, input_tokens, output_tokens, tool_calls: [{tool, input, output, exit_code}], files_modified, duration_seconds}` (last N tool calls). |
+| `failure` | json, nullable | `VALID_FAIL` rollouts only, written by the Trace Parser: `{failing_tests, evidence: [...], explanation, attribution: model\|task\|unexplained, pitfall_matched, cited_evidence}` (§6.5). |
 | `cost_usd` | real, nullable | All spend this job caused: GLM-5.1 `usage.cost` for generate and analyze (the review), Harbor `agent_result.cost_usd` for rollouts. The diagram's `inference_cost`. Batch cost = `SUM(cost_usd)`. |
 | `published_at` | text, nullable | Production only: when the outbox publisher added the id to Redis. |
 | `created_at`, `started_at`, `finished_at` | text | |
@@ -254,12 +254,22 @@ running:
 
 ```
 sde run --count 10 [--batch ID]   submit (POST /v1/batches) + run every worker role until done
-sde work [--roles …]              run worker roles only: generate, validate, rollout, analyze, reconcile
+sde work [--roles …]              run service roles only: generation, validate, executor, trace-parser, reconcile
 sde status <batch>                GET /v1/batches/{id}
 sde inspect <task>                GET /v1/tasks/{id}  (also written as verdict.md)
 sde report <batch>                GET /v1/batches/{id}/report → output/reports/<batch>/
 sde serve                         start the API service (the diagram's API Gateway)
 sde generate "<topic>"            one draft + gates, no evaluation (scripts/generate.sh)
+```
+
+The services themselves (what compose's `worker-control` / `worker-runner` run):
+
+```
+python -m api --host 0.0.0.0 --port 8000                 API service
+python -m generator.service generation --with-reconciler   Generation Service (revise, then create queue) + reconciler
+python -m validator.service validate                       Build + Validate
+python -m evaluation.executor                            Executor (the run queue)
+python -m evaluation.trace_parser_service                Trace Parser (the analyze queue)
 ```
 
 Exit codes: `0` success, `2` budget cap reached, `3` nothing claimable but unfinished work is
@@ -286,56 +296,63 @@ leased by another live process.
 
 ## 5. High-level design
 
-A **distributed, asynchronous job-processing system** built from **workers on queues**. The API
-service is the entry point; after that, every component is a worker that pulls jobs from its own
+A **distributed, asynchronous job-processing system** built from **services on queues**. The API
+service is the entry point; after that, every component is a service that pulls jobs from its
 queue, does one stage, records the result, and **enqueues the next stage's job in the same
-transaction**. Nothing orchestrates the stages from the middle: each stage hands off directly to
-the next, and only the Analysis service makes the accept / revise / reject decision. FastAPI,
-PostgreSQL, Redis sorted sets, independent worker fleets, containerized execution and S3. The
-diagram is [`agent-evaluation-system_calibration_v3.excalidraw`](../agent-evaluation-system_calibration_v3.excalidraw)
-(render: [`image.png`](../image.png), from before the 2026-11-17 relabel).
+transaction**. Nothing orchestrates the stages from the middle. Two services own the loop:
+the **Generation Service** makes tasks (new ones and revisions) and the **Trace Parser** judges
+them from their agent traces. FastAPI, PostgreSQL, Redis sorted sets, independent services,
+containerized execution and S3. The diagram is
+[`agent-evaluation-system_calibration_v3.excalidraw`](../agent-evaluation-system_calibration_v3.excalidraw).
 
 ```
  Client ──► API service (FastAPI)   POST /v1/batches · GET status · GET results
-              │  one txn: tasks (CREATED) + their v1 "generate" jobs
+              │  one txn: tasks (CREATED) + one "create" job each
               ▼
-        PostgreSQL (tasks · jobs; unpublished job rows = the outbox) ──► outbox publisher ──► Redis
-                                                                                                │
-   ┌──────────────────────────────┬──────────────────────────────┬──────────────────────────┤
-   ▼ sde:generate                  ▼ sde:validate                  ▼ sde:rollout               ▼ sde:analyze
- ┌─────────────────────┐   ┌──────────────────────┐   ┌──────────────────────────┐   ┌───────────────────────────┐
- │ Generation workers  │   │ Build + Validate     │   │ Executor workers         │   │ Analysis service          │
- │ GLM-5.1: draft,     │   │ workers              │   │ 1 Harbor run per job in  │   │ waits for 5 valid rollouts│
- │ repair or revise    │   │ build · lint ·       │   │ an Execution Pod; upload │   │ of the version, then:     │
- │ → bundle to S3      │   │ oracle×2 · nop       │   │ the whole trace to S3    │   │ trace parser + GLM-5.1    │
- └─────────┬───────────┘   └─────┬──────────┬─────┘   └──────┬──────────┬────────┘   │ review → decide           │
-           │ enqueue             │ pass:    │ fail:          │ always:  │ INVALID:   └──┬──────────┬──────────┬──┘
-           │ validate            │ enqueue  │ enqueue repair │ enqueue  │ enqueue      │ accept   │ revise / │ reject
-           ▼                     │ 5        │ generate (≤2)  │ analyze  │ retry        ▼ publish  │ repair   ▼
-       sde:validate               ▼ rollouts ▼ or REJECT      ▼ (ping)   ▼ (same slot) output/   ▼          REJECTED
-                             sde:rollout   sde:generate     sde:analyze  sde:rollout     accepted  sde:generate
+       ┌─ create queue (sde:create) ──┐      ┌─ revise queue (sde:revise) ◄──────────────────────────┐
+       ▼                             │      ▼                                                      │
+ ┌──────────────────────────────────────────────────┐                                              │
+ │ Generation Service  (GLM-5.1)                    │  new task from a spec, or repair / revision  │
+ │ → immutable bundle in S3 → enqueue validate      │  of an existing one                          │
+ └───────────────────────┬──────────────────────────┘                                              │
+                         ▼ sde:validate                                                             │
+ ┌──────────────────────────────────────────────────┐                                              │
+ │ Build + Validate   build · lint · oracle×2 · nop │── fail: repair ─────────────────────────────►│
+ └───────────────────────┬──────────────────────────┘   (≤2 per version, then REJECTED invalid)    │
+                         ▼ pass: 5 jobs on the run queue (sde:rollout)                              │
+ ┌──────────────────────────────────────────────────┐                                              │
+ │ Executor  1 Harbor run per job → Execution Pod   │── INVALID: retry same slot (sde:rollout)      │
+ │ upload whole trace to S3 → record the result     │                                              │
+ └───────────────────────┬──────────────────────────┘                                              │
+                         ▼ every finished run: "analyze" ping (sde:analyze)                         │
+ ┌──────────────────────────────────────────────────┐                                              │
+ │ Trace Parser  (analysis + revision)              │── too easy / too hard / task defect ────────►┘
+ │ waits for 5 valid runs → parse traces (S3) →     │
+ │ GLM-5.1 review → decide                          │┄┄ results, failure records, ACCEPTED / REJECTED ┄┄► PostgreSQL
+ └──────────────────────────────────────────────────┘── accept: publish bundle + verdict.md
 
- S3: bundles · LLM transcripts · raw traces · logs (write-once)
- Reconciler: reclaims expired leases, dead-letters, re-publishes, rebuilds Redis from PostgreSQL
+ S3: bundles · LLM transcripts · raw traces (write-once)
+ Reconciler: reclaims expired leases, dead-letters, re-publishes, rebuilds Redis from PostgreSQL;
+             a dead-lettered run still pings sde:analyze
  Analytics: read-only pass rates, cost, failure patterns, served through the API
- Inference egress gateway: FUTURE, not built; workers call the SDE inference API directly
+ Inference egress gateway: FUTURE, not built; services call the SDE inference API directly
 ```
 
 ### 5.1 Core architecture
 
 | Component | Queue in → what it does → queue out | Module |
 |---|---|---|
-| **API service (FastAPI)** | Entry point, not a worker. `POST /v1/batches` writes the batch's tasks and their first `generate` jobs in one transaction and returns `202`. Read endpoints serve status, verdicts and reports (§4). It is also the diagram's "API Gateway": no separate gateway product sits in front of it. | `api/`; `sde` CLI calls the same functions |
-| **Generation workers** | `sde:generate` → GLM-5.1 drafts a new task, repairs one that failed its gates, or revises one that was out of band (§6.1) → bundle to S3 → enqueue `validate`. | `generator/` |
-| **Build + Validate workers** | `sde:validate` → build, structural validator, `harbor lint`, oracle × 2, nop (§6.3) → **pass:** enqueue 5 `rollout` jobs; **fail:** enqueue a repair `generate` (≤ 2 per version), else reject the task (`invalid`). | `validator/` |
-| **Executor workers** | `sde:rollout` → one Harbor run in an Execution Pod, timeouts and resource limits enforced → upload the whole trace (trajectory, terminal output, verifier logs, result) to S3 → record outcome, reward, cost → **always** enqueue an `analyze` job (the "ping"); an `INVALID` run also enqueues a retry of the same slot. | `evaluation/executor.py` |
+| **API service (FastAPI)** | Entry point, not a worker. `POST /v1/batches` writes the batch's tasks and one `create` job each in one transaction and returns `202`. Read endpoints serve status, verdicts and reports (§4). It is also the diagram's "API Gateway": no separate gateway product sits in front of it. | `api/` |
+| **Generation Service** | **create queue** (`sde:create`): GLM-5.1 drafts a new task from its spec. **revise queue** (`sde:revise`): GLM-5.1 changes an existing task, either a *repair* (it failed its gates) or a *revision* (the Trace Parser found it too easy, too hard or unfair), continuing from the old task plus the evidence (§6.1, §6.6). Either way: bundle to S3, then enqueue `validate`. Revise jobs run before create jobs, so started tasks finish first. | `generator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
+| **Build + Validate** | `sde:validate` → build, structural validator, `harbor lint`, oracle × 2, nop (§6.3) → **pass:** 5 jobs on the run queue; **fail:** a repair on the revise queue (≤ 2 per version), else reject the task (`invalid`). | `validator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
+| **Executor** | **run queue** (`sde:rollout`) → one Harbor run in an Execution Pod, timeouts and resource limits enforced → upload the whole trace (trajectory, terminal output, verifier logs, result) to S3 → record outcome, reward, cost → **always** enqueue an `analyze` ping; an `INVALID` run also enqueues a retry of the same slot. | `evaluation/executor.py` |
 | **Execution Pods** | Run each agent attempt in an isolated container (Harbor task container, 1 CPU / 2 GB). | Harbor + Docker |
-| **Analysis service** | `sde:analyze` → if the version doesn't have 5 valid rollouts yet, finish (nothing to do). Otherwise read the 5 traces from S3, run the trace parser and one GLM-5.1 review (§6.5), write `trace_metrics` and `failure` onto the rollout rows, and **decide** (§6.6): accept and publish, enqueue a revision or repair `generate`, or reject. The only component that judges difficulty. | `evaluation/analyzer.py`, `evaluation/trace_parser.py` |
+| **Trace Parser** (analysis + revision) | `sde:analyze` → if the version doesn't have 5 valid runs yet, finish (`wait`). Otherwise read the 5 traces from S3, extract metrics and evidence, have GLM-5.1 review each failed run (§6.5), write `trace_metrics` and `failure` onto the run rows, and **decide** (§6.6): accept and publish; or put a revision on the revise queue; or reject. The only component that judges difficulty. Its own service; not a cron batch. | `evaluation/trace_parser_service.py` + `trace_parser.py` |
 | **PostgreSQL** | Source of truth: the 2 tables in §3. Every hand-off is a row inserted in the same transaction that records the previous stage's result. | `Store` |
-| **Redis sorted sets** | One queue per worker type: `sde:generate`, `sde:validate`, `sde:rollout`, `sde:analyze`. Members are job ids; payload and state stay in PostgreSQL. | `Queue` |
+| **Redis sorted sets** | One queue per job type: `sde:create`, `sde:revise`, `sde:validate`, `sde:rollout` (the run queue), `sde:analyze`. Members are job ids; payload and state stay in PostgreSQL. | `Queue` |
 | **Outbox publisher** | Adds committed job rows with `published_at IS NULL` to Redis. Duplicate publishes are harmless (stable ids). | `shared/jobs/jobqueue.py` |
 | **S3** | Immutable task bundles, LLM transcripts, raw execution traces and logs. | `ArtifactStore` |
-| **Reconciler** | Reclaims expired leases, dead-letters jobs that keep killing their worker, re-publishes unpublished jobs, rebuilds Redis from PostgreSQL. | `shared/jobs/reconciler.py` |
+| **Reconciler** | Reclaims expired leases, dead-letters jobs that keep killing their worker (a dead run still pings `sde:analyze`), re-publishes unpublished jobs, rebuilds Redis from PostgreSQL. | `shared/jobs/reconciler.py` |
 | **Analytics** | Read-only: pass rates, duration, cost and failure patterns by taxonomy dimension, pitfall, invalid reason and version. Serves the batch report. | `api/` report endpoint |
 | **Inference egress gateway** | **Future.** The first deployment calls the provided SDE inference API directly. | none |
 
@@ -345,43 +362,44 @@ and each stage has exactly one owner, so two writers never race on the same step
 | Stage transition | Owner |
 |---|---|
 | create task (`CREATED`, v1 `QUEUED`) | API service |
-| `QUEUED → GENERATING → BUILDING` (bundle written) | Generation worker |
-| `BUILDING → VALIDATING → EVALUATING`, or repair back to `GENERATING`, or `INVALID → REJECTED (invalid)` | Build + Validate worker |
-| `EVALUATING → BAND_OK → ACCEPTED`, `OUT_OF_BAND → v(n+1) QUEUED`, `REJECTED (exhausted / infra_unresolved)` | Analysis service |
+| `QUEUED → GENERATING → BUILDING` (bundle written) | Generation Service |
+| `BUILDING → VALIDATING → EVALUATING`, or a repair back to `GENERATING`, or `INVALID → REJECTED (invalid)` | Build + Validate |
+| `EVALUATING → BAND_OK → ACCEPTED`, `OUT_OF_BAND → v(n+1) QUEUED` (revision), `REJECTED (exhausted / infra_unresolved)` | Trace Parser |
 
 ### 5.2 End-to-end request flow
 
-Client → API service → PostgreSQL + Redis → Generation workers → Build + Validate workers →
-Executor workers → Execution Pods → S3 + PostgreSQL → Analysis service → Accept, or back to
-Generation workers with a revision
+Client → API service → create queue → Generation Service → Build + Validate → run queue →
+Executor → Execution Pods → S3 + PostgreSQL → Trace Parser → Accept, or revise queue →
+Generation Service
 
 1. **Request ingestion.** The client submits a batch. The API service writes the tasks and their
-   `generate` jobs in **one PostgreSQL transaction**; the unpublished job rows are the outbox,
+   `create` jobs in **one PostgreSQL transaction**; the unpublished job rows are the outbox,
    and the outbox publisher adds them to Redis. The API returns `202` immediately.
-2. **Task generation.** A generation worker claims the job, GLM-5.1 writes the task, the bundle
-   is stored in S3 as an immutable, content-addressed version, and the worker enqueues `validate`.
-3. **Build + validate.** A validate worker builds the environment and runs the gates. Pass → it
-   enqueues **five** `rollout` jobs. Fail → it enqueues a repair `generate` (≤ 2 per version), or
-   rejects the task once repairs are spent.
-4. **Execution.** Executor workers run the attempts concurrently in isolated pods. Each one
-   uploads its whole trace to S3 as soon as Harbor finishes, records the result, and enqueues an
-   `analyze` job. Invalid attempts (timeouts, infra errors) are retried in the same slot, never
-   scored.
-5. **Analysis and calibration.** The `analyze` job that finds all five valid rollouts of the
-   version does the work: trace parser, one GLM-5.1 review over all five, then the decision.
+2. **Task generation.** The Generation Service claims a `create` job, GLM-5.1 writes the task,
+   the bundle is stored in S3 as an immutable, content-addressed version, and the service
+   enqueues `validate`.
+3. **Build + validate.** The validate worker builds the environment and runs the gates. Pass →
+   it puts **five** jobs on the run queue. Fail → it puts a repair on the revise queue (≤ 2 per
+   version), or rejects the task once repairs are spent.
+4. **Execution.** Executors run the attempts concurrently in isolated pods. Each one uploads its
+   whole trace to S3 as soon as Harbor finishes, records the result, and enqueues an `analyze`
+   ping. Invalid attempts (timeouts, infra errors) are retried in the same slot, never scored.
+5. **Trace parsing and calibration.** The `analyze` job that finds all five valid runs of the
+   version does the work: parse the traces, a GLM-5.1 review of each failed run, then the decision.
    1–3 passes and every failure the model's fault → `ACCEPTED`, bundle published. Too easy or
-   too hard → a revision `generate` job for v(n+1) goes back on `sde:generate`, and the loop runs
-   again from step 2. A failure blamed on the task → a repair revision. Still out of band at v3
-   → `REJECTED (exhausted)`.
+   too hard → a `revise` job for v(n+1) on the revise queue, and the loop runs again from step 2.
+   A failure blamed on the task → a repair revision. Still out of band at v3 →
+   `REJECTED (exhausted)`.
 
 ### 5.3 Reliability and scalability
 
-- **Workers on queues:** every stage is a worker fleet on its own queue, so the API never waits
-  on generation, validation, execution or analysis.
-- **Independent scaling:** generation (model-quota bound), validation (CPU/Docker-build bound),
-  execution (sandbox bound) and analysis (model-quota bound, one call per version) each scale on
-  their own backlog.
-- **Hand-offs can't be lost:** a worker records its result and enqueues the next job in **one
+- **Services on queues:** every stage is a service on its own queue, so the API never waits on
+  generation, validation, execution or trace parsing.
+- **Independent scaling:** each service scales on its own queue's backlog: the Generation
+  Service and the Trace Parser on model quota (GLM-5.1), Build + Validate on CPU and Docker
+  builds, the Executor on sandboxes. An autoscaler (KEDA, or an AWS Auto Scaling group on a
+  CloudWatch queue-depth metric) watches the queue, not HTTP traffic.
+- **Hand-offs can't be lost:** a service records its result and enqueues the next job in **one
   transaction**, so a crash either loses both (the job is reclaimed and rerun) or keeps both.
 - **Fault tolerance:** leases with heartbeats, retry with backoff (`due_at`), reconciliation and
   dead-lettering (`DEAD`) recover abandoned jobs (§6.7). A finished trial is uploaded to S3
@@ -392,22 +410,23 @@ Generation workers with a revision
   fencing tokens stop stale workers committing; each task stage has one owner (§5.1).
 - **Execution isolation:** generated code and agent commands run only in restricted containers,
   never in trusted application processes.
-- **Backpressure:** claims are capped by Docker slots (validate + rollout) and the budget;
-  queue priority is `analyze` > `rollout` > `validate` > `generate`, so started tasks finish before
-  new ones are drafted.
+- **Backpressure:** claims are capped by Docker slots per machine (validate + rollout) and the
+  budget; queue priority is `analyze` > `rollout` > `validate` > `revise` > `create`, so started
+  tasks finish before new ones are drafted.
 - **Observability:** structured logs, job metrics, traces and the never-overwritten `jobs` history
   make every verdict auditable (§6.8).
 
 ### 5.4 Infrastructure and deployment
 
-**Target (production).** Each component is an independently deployable workload on Kubernetes:
-the API service, and one deployment per worker fleet (generation, validation, execution,
-analysis) plus the reconciler. PostgreSQL and Redis provide state and scheduling; S3 holds large
-artifacts. Execution runs on dedicated sandbox nodes, isolated from everything else.
+**Target (production).** Each component is an independently deployable workload: the API
+service, the Generation Service, Build + Validate, the Executor and the Trace Parser, plus the
+reconciler. PostgreSQL and Redis provide state and scheduling; S3 holds large artifacts.
+Execution runs on dedicated sandbox machines, isolated from everything else. The AWS layout
+(`deploy/terraform`) puts the API, Generation Service, Trace Parser and reconciler on a control
+runner and Build + Validate and the Executor on N runner machines.
 
 **Default local setup.** Same components, same code paths, but the three stores are
-backed locally and all roles run in one `sde` process (threads), so nothing beyond Docker is
-needed:
+backed locally and all roles can run in one process, so nothing beyond Docker is needed:
 
 | Interface | project (default) | Production |
 |---|---|---|
@@ -415,25 +434,23 @@ needed:
 | `Queue` | Claimed straight from the `jobs` table with one `UPDATE … RETURNING` (§6.7); no outbox hop | Redis sorted sets fed by the outbox publisher; Lua claim + DB lease check |
 | `ArtifactStore` | `./work/` content-addressed directories (write to temp, rename) | S3 |
 
-`sde work --roles …` runs any subset of roles, so the same binary can be split into separate
-fleets. An optional `deploy/compose.dev.yaml` runs the production backends locally; K8s
-manifests are out of scope for the project (§1).
+`deploy/compose.dev.yaml` runs the production backends and every service locally.
 
 ### 5.5 How each functional requirement is met
 
 | FR | Path through the system |
 |---|---|
-| 1. Start batch | API service: tasks and their `generate` jobs in one transaction. |
+| 1. Start batch | API service: tasks and their `create` jobs in one transaction. |
 | 2. Status | API service → PostgreSQL (`GET /v1/batches/{id}`, `sde status`). |
 | 3. Kill/restart | All work is leased `jobs` rows; the reconciler reclaims expired leases; finished LLM calls and traces are found by key in S3 and reused (§6.7). |
 | 4. Two copies | Every claim and commit is a compare-and-set on `lease_token`; deterministic job ids make each hand-off a no-op the second time; each task stage has one owner. |
 | 5. Report | Analytics → `summary.json` + `report.md`. |
-| 6. Spec + author | API service samples the slot → `generate` job → Generation worker → GLM-5.1 `TaskDraft` (§6.1–6.2). |
-| 7. Gates | Generation worker enqueues `validate` → Build + Validate; failures become repair `generate` jobs (§6.3). |
-| 8. Evaluate | Validate worker enqueues 5 `rollout` jobs → Executor → Execution Pods; classifier (§6.4). |
-| 9. Explain failures | Executor pings `analyze` → Analysis service: trace parser + GLM-5.1 review → `trace_metrics` and `failure` on each rollout (§6.5). |
-| 10. Accept / revise | Analysis service → `ACCEPTED`, or a revision `generate` job back on `sde:generate` (§6.6). |
-| 11. Publish | Analysis service copies the bundle + `verdict.md` to `output/accepted/<name>/` inside the ACCEPTED transition. |
+| 6. Spec + author | API service samples the slot → `create` job → Generation Service → GLM-5.1 `TaskDraft` (§6.1–6.2). |
+| 7. Gates | Generation Service enqueues `validate` → Build + Validate; failures become repair jobs on the revise queue (§6.3). |
+| 8. Evaluate | Build + Validate puts 5 jobs on the run queue → Executor → Execution Pods; classifier (§6.4). |
+| 9. Explain failures | Executor pings `analyze` → Trace Parser: extraction + GLM-5.1 review → `trace_metrics` and `failure` on each run (§6.5). |
+| 10. Accept / revise | Trace Parser → `ACCEPTED`, or a `revise` job on the revise queue (§6.6). |
+| 11. Publish | Trace Parser copies the bundle + `verdict.md` to `output/accepted/<name>/` inside the ACCEPTED transition. |
 | 12. Inspect | API service → `GET /v1/tasks/{id}` / `sde inspect` / `verdict.md` (§6.8). |
 
 ---
@@ -528,13 +545,13 @@ job. The classifier reads the trial's `result.json` (Harbor 0.26.0 `TrialResult`
 
 Every settled rollout enqueues an `analyze` ping in the same transaction. An `INVALID` rollout
 also enqueues a new `rollout` job (same slot, retry + 1), at most 3 retries per slot. When a
-slot has used its retries without a valid result, the Analysis service sets the version
+slot has used its retries without a valid result, the Trace Parser sets the version
 `UNRESOLVED` and the task `REJECTED (infra_unresolved)`, never scored as hard. If invalid rollouts pile up
 across tasks (e.g. gateway outage: more than 5 in 10 minutes), the Executor pauses.
 
-### 6.5 Why each failure is the model's fault (Analysis service)
+### 6.5 Why each failure is the model's fault (Trace Parser)
 
-The Analysis service runs this once per version, when its five valid rollouts are in, reading
+The Trace Parser runs this once per version, when its five valid rollouts are in, reading
 the traces the executors uploaded to S3. For every rollout it extracts `trace_metrics` with code
 (LLM calls, tokens, last tool calls, files the agent wrote, duration). For every `VALID_FAIL` it
 builds an **evidence record** with code first:
@@ -543,13 +560,13 @@ builds an **evidence record** with code first:
 - the agent's last N commands and its final message from the trajectory;
 - which files the agent changed, compared with the files `solve.sh` changes.
 
-Then one GLM-5.1 call (authoring model, allowed for diagnosis; no new model) reviews all five
-rollouts together, failures next to passes, with the task instruction and the hidden `TaskSpec`.
-Per failure it returns `{explanation, attribution: model|task, pitfall_matched, cited_evidence}`.
-It must cite evidence ids; an explanation that cites nothing real, or a review that can't run
-(GLM-5.1 aborts strict-JSON output fairly often, so it is retried, then falls back to plain JSON
-mode), is recorded as `unexplained`: kept, never trusted. The call is cached per version, so a
-reclaimed analyze job never pays twice.
+Then GLM-5.1 (authoring model, allowed for diagnosis; no new model) reviews each failed run, one
+call per failure, with its evidence, the task instruction and the hidden `TaskSpec`. It returns
+`{explanation, attribution: model|task, pitfall_matched, cited_evidence}`. It must cite evidence
+ids; an explanation that cites nothing real, or a review that can't run (GLM-5.1 aborts
+strict-JSON output fairly often, so each review is tried up to 3 times), is recorded as
+`unexplained`: kept, never trusted. The call is cached per run, so a reclaimed analyze job never
+pays twice.
 
 - `attribution = task` (ambiguous instruction, environment bug, test checking something not
   asked for) → the version is `INVALID` and goes to a `repair_ambiguity` revision. It doesn't
@@ -559,10 +576,10 @@ reclaimed analyze job never pays twice.
 - `pitfall_matched` checks whether failures hit the intended decision points (§6.2) or something
   incidental.
 
-### 6.6 Aggregation and revision (Analysis service)
+### 6.6 Aggregation and revision (Trace Parser)
 
-When a version has 5 valid rollout jobs under one bundle sha and one config hash, the Analysis
-service decides (an `analyze` job that finds fewer finishes with `action: wait`):
+When a version has 5 valid rollout jobs under one bundle sha and one config hash, the Trace
+Parser decides (an `analyze` job that finds fewer finishes with `action: wait`):
 
 ```
 pass_count in 1..3, all failures model → BAND_OK, task ACCEPTED, publish
@@ -573,7 +590,7 @@ pass_count 0 or 4..5, n = 3       → OUT_OF_BAND, task REJECTED (exhausted)
 
 Moving to v(n+1) is one compare-and-set, `UPDATE tasks SET current_version=n+1, stage='QUEUED'
 WHERE id=? AND current_version=n AND stage='EVALUATING'`, in the same transaction as inserting the
-`generate` job with its deterministic id, so two analyze jobs that both see five valid rollouts
+`revise` job with its deterministic id, so two analyze jobs that both see five valid rollouts
 can't both create it: one wins, the other finds the stage already moved and finishes.
 
 Operators (fixed rules, chosen from the evidence):
@@ -624,7 +641,7 @@ RETURNING id, lease_token;
 - **Harbor collisions:** Harbor job names and dirs are the (unique) job id. Bundle dirs are
   content-addressed, so two processes writing the same bundle write identical bytes (write to
   temp, rename, ignore "exists").
-- **Publishing** to `output/accepted/` happens inside the Analysis service's `ACCEPTED`
+- **Publishing** to `output/accepted/` happens inside the Trace Parser's `ACCEPTED`
   transition: copy to temp, rename. A second analyze job sees `ACCEPTED` and skips.
 
 Tests (§8, M3): kill `-9` at random points over 20 runs, check no rollout ran twice (Harbor
@@ -643,7 +660,7 @@ Per task, `sde inspect <task>` and `verdict.md` (also written into the accepted 
 4. **Rollouts**: table of slot, retry, outcome, reward, duration, cost, trace; invalid retries
    shown with their exception type.
 5. **Failures**: per failed rollout, the evidence excerpts, explanation and attribution, as
-   written by the Analysis service; plus the analyze job's summary of why the version was
+   written by the Trace Parser; plus the analyze job's summary of why the version was
    accepted, revised or rejected.
 6. **Cost and time**: LLM vs. eval, wall time per stage.
 
@@ -692,13 +709,13 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 
 - Cost from the source: `usage.cost` on each GLM response and `agent_result.cost_usd` from
   Harbor, both summed into the `cost_usd` of the job that caused them (each GLM call is also listed
-  in the generate job's `result.llm_calls`). Missing values are recorded as
+  in the create / revise job's `result.llm_calls`). Missing values are recorded as
   null, not estimated.
 - A budget check runs before every paid action: stop claiming new work at the batch cap and exit 2.
 - Scheduling favors finishing what's started: analyze before rollouts, rollouts before new
-  validations, and validations before new drafts (`priority`). In the one `sde:generate` queue,
-  repairs and revisions go ahead of new drafts. A new candidate is only drafted when fewer than 2 versions are
-  waiting for Docker slots.
+  validations, validations before revisions, and revisions before new drafts (`priority`:
+  the revise queue drains before the create queue). A new candidate is only drafted when fewer
+  than 2 versions are waiting for Docker slots.
 
 ### 6.12 Security
 
@@ -714,7 +731,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 
 | # | Decision | Proposal |
 |---|---|---|
-| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; a batch is a label. **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Analysis service owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
+| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; a batch is a label. **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
 | D2 | How `tests/test.sh` gets pytest | Install pinned `uv` + pytest at verify time into a fresh interpreter (agent can't tamper). Accept the `verifier-runtime-install` / `verifier-network-download` lint warnings and document why. Alternative: pytest baked into the image, lint-clean but tamperable. |
 | D3 | Wrong-solution gate | Add `wrong_solution_script` to `TaskDraft` (the pitfall the spec predicts, as code); must score 0. Cheap and the strongest test-sensitivity evidence. |
 | D4 | Diagnosis prompt | Use GLM-5.1 to explain failures, bound to code-extracted evidence (§6.5). The alternative, code-only evidence with no prose, is weaker for "know why it fails". |
@@ -730,10 +747,10 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
    3–5 candidates and tune the v1 difficulty default from what `glm-5.3-flash` actually does.
 4. **M3 robustness:** SQLite store (2 tables), job leases, adoption, `sde run/work/status/inspect`, kill and
    two-copy tests. (Built before the real batch so that batch runs on it.)
-5. **M3b workers on queues + Analysis service:** each worker hands off its next stage in its
-   settle transaction; executors ping `sde:analyze`; the Analysis service runs the trace parser
-   and one GLM-5.1 review per version, writes `failure` / `trace_metrics`, and decides accept /
+5. **M3b services on queues:** the Generation Service (create + revise queues), Build + Validate
+   and the Executor each hand off their next stage in their settle transaction; executors ping
+   `sde:analyze`; the Trace Parser service extracts evidence and has GLM-5.1 review each failed run, writes `failure` / `trace_metrics`, and decides accept /
    revision / repair / reject. Owner per stage transition as in §5.1.
-6. **M4 revision loop:** operators, v2/v3 through the generation worker's revision path, before/after in the report.
+6. **M4 revision loop:** operators, v2/v3 through the Generation Service's revision path, before/after in the report.
 7. **M5 batch:** 10+ candidates, `sde report`, update `CHANGELOG.md` with measured results.
 8. **M6 human-likeness:** blind rubric comparison with `examples/`; optional compose backend.

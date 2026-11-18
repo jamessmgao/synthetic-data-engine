@@ -78,7 +78,8 @@ def seed(backend, runs=5, task_id="t1"):
 
 
 def jobs(backend, task_id="t1") -> list[dict]:
-    return sorted(backend.store.task_jobs(task_id), key=lambda j: j["id"])
+    """The task's runs (not the analyze pings each settle adds for the Trace Parser)."""
+    return sorted((j for j in backend.store.task_jobs(task_id) if j["type"] == "rollout"), key=lambda j: j["id"])
 
 
 def expire_lease(backend, job_id):

@@ -15,13 +15,13 @@ test:            ## infrastructure tests on SQLite + files (no services needed)
 	$(PYTHON) -m pytest tests/shared -q
 
 test-unit:       ## every component's unit tests (no services, no model calls)
-	$(PYTHON) -m pytest tests/shared job_service api generator evaluation -q
+	$(PYTHON) -m pytest tests/shared api generator evaluation -q
 
 test-e2e:        ## the whole pipeline as processes, on SQLite and (if up) the compose cluster; no model calls
 	$(PYTHON) -m pytest tests/e2e -q
 
 test-all: deps-up  ## everything above, with the cluster up
-	$(TEST_ENV) $(PYTHON) -m pytest tests/shared job_service api generator evaluation tests/e2e -q
+	$(TEST_ENV) $(PYTHON) -m pytest tests/shared api generator evaluation tests/e2e -q
 
 deps-up:         ## Postgres + Redis + S3 (RustFS) only
 	$(COMPOSE) up -d --wait postgres redis s3

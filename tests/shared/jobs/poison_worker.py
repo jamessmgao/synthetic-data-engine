@@ -1,4 +1,4 @@
-"""A generate worker with two threads (shared.jobs.worker.serve) where any job of a
+"""A Generation Service worker with two threads (shared.jobs.worker.serve) where any job of a
 task named `*-poison` kills the whole process, like an OOM or a segfault would.
 Exits 0 once nothing is left to claim.
 
@@ -39,7 +39,7 @@ def main() -> None:
                 stop.set()
 
     threading.Thread(target=watch, daemon=True).start()
-    serve(jq, JobType.GENERATE, fn, concurrency=2, stop=stop)
+    serve(jq, JobType.CREATE, fn, concurrency=2, stop=stop)
 
 
 if __name__ == "__main__":

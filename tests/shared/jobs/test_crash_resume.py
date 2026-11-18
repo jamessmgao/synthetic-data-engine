@@ -76,8 +76,8 @@ def test_poison_job_does_not_take_its_sibling_down(env, backend):
     jq = JobQueue(backend)
     with backend.store.tx() as c:
         for t in (poison, healthy):
-            insert_job(c, id=f"{t}-v1-generate", task_id=t, version=1, type=JobType.GENERATE)
-    jq.publish([f"{poison}-v1-generate", f"{healthy}-v1-generate"])
+            insert_job(c, id=f"{t}-v1-create", task_id=t, version=1, type=JobType.CREATE)
+    jq.publish([f"{poison}-v1-create", f"{healthy}-v1-create"])
 
     worker = Path(__file__).with_name("poison_worker.py")
     full = {**os.environ, **env, "SDE_LEASE_TTL_S": "0.6", "SDE_HEARTBEAT_S": "0.1", "SDE_POLL_S": "0.05"}
@@ -90,8 +90,8 @@ def test_poison_job_does_not_take_its_sibling_down(env, backend):
     else:
         raise AssertionError("worker never finished")
 
-    h = backend.store.job(f"{healthy}-v1-generate")
-    p_ = backend.store.job(f"{poison}-v1-generate")
+    h = backend.store.job(f"{healthy}-v1-create")
+    p_ = backend.store.job(f"{poison}-v1-create")
     assert h["status"] == "DONE" and h["outcome"] == "OK"
     assert h["attempts"] <= 2
     assert p_["status"] == "DEAD" and p_["attempts"] == 3

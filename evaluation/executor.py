@@ -18,7 +18,8 @@ For each claimed job:
 5. the job is settled with outcome, reward, cost and trace location. An
    INVALID rollout (timeout, infra or API error) also enqueues a retry of
    the same slot in the same transaction, with backoff, up to
-   MAX_ROLLOUT_RETRIES; it is never scored as a failure.
+   MAX_ROLLOUT_RETRIES; it is never scored as a failure. Every settle also
+   enqueues `<id>-analyze` on the analyze queue: the Trace Parser's trigger.
 
 Queue, leases and fencing come from ``shared.jobs.jobqueue.JobQueue``; bundles and
 traces from the backend's artifact store. A job whose workers keep dying is
@@ -68,6 +69,18 @@ def rollout_job(task_id: str, version: int, slot: int, bundle_sha256: str, retry
         "retry": retry,
         "bundle_sha256": bundle_sha256,
         "delay_sec": delay_sec,
+    }
+
+
+def analyze_job(rollout: dict) -> dict:
+    """The ping a finished run sends the Trace Parser (one per run, never deduplicated
+    across runs, so a run that settles after an earlier analysis still triggers one)."""
+    return {
+        "id": f"{rollout['id']}-analyze",
+        "type": JobType.ANALYZE,
+        "task_id": rollout["task_id"],
+        "version": rollout["version"],
+        "input": {"trigger": rollout["id"]},
     }
 
 
@@ -164,6 +177,7 @@ class Executor:
             cancel.set()
             beat.join()
 
+        followups = (*followups, analyze_job(job))
         if lease_lost.is_set() or not self.queue.settle(job_id, token, fields, followups):
             log.warning("%s: lease lost before settling; result discarded (the new owner will adopt it)", job_id)
             return

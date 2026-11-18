@@ -46,9 +46,10 @@ def choose_operator(pass_count: int, rollouts: list[dict], used: list[str]) -> s
         # Passing runs that each touched one file at most: the fix is a local
         # patch, so make it span two modules first.
         touched = [
-            len((r.get("trace_metrics") or {}).get("files_modified") or [])
+            len(files)
             for r in rollouts
-            if r["outcome"] == Outcome.VALID_PASS and r.get("trace_metrics")
+            if r["outcome"] == Outcome.VALID_PASS
+            and (files := (r.get("trace_metrics") or {}).get("files_modified")) is not None
         ]
         if touched and median(touched) <= 1:
             order.remove("increase_cross_component_dependency")
@@ -65,9 +66,8 @@ def failing_tests(verifier_stdout: str) -> list[str]:
 def evidence(rollouts: list[dict]) -> str:
     """One line per scored run, for the revision prompt.
 
-    Uses the trace parser's `failure` record when there is one, else the
-    failing pytest lines the Job Service read from the verifier output
-    (`failing_tests`)."""
+    Uses the trace parser's `failure` record (its explanation, else its failing
+    tests), else any `failing_tests` the caller attached."""
     lines = []
     for r in sorted(rollouts, key=lambda r: r["slot"]):
         seconds = (r.get("trace_metrics") or {}).get("duration_seconds") or (r.get("result") or {}).get("duration_sec")

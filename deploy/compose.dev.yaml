@@ -7,11 +7,11 @@
 #   make test-infra     the infrastructure tests against these backends
 #
 # Commands per process (override via env; the defaults assume every branch is merged):
-#   SDE_GENERATE_CMD     generation worker + the one reconciler (shared/jobs/worker.py)
-#   SDE_JOB_SERVICE_CMD  Job Service loop (api-service)
-#   SDE_VALIDATE_CMD     build + validate worker (shared/jobs/worker.py → task-builder gates)
-#   SDE_EXECUTOR_CMD     rollout executor (executor-worker)
-#   SDE_API_CMD          the API (api-service)
+#   SDE_GENERATION_CMD    Generation Service (create + revise queues) + the one reconciler
+#   SDE_TRACE_PARSER_CMD  Trace Parser service (analyze queue: accept / revise / reject)
+#   SDE_VALIDATE_CMD      Build + Validate (shared/jobs/worker.py → task-builder gates)
+#   SDE_EXECUTOR_CMD      Executor (the run queue)
+#   SDE_API_CMD           the API service
 # Set one to "" to leave that process out.
 
 x-backend-env: &backend-env
@@ -83,7 +83,7 @@ services:
     depends_on: *depends
     restart: unless-stopped
 
-  # ×1: generation + Job Service + the one reconciler.
+  # ×1: Generation Service + Trace Parser + the one reconciler.
   worker-control:
     profiles: [app]
     build: {context: .., dockerfile: deploy/Dockerfile, target: control}
@@ -91,8 +91,8 @@ services:
       - python
       - -m
       - shared.jobs.supervise
-      - ${SDE_GENERATE_CMD-python -m generator.service generate --with-reconciler}
-      - ${SDE_JOB_SERVICE_CMD-python -m job_service run}
+      - ${SDE_GENERATION_CMD-python -m generator.service generation --with-reconciler}
+      - ${SDE_TRACE_PARSER_CMD-python -m evaluation.trace_parser_service}
     environment:
       <<: *backend-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}

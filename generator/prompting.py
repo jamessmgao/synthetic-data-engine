@@ -135,6 +135,10 @@ OPERATORS = {
                                     "keeping the core problem intact.",
     "localize_diagnosis": "point the instruction at the subsystem where the problem lives, without naming the "
                           "defect itself.",
+    # Chosen by the Trace Parser when its review blames a failure on the task, not the agent.
+    "repair_ambiguity": "fix the defect the reviewer found in the task itself: state every requirement the "
+                        "tests check in the instruction, or fix the broken test or environment. Keep the "
+                        "difficulty unchanged.",
 }
 
 

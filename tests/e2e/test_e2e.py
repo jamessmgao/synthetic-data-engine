@@ -1,12 +1,15 @@
 """
 The whole pipeline, end to end, as separate processes on a real backend:
 
-    operator ─HTTP─► API ─► Job Service ◄─► store / queue / artifacts ◄─► workers
-                                                                      (generate,
-                                                                       validate,
-                                                                       executor)
+    operator ─HTTP─► API ─► store / queue / artifacts ◄─► Generation Service (create + revise)
+                                                          Build + Validate
+                                                          Executor
+                                                          Trace Parser
+                                                          reconciler
 
-Only GLM-5.1 and Harbor are replaced (tests/e2e/fakes.py). The batch below hits
+Each service hands off to the next stage in its own settle transaction; the
+Trace Parser accepts, revises or rejects. Only GLM-5.1 (drafting and the failure
+review) and Harbor are replaced (tests/e2e/fakes.py). The batch below hits
 every path a task can take; each test checks the exact set of jobs the
 pipeline created, every task's verdict, what was published, the API's report,
 and that no paid unit of work (model call or trial) ever ran to completion twice.
@@ -55,12 +58,13 @@ EXPECTED_REPORT = {
 
 
 def expected_job_ids(scenario: dict) -> set[str]:
-    """Every job the pipeline must create for this scenario, and no others."""
+    """Every job the pipeline must create for this scenario, and no others,
+    apart from the analyze pings (one per settled run; see check_outcome)."""
     ids = set()
     for suffix, sc in scenario.items():
         t = f"b-e2e-{suffix}"
         for v in (1, 2, 3):
-            ids.add(job_id(t, v, "generate"))
+            ids.add(job_id(t, v, "create" if v == 1 else "revise"))
             if sc.get("generate") == "fail":
                 break
             for k in range(3):
@@ -95,22 +99,26 @@ def check_outcome(p, scenario=SCENARIO, expected=EXPECTED):
         assert verdict["task"]["accepted_version"] == accepted_version, suffix
 
     # Exactly the scripted jobs: nothing missing, nothing duplicated, all settled.
-    # A rejected task's leftover work (other slots still queued or running) is
-    # cancelled by the Job Service, never left open.
+    # Every run that settled pinged the Trace Parser exactly once. A decided
+    # task's leftover work (slots still queued or running, pings not yet
+    # analyzed) is cancelled when it is decided, never left open.
     jobs = p.jobs()
-    assert sorted(j["id"] for j in jobs) == sorted(expected_job_ids(scenario))
-    rejected = {f"b-e2e-{s}" for s, e in expected.items() if e[0] == "REJECTED"}
+    work = [j for j in jobs if j["type"] != "analyze"]
+    assert sorted(j["id"] for j in work) == sorted(expected_job_ids(scenario))
+    settled_runs = {j["id"] for j in work if j["type"] == "rollout" and j["status"] == "DONE"}
+    assert sorted(j["id"] for j in jobs if j["type"] == "analyze") == sorted(f"{r}-analyze" for r in settled_runs)
     for j in jobs:
-        cancelled = j["status"] == "DEAD" and (j["error"] or "").startswith("cancelled: task REJECTED")
-        assert j["status"] == "DONE" or (cancelled and j["task_id"] in rejected), (j["id"], j["status"], j["error"])
-    jobs = [j for j in jobs if j["status"] == "DONE"]
+        cancelled = j["status"] == "DEAD" and (j["error"] or "").startswith(
+            f"cancelled: task {expected[j['task_id'].rsplit('-', 1)[1]][0]}")
+        assert j["status"] == "DONE" or cancelled, (j["id"], j["status"], j["error"])
+    jobs = [j for j in work if j["status"] == "DONE"]
 
     # Paid work (model calls, trials) is never repeated, with one exception the
     # PRD allows (N2): work a killed process had finished but not yet settled,
     # reclaimed on a *different machine* that can't see the killed one's disk.
     # On one machine the restart adopts it, so there it must be zero.
     repeats = 0
-    for kind, prefix in (("generate", ("-generate", "-repair")), ("trial", ("-rollout",))):
+    for kind, prefix in (("generate", ("-create", "-revise", "-repair")), ("trial", ("-rollout",))):
         log = p.event_log(kind)
         for j in jobs:
             if not any(s in j["id"] for s in prefix):
@@ -158,7 +166,7 @@ def test_batch_runs_every_path_to_the_scripted_verdict(make_pipeline):
 
     report = p.api("GET", "/v1/batches/b-e2e/report")
     assert {k: report[k] for k in EXPECTED_REPORT} == EXPECTED_REPORT
-    n_generate = sum(1 for j in p.jobs() if j["type"] == "generate")
+    n_generate = sum(1 for j in p.jobs() if j["type"] in ("create", "revise"))
     n_trials = sum(1 for j in p.jobs() if j["type"] == "rollout")
     assert report["cost_usd"]["authoring"] == pytest.approx(0.25 * n_generate)
     assert report["cost_usd"]["evaluation"] == pytest.approx(0.012 * n_trials)
@@ -181,13 +189,15 @@ def test_verdicts_explain_every_step(make_pipeline):
     assert v2["gates"]["oracle1"]["passed"] is True
 
     # The too-hard task got easier operators, each tried once, and the evidence
-    # handed to the model quotes the failing tests from the verifier output.
+    # handed to the model is the Trace Parser's review of each failed run, which
+    # quotes the failing test from the verifier output (fetched from S3 on the cluster).
     exhausted = p.backend.store.task_jobs("b-e2e-t02")
-    revisions = [j["input"] for j in exhausted if j["type"] == "generate" and j["version"] > 1]
+    revisions = [j["input"] for j in exhausted if j["type"] == "revise" and j["input"]["origin"] == "revision"]
     assert [r["operator"] for r in revisions] == ["localize_diagnosis", "reduce_unrelated_constraints"]
     assert revisions[0]["result"] == "0 of 5 runs passed."
-    if p.kind == "sqlite":  # the verifier output is on this machine's disk
-        assert "test_crash_recovery - AssertionError: slot 1 lost a job" in revisions[0]["evidence"]
+    assert "test_crash_recovery - AssertionError: slot 1 lost a job" in revisions[0]["evidence"]
+    failure = next(r for r in p.api("GET", "/v1/tasks/b-e2e-t02")["rollouts"] if r["version"] == 1)["failure"]
+    assert failure["attribution"] == "model" and failure["cited_evidence"] == ["E1"]
 
     # The retried timeout is on the record, and not counted.
     retried = p.api("GET", "/v1/tasks/b-e2e-t03")
@@ -306,7 +316,8 @@ def test_operator_drives_a_batch_over_http(make_pipeline):
 
 def test_poison_job_is_dead_lettered_not_retried_forever(make_pipeline):
     """A job that kills its worker every time it runs: the reconciler dead-letters it
-    after MAX_JOB_ATTEMPTS claims, the Job Service rejects the task, the rest finish.
+    after MAX_JOB_ATTEMPTS claims and rejects its task in the same transaction (no
+    service would ever hand that version on), the rest finish.
     Jobs that shared the process with it are charged for one crash at most: after
     that the suspect runs isolated (shared.storage.sql.claim)."""
     p = make_pipeline({"t01": {"generate": "crash"}, "t02": SCENARIO["t01"]})
@@ -314,14 +325,13 @@ def test_poison_job_is_dead_lettered_not_retried_forever(make_pipeline):
     crashes = p.run_until_final()
     assert crashes == 3  # shared.contracts.models.MAX_JOB_ATTEMPTS
 
-    poison = p.backend.store.job(job_id("b-e2e-t01", 1, "generate"))
+    poison = p.backend.store.job(job_id("b-e2e-t01", 1, "create"))
     assert (poison["status"], poison["attempts"]) == ("DEAD", 3)
     assert poison["error"].startswith("dead-lettered")
     t1, t2 = (p.backend.store.task(f"b-e2e-{s}") for s in ("t01", "t02"))
     assert (t1["status"], t1["reason"], t1["stage"]) == ("REJECTED", "infra_unresolved", "UNRESOLVED")
     assert (t2["status"], t2["accepted_version"]) == ("ACCEPTED", 1)
     assert all(j["attempts"] <= 2 for j in p.backend.store.task_jobs("b-e2e-t02"))
-    assert p.backend.store.unhandled() == []  # the Job Service acted on the dead job
 
 
 cluster_only = pytest.mark.parametrize("make_pipeline", ["cluster"], indirect=True)

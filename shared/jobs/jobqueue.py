@@ -1,8 +1,9 @@
 """The worker contract: claim / heartbeat / settle / release (PRD §6.7).
 
-Every worker (generation, build+validate, executor) pulls its own jobs through a
-`JobQueue` and reports results with `settle`. Workers never change task state:
-the Job Service reads settled jobs (`unhandled()`) and decides what happens next.
+Every service (Generation Service, Build + Validate, Executor, Trace Parser) pulls
+its own jobs through a `JobQueue` and reports results with `settle`. Its hand-off
+to the next stage (a task change plus the next stage's jobs) runs inside that
+same settle transaction (`then`), so there is no central orchestrator (PRD §5).
 
 Guarantees, on SQLite and PostgreSQL alike:
 
@@ -20,11 +21,15 @@ import json
 import os
 import socket
 import time
+from collections.abc import Callable
 from typing import Any
 
 from shared.storage import Backend
-from shared.storage.sql import claim as sql_claim, insert_job, utcnow
+from shared.storage.sql import Conn, claim as sql_claim, insert_job, row_dict, utcnow
 from shared.contracts.models import LEASE_TTL_S, JobStatus, JobType
+
+# (conn, settled job row) -> follow-up jobs; runs inside the settle transaction.
+Handoff = Callable[[Conn, dict[str, Any]], list[dict[str, Any]]]
 
 # Columns a worker may set when it settles a job.
 SETTLE_COLUMNS = (
@@ -87,6 +92,7 @@ class JobQueue:
         token: int,
         fields: dict[str, Any],
         followups: tuple[dict[str, Any], ...] = (),
+        then: Handoff | None = None,
     ) -> bool:
         """Record a finished job and create its follow-ups, atomically.
 
@@ -95,6 +101,11 @@ class JobQueue:
         `version`, and optionally `slot`, `retry`, `input`, `delay_sec`, `priority`,
         `bundle_sha256`, `config_hash`); missing pinning fields are copied from the
         settled job. Returns False, and changes nothing, if the lease was lost.
+
+        `then(conn, settled_row)` is the hand-off to the next stage (PRD §5): it runs
+        inside the same transaction, only if the fence held, may change the task
+        (compare-and-set) and returns more follow-ups. The result, the task change
+        and the next stage's jobs commit together or not at all.
         """
         status = fields.get("status", JobStatus.DONE)
         if status not in (JobStatus.DONE, JobStatus.DEAD):
@@ -116,8 +127,9 @@ class JobQueue:
             )
             if cur.rowcount != 1:
                 return False
-            parent = c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-            for f in followups:
+            parent = row_dict(c.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone())
+            more = then(c, parent) if then is not None else []
+            for f in (*followups, *more):
                 if _insert_followup(c, f, parent):
                     new_ids.append(f["id"])
         self.publish(new_ids)

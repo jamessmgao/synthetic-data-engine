@@ -1,9 +1,8 @@
 """
-The API service (docs/PRD.md §4): FastAPI over the Job Service and the
-`pipeline` store.
+The API service (docs/PRD.md §4): FastAPI over the `pipeline` store.
 
-Submission returns 202 as soon as the tasks and their jobs are committed;
-nothing here waits on generation or evaluation.
+Submission (api/submit.py) returns 202 as soon as the tasks and their
+`create` jobs are committed; nothing here waits on generation or evaluation.
 """
 
 import hmac
@@ -13,8 +12,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from shared.storage import Backend, describe, from_env
-
-from job_service.service import BatchConflict, JobService
+from api.submit import BatchConflict, submit_batch as submit
 
 from . import service
 from .models import BatchListItem, BatchRequest, BatchStatus, BatchSubmitted
@@ -24,7 +22,6 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
     backend = backend or from_env()
     # Operator key checked against X-Api-Key. Empty means /v1 is closed (503), not open.
     api_key = os.environ.get("SDE_API_KEY", "") if api_key is None else api_key
-    jobs = JobService(backend)
     store = backend.store
 
     app = FastAPI(title="synthetic-data-engine task pipeline", version="0.2.0")
@@ -39,7 +36,7 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
 
     @v1.post("/batches", status_code=202, response_model=BatchSubmitted)
     def submit_batch(body: BatchRequest):
-        batch_id, task_ids, created = jobs.submit_batch(body.count, body.batch_id)
+        batch_id, task_ids, created = submit(backend, body.count, body.batch_id)
         return {"batch_id": batch_id, "task_ids": task_ids, "created": created}
 
     @v1.get("/batches", response_model=list[BatchListItem])

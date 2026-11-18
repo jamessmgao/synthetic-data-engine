@@ -103,8 +103,9 @@ def evaluate(task_dir: Path, runs: int, workers: int, backend: Backend | None = 
     task_dir = task_dir.resolve()
     task_id, sha = submit(backend, task_dir, runs)
 
-    def idle() -> bool:
-        return all(j["status"] in ("DONE", "DEAD") for j in backend.store.task_jobs(task_id))
+    def idle() -> bool:  # the runs' analyze pings are the Trace Parser's, not ours
+        return all(j["status"] in ("DONE", "DEAD") for j in backend.store.task_jobs(task_id)
+                   if j["type"] == JobType.ROLLOUT)
 
     Executor(backend, docker_slots=workers).serve(n_workers=workers, idle=idle)
 

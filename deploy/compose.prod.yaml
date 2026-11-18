@@ -23,11 +23,11 @@ services:
       SDE_WORK_DIR: /tmp/sde-work # no work-dir mount here: a private cache for S3 reads
     ports: ["127.0.0.1:8000:8000"] # reached through an SSM port-forward only
 
-  # ×1: generation + Job Service + the one reconciler.
+  # ×1: Generation Service + Trace Parser + the one reconciler.
   worker-control:
     <<: *app
     build: {context: .., dockerfile: deploy/Dockerfile, target: control}
-    command: ["python", "-m", "shared.jobs.supervise", "${SDE_GENERATE_CMD-}", "${SDE_JOB_SERVICE_CMD-}"]
+    command: ["python", "-m", "shared.jobs.supervise", "${SDE_GENERATION_CMD-}", "${SDE_TRACE_PARSER_CMD-}"]
     volumes: ["/opt/sde/work:/opt/sde/work", "/opt/sde/output:/app/output"]
 
   # Docker jobs: build + validate and rollouts, through the host's Docker daemon.

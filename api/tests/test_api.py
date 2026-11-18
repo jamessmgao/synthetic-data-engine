@@ -69,11 +69,11 @@ def test_healthz_needs_no_key(client):
 # --- submission -------------------------------------------------------------
 
 
-def test_submit_goes_through_the_job_service(client, backend):
+def test_submit_creates_tasks_and_their_create_jobs(client, backend):
     r = client.post("/v1/batches", json={"count": 3, "batch_id": "b-1"}, headers=AUTH)
     assert r.status_code == 202
     assert r.json() == {"batch_id": "b-1", "task_ids": ["b-1-t01", "b-1-t02", "b-1-t03"], "created": True}
-    gen = backend.store.job(job_id("b-1-t01", 1, "generate"))
+    gen = backend.store.job(job_id("b-1-t01", 1, "create"))
     assert gen["status"] == "READY" and gen["input"]["origin"] == "initial" and gen["input"]["spec"]
 
 
@@ -113,7 +113,7 @@ def worked_batch(client, backend):
     add_job(backend, t1, 1, "validate", job_id(t1, 1, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
     for slot in range(1, 6):
         rollout(backend, t1, 1, slot, "VALID_PASS", cost_usd=0.01)
-    add_job(backend, t1, 2, "generate", job_id(t1, 2, "generate"), outcome="OK", bundle_sha256="sha-v2",
+    add_job(backend, t1, 2, "revise", job_id(t1, 2, "revise"), outcome="OK", bundle_sha256="sha-v2",
             cost_usd=0.5, input={"origin": "revision", "operator": "increase_diagnosis_depth"})
     add_job(backend, t1, 2, "validate", job_id(t1, 2, "validate", 0), outcome="OK", result={"gates": GOOD_GATES})
     # A timed-out rollout retried in the same slot.

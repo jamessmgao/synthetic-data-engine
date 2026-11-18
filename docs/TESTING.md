@@ -6,7 +6,7 @@ it starts refuses network connections that leave the machine
 
 | Command | What runs | Needs |
 |---|---|---|
-| `make test-unit` | every component's unit tests: `tests/shared`, `job_service`, `api`, `generator`, `evaluation` | nothing |
+| `make test-unit` | every component's unit tests: `tests/shared` (incl. the services' hand-offs and the Trace Parser's decisions), `api`, `generator`, `evaluation` | nothing |
 | `make test-e2e` | the whole pipeline as processes (below), on SQLite and, if it is up, the compose cluster | nothing; the cluster is optional |
 | `make test-infra` | `tests/shared` on SQLite, Postgres, Postgres+Redis and S3 | `make deps-up` |
 | `make test-all` | all of the above against the cluster | `make deps-up` |
@@ -19,18 +19,15 @@ installed, plus `pytest` and `httpx`.
 Each test starts the real system as separate processes and drives it the way an operator would:
 
 ```
-operator ─HTTP─► API ─► Job Service ◄──► store / queue / artifacts ◄──► generate + validate workers
-                                         (SQLite+files, or                executor (+ real classifier)
-                                          Postgres+Redis+S3)              reconciler
+operator ─HTTP─► API ─► store / queue / artifacts ◄──► Generation Service (create + revise)
+                         (SQLite+files, or               Build + Validate
+                          Postgres+Redis+S3)             Executor (+ real classifier)
+                                                         Trace Parser
+                                                         reconciler
 ```
 
-This is the process layout of today's code. The adopted design (docs/PRD.md §5, milestone
-M3b) removes the Job Service:
-- workers hand off to the next stage themselves;
-- an Analysis service on `sde:analyze` makes the accept / revise / reject decisions.
-
-The suite will then start the API, the four worker fleets (generate, validate, executor,
-analysis) and the reconciler. The verdict and never-paid-twice checks below stay as they are.
+There is no central service: each service hands off to the next stage itself, and the Trace
+Parser makes the accept / revise / reject decisions (docs/PRD.md §5).
 
 Only three things are faked (`tests/e2e/fakes.py`): GLM-5.1 drafting, the Harbor gates and
 the Harbor trial. Each test scripts its tasks, for example "v1 scores 5/5, v2 scores 2/5" or

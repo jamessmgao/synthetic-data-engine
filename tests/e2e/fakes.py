@@ -2,11 +2,12 @@
 Scripted stand-ins for the three external dependencies of the pipeline. No
 model endpoint and no Docker is touched; everything else is the real code.
 
-| Real                                   | Fake                    | Plugged in at                  |
-|----------------------------------------|-------------------------|--------------------------------|
-| GLM-5.1 drafting (run_generate_job)    | `generate`              | shared.jobs.worker.serve          |
-| Harbor gates (run_validate_job)        | `validate`              | shared.jobs.worker.serve          |
-| Harbor terminus-2 trial (run_trial)    | `run_trial`             | evaluation.executor.Executor   |
+| Real                                   | Fake                    | Plugged in at                         |
+|----------------------------------------|-------------------------|---------------------------------------|
+| GLM-5.1 drafting (run_generate_job)    | `generate`              | shared.jobs.worker.serve_generation      |
+| Harbor gates (run_validate_job)        | `validate`              | shared.jobs.worker.serve_validate        |
+| Harbor terminus-2 trial (run_trial)    | `run_trial`             | evaluation.executor.Executor          |
+| GLM-5.1 failure review (llm.complete)  | `review`                | evaluation.trace_parser_service       |
 
 What each task does is scripted in SDE_E2E_SCENARIO (JSON), keyed by the task's
 suffix (`t01`, ...):
@@ -36,6 +37,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from evaluation import harbor
@@ -130,6 +132,18 @@ def validate(backend: Backend):
                 "trace_uri": backend.artifacts.save_trace(job["id"])}
 
     return run
+
+
+# --- GLM-5.1 failure review -----------------------------------------------------
+
+
+def review(messages, response_format, llm_dir=None, cache_key="") -> SimpleNamespace:
+    """The Trace Parser's review of one failed run: blames the agent, quoting the
+    first evidence line (the failing test from the verifier output). Free."""
+    first = next(line for line in messages[0]["content"].splitlines() if line.startswith("[E1]"))
+    reply = {"explanation": first.split(") ", 1)[1], "attribution": "model", "pitfall_matched": "none",
+             "cited_evidence": ["E1"]}
+    return SimpleNamespace(content=json.dumps(reply), cost_usd=0.0, cached=False)
 
 
 # --- Harbor trial ---------------------------------------------------------------

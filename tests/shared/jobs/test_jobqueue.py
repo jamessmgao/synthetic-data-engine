@@ -12,7 +12,7 @@ from shared.contracts.models import MAX_JOB_ATTEMPTS, JobType
 from shared.jobs.reconciler import reconcile
 
 
-def enqueue(backend, jq, task_id, type=JobType.GENERATE, n=1, **kw) -> list[str]:
+def enqueue(backend, jq, task_id, type=JobType.CREATE, n=1, **kw) -> list[str]:
     ids = []
     with backend.store.tx() as c:
         for i in range(n):
@@ -27,31 +27,31 @@ def enqueue(backend, jq, task_id, type=JobType.GENERATE, n=1, **kw) -> list[str]
 def test_insert_is_idempotent(backend, jq):
     t = add_task(backend)
     with backend.store.tx() as c:
-        assert insert_job(c, id=job_id(t, 1, "generate"), task_id=t, version=1, type=JobType.GENERATE)
-        assert not insert_job(c, id=job_id(t, 1, "generate"), task_id=t, version=1, type=JobType.GENERATE)
+        assert insert_job(c, id=job_id(t, 1, "create"), task_id=t, version=1, type=JobType.CREATE)
+        assert not insert_job(c, id=job_id(t, 1, "create"), task_id=t, version=1, type=JobType.CREATE)
     assert len(backend.store.task_jobs(t)) == 1
 
 
 def test_claim_leases_once_in_priority_order(backend, jq):
     t = add_task(backend)
-    enqueue(backend, jq, t, JobType.GENERATE)
+    enqueue(backend, jq, t, JobType.CREATE)
     enqueue(backend, jq, t, JobType.VALIDATE)
     enqueue(backend, jq, t, JobType.ROLLOUT)
-    types = ["generate", "validate", "rollout"]
+    types = ["create", "validate", "rollout"]
     got = [jq.claim(types, "w1")["type"] for _ in range(3)]
-    assert got == ["rollout", "validate", "generate"]
+    assert got == ["rollout", "validate", "create"]
     assert jq.claim(types, "w2") is None
 
 
-def test_docker_slot_cap_spans_types_but_not_generate(backend, jq):
+def test_docker_slot_cap_spans_types_but_not_create(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t, JobType.ROLLOUT, n=3)
-    enqueue(backend, jq, t, JobType.GENERATE)
+    enqueue(backend, jq, t, JobType.CREATE)
     a = jq.claim("rollout", "w1", docker_slots=2)
     b = jq.claim("rollout", "w2", docker_slots=2)
     assert a and b
     assert jq.claim(["rollout", "validate"], "w3", docker_slots=2) is None
-    assert jq.claim("generate", "w3", docker_slots=2)["type"] == "generate"
+    assert jq.claim("create", "w3", docker_slots=2)["type"] == "create"
     assert jq.settle(a["id"], a["lease_token"], {"outcome": "VALID_PASS", "reward": 1.0})
     assert jq.claim("rollout", "w3", docker_slots=2) is not None
 
@@ -74,10 +74,10 @@ def test_docker_slots_are_per_machine(backend, jq, monkeypatch):
 def test_expired_lease_is_taken_over_and_old_owner_is_fenced(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
-    old = jq.claim("generate", "w1", lease_sec=0.05)
+    old = jq.claim("create", "w1", lease_sec=0.05)
     time.sleep(0.1)
     jq.queue.reconcile()  # Redis mode: the popped id comes back once its lease expires
-    new = jq.claim("generate", "w2")
+    new = jq.claim("create", "w2")
     assert new["id"] == old["id"] and new["lease_token"] == old["lease_token"] + 1
     assert new["attempts"] == 2
     assert not jq.heartbeat(old["id"], old["lease_token"])
@@ -106,11 +106,11 @@ def test_settle_inserts_followups_once_and_inherits_pinning(backend, jq):
     assert jq.claim("rollout", "w2")["id"] == retry["id"]
 
 
-def test_settled_jobs_wait_for_the_job_service(backend, jq):
+def test_settled_jobs_can_be_marked_handled(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t, n=2)
     for _ in range(2):
-        j = jq.claim("generate", "w1")
+        j = jq.claim("create", "w1")
         jq.settle(j["id"], j["lease_token"], {"outcome": "OK"})
     pending = backend.store.unhandled()
     assert len(pending) == 2
@@ -123,7 +123,7 @@ def test_settled_jobs_wait_for_the_job_service(backend, jq):
 def test_settle_rejects_unknown_fields_and_can_dead_letter(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
-    j = jq.claim("generate", "w1")
+    j = jq.claim("create", "w1")
     try:
         jq.settle(j["id"], j["lease_token"], {"outcome": "OK", "verdict": "nope"})
         raise AssertionError("expected ValueError")
@@ -137,17 +137,17 @@ def test_settle_rejects_unknown_fields_and_can_dead_letter(backend, jq):
 def test_release_returns_job_after_delay(backend, jq):
     t = add_task(backend)
     enqueue(backend, jq, t)
-    j = jq.claim("generate", "w1")
+    j = jq.claim("create", "w1")
     assert jq.release(j["id"], j["lease_token"], error="shutdown", delay_sec=0.2)
-    assert jq.claim("generate", "w2") is None
+    assert jq.claim("create", "w2") is None
     time.sleep(0.25)
-    assert jq.claim("generate", "w2")["id"] == j["id"]
+    assert jq.claim("create", "w2")["id"] == j["id"]
 
 
 def test_jobs_of_decided_tasks_are_not_claimed(backend, jq):
     t = add_task(backend, status="REJECTED")
     enqueue(backend, jq, t)
-    assert jq.claim("generate", "w1") is None
+    assert jq.claim("create", "w1") is None
 
 
 def test_batch_filter(backend, jq):
@@ -155,7 +155,7 @@ def test_batch_filter(backend, jq):
     b = add_task(backend, batch_id="b-b")
     enqueue(backend, jq, a)
     enqueue(backend, jq, b)
-    assert jq.claim("generate", "w1", batch_id="b-b")["task_id"] == b
+    assert jq.claim("create", "w1", batch_id="b-b")["task_id"] == b
 
 
 def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
@@ -163,9 +163,9 @@ def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
     enqueue(backend, jq, t)
     for i in range(MAX_JOB_ATTEMPTS):
         jq.queue.reconcile()
-        assert jq.claim("generate", f"w{i}", lease_sec=0.01) is not None
+        assert jq.claim("create", f"w{i}", lease_sec=0.01) is not None
         time.sleep(0.02)
-    assert jq.claim("generate", "w9") is None
+    assert jq.claim("create", "w9") is None
     assert reconcile(backend)["dead_lettered"] == 1
     job = backend.store.unhandled()[0]
     assert job["status"] == "DEAD" and "dead-lettered" in job["error"]
@@ -174,20 +174,25 @@ def test_reconciler_dead_letters_jobs_that_keep_killing_workers(backend, jq):
 
 def test_dead_lettered_rollout_triggers_one_analysis(backend, jq):
     t = add_task(backend)
+    other = add_task(backend)
     [rid] = enqueue(backend, jq, t, JobType.ROLLOUT)
-    [gid] = enqueue(backend, jq, t, JobType.GENERATE)
+    [gid] = enqueue(backend, jq, other, JobType.CREATE)
     for i in range(MAX_JOB_ATTEMPTS):
         jq.queue.reconcile()
-        for kind in ("rollout", "generate"):
+        for kind in ("rollout", "create"):
             assert jq.claim(kind, f"w{i}", lease_sec=0.01) is not None
         time.sleep(0.02)
     assert reconcile(backend)["dead_lettered"] == 2
     reconcile(backend)  # a second pass adds nothing
     jobs = {j["id"]: j for j in backend.store.task_jobs(t)}
-    assert set(jobs) == {rid, gid, f"{rid}-analyze"}  # rollouts only
+    assert set(jobs) == {rid, f"{rid}-analyze"}  # rollouts only
     a = jobs[f"{rid}-analyze"]
     assert (a["type"], a["status"], a["version"], a["input"]) == ("analyze", "READY", 1, {"trigger": rid})
     assert jq.claim("analyze", "analyzer")["id"] == f"{rid}-analyze"
+    # A dead create can't be handed on by anyone: its task is rejected instead.
+    assert [j["id"] for j in backend.store.task_jobs(other)] == [gid]
+    o = backend.store.task(other)
+    assert (o["status"], o["reason"], o["stage"]) == ("REJECTED", "infra_unresolved", "UNRESOLVED")
 
 
 def test_concurrent_claims_never_share_a_job(env, backend):
@@ -199,7 +204,7 @@ def test_concurrent_claims_never_share_a_job(env, backend):
 
     def worker(n: int) -> None:
         q = JobQueue(from_env(env))  # its own connections, like another process
-        while (j := q.claim("generate", f"w{n}")) is not None:
+        while (j := q.claim("create", f"w{n}")) is not None:
             assert q.settle(j["id"], j["lease_token"], {"outcome": "OK"})
             with lock:
                 claimed.append(j["id"])
@@ -233,7 +238,7 @@ def test_redis_queue_is_rebuilt_from_the_database(env, backend, jq):
     ids = enqueue(backend, jq, t, n=3)
     for key in jq.queue.r.scan_iter(f"{jq.queue.prefix}*"):  # Redis lost everything
         jq.queue.r.delete(key)
-    assert jq.claim("generate", "w1") is None
+    assert jq.claim("create", "w1") is None
     assert jq.queue.reconcile() == 3
-    got = {jq.claim("generate", "w1")["id"] for _ in range(3)}
+    got = {jq.claim("create", "w1")["id"] for _ in range(3)}
     assert got == set(ids)

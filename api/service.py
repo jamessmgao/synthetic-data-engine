@@ -1,26 +1,34 @@
 """
 Read models behind the API (docs/PRD.md §4): batch status, the task verdict and
 the batch report, computed from the `pipeline` store. Submission goes through
-`JobService.submit_batch`; nothing here writes.
+`api.submit.submit_batch`; nothing here writes.
 
-What workers write and these read (see job_service/service.py):
-  - generate: `input.origin` in {initial, repair, revision}, optional
-    `input.operator`; on success `outcome=OK` and `bundle_sha256`.
+What the services write and these read (PRD §5.1):
+  - create / revise (Generation Service): `input.origin` in {initial, repair,
+    revision}, optional `input.operator`; on success `outcome=OK` and `bundle_sha256`.
   - validate: `result.gates` = {name: {"passed": bool, ...}}; `outcome=OK`
     only if every gate passed.
-  - rollout: `slot` 1..N, `outcome` VALID_PASS | VALID_FAIL | INVALID.
+  - rollout: `slot` 1..N, `outcome` VALID_PASS | VALID_FAIL | INVALID; the Trace
+    Parser adds `trace_metrics` and `failure`.
+  - analyze (Trace Parser): `result.action` and its review cost.
 """
 
 from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any
 
+from evaluation.calibration import eval_config, in_band
+from evaluation.verdict import decision_text, pass_pattern
 from shared.storage.sql import SqlStore, row_dict
-from shared.contracts.models import SCORED_OUTCOMES, JobStatus, JobType, Outcome, Stage, TaskStatus
-
-from job_service.calibration import eval_config, in_band
-from job_service.service import decision_text
-from job_service.verdict import pass_pattern
+from shared.contracts.models import (
+    GENERATION_TYPES,
+    SCORED_OUTCOMES,
+    JobStatus,
+    JobType,
+    Outcome,
+    Stage,
+    TaskStatus,
+)
 
 
 class NotFound(Exception):
@@ -96,12 +104,12 @@ def get_batch(store: SqlStore, batch_id: str) -> dict:
 
 def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> dict:
     vjobs = [j for j in jobs if j["version"] == version]
-    generates = [j for j in vjobs if j["type"] == JobType.GENERATE]
+    generates = [j for j in vjobs if j["type"] in GENERATION_TYPES]
     validates = [j for j in vjobs if j["type"] == JobType.VALIDATE]
     scored = _scored(jobs, version)
     pass_count = sum(o == Outcome.VALID_PASS for o in scored.values())
 
-    # The version's origin is its first non-repair generate job.
+    # The version's origin is its first non-repair create / revise job.
     first = next((j for j in generates if (j["input"] or {}).get("origin") != "repair"), None)
     first_input = (first or {}).get("input") or {}
     built = [j for j in generates if j["outcome"] == Outcome.OK]
@@ -176,8 +184,10 @@ def batch_report(store: SqlStore, batch_id: str) -> dict:
                 histogram[str(sum(o == Outcome.VALID_PASS for o in scored.values()))] += 1
 
     rollouts = [j for j in all_jobs if j["type"] == JobType.ROLLOUT]
-    authoring = _sum_cost(j for j in all_jobs if j["type"] != JobType.ROLLOUT)
-    evaluation = _sum_cost(rollouts)
+    # Authoring: drafting and the gates. Evaluation: the runs and the Trace Parser's reviews.
+    evaluated = (JobType.ROLLOUT, JobType.ANALYZE)
+    authoring = _sum_cost(j for j in all_jobs if j["type"] not in evaluated)
+    evaluation = _sum_cost(j for j in all_jobs if j["type"] in evaluated)
     total = None if authoring is None and evaluation is None else round((authoring or 0) + (evaluation or 0), 6)
     accepted = [t for t in tasks if t["status"] == TaskStatus.ACCEPTED]
 

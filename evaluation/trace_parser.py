@@ -21,8 +21,9 @@ Two layers, in this order:
    kept, never trusted, never blocking.
 
 The result goes onto the rollout's own job row (``failure``, ``trace_metrics``).
-The executor calls ``parse`` before settling, so a settled VALID_FAIL always
-has its failure record. The GLM call is cached per job id, so a reclaimed job
+The Trace Parser service (evaluation/trace_parser_service.py) calls ``parse`` on
+every scored run of a version before it decides, so an accepted task's failures
+are always explained. The GLM call is cached per run, so a reclaimed analysis
 reuses the explanation instead of paying again.
 
 Re-parse settled rows (audit or backfill) with:
@@ -125,7 +126,8 @@ def trace_metrics(trial_dir: Path, result: dict) -> dict:
         "tool_calls": [{"tool": c["tool"], "input": c["input"][:CMD_CHARS],
                         "output": c["output"][-OUTPUT_CHARS:], "exit_code": None}
                        for c in calls[-MAX_TOOL_CALLS:]],
-        "files_modified": files_modified([c["input"] for c in calls]),
+        # None when there is no trajectory: unknown, not "touched nothing".
+        "files_modified": files_modified([c["input"] for c in calls]) if trajectory is not None else None,
         "duration_seconds": duration,
         "declared_complete": any(c["tool"] == "mark_task_complete" for c in calls),
     }
@@ -150,9 +152,10 @@ def failing_tests(trial_dir: Path) -> list[dict]:
         stdout = (verifier / "test-stdout.txt").read_text(errors="replace")
     except OSError:
         return []
-    names = re.findall(r"^FAILED\s+(\S+)", stdout, flags=re.M)
+    failed = re.findall(r"^FAILED\s+(\S+)(?:\s+-\s+(.*))?$", stdout, flags=re.M)  # pytest -rA summary
     assertions = _assertion_lines(stdout)
-    return [{"name": n, "message": "", "assertions": assertions if i == 0 else []} for i, n in enumerate(names)]
+    return [{"name": n, "message": m.strip()[:300], "assertions": assertions if i == 0 else []}
+            for i, (n, m) in enumerate(failed)]
 
 
 def extract_evidence(trial_dir: Path) -> tuple[list[dict], list[dict]]:
@@ -164,7 +167,7 @@ def extract_evidence(trial_dir: Path) -> tuple[list[dict], list[dict]]:
         evidence.append({"id": f"E{len(evidence) + 1}", "source": source, "text": text})
 
     for t in tests:
-        add("verifier", f"FAILED {t['name']}" + (f": {t['message']}" if t["message"] else ""))
+        add("verifier", f"FAILED {t['name']}" + (f" - {t['message']}" if t["message"] else ""))
         for line in t["assertions"]:
             add("verifier", line)
     trajectory = load_trajectory(trial_dir)

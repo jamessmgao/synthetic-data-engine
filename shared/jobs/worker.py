@@ -1,7 +1,10 @@
-"""Worker loops for the generate and validate queues (the executor has its own).
+"""Service loops for the Generation Service and Build + Validate (the Executor and
+the Trace Parser have their own).
 
-`serve()` is the generic loop: claim a job, keep its lease alive with a heartbeat
-thread, run a job function, settle the result. If the lease is lost mid-run, the
+`serve()` is the generic loop: claim a job, mark the task's stage (`on_start`),
+keep the lease alive with a heartbeat thread, run a job function, settle the
+result together with the hand-off to the next stage (`handoff`, run inside the
+settle transaction, see shared/jobs/handoffs.py). If the lease is lost mid-run, the
 result is dropped: the settle is fenced, so it changes nothing. If the function
 raises, the job is released with a backoff, and the reconciler dead-letters it
 after MAX_JOB_ATTEMPTS claims.
@@ -10,8 +13,12 @@ The job functions come from task-builder: `generator/worker.py:run_generate_job`
 and `validator/gates.py:run_validate_job`. The adapters below only translate
 between a job row and those functions' arguments and results.
 
-    python -m generator.service generate [--concurrency 2] [--with-reconciler]
+    python -m generator.service generation [--concurrency 2] [--with-reconciler]
     python -m validator.service validate [--concurrency 4]
+
+The Generation Service claims from the revise queue before the create queue, so
+started tasks finish before new ones are drafted. (`generate` is accepted as an
+alias for `generation`.)
 """
 
 import argparse
@@ -24,18 +31,20 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from shared.jobs import handoffs, reconciler
 from shared.storage import Backend, describe, from_env
-from shared.jobs.jobqueue import JobQueue
-from shared.contracts.models import DOCKER_SLOTS, HEARTBEAT_S, LEASE_TTL_S, POLL_S, JobType
-from shared.jobs import reconciler
+from shared.jobs.jobqueue import Handoff, JobQueue
+from shared.contracts.models import DOCKER_SLOTS, GENERATION_TYPES, HEARTBEAT_S, LEASE_TTL_S, POLL_S, JobType
 
 log = logging.getLogger("worker")
 
 JobFn = Callable[[dict[str, Any]], dict[str, Any]]
+OnStart = Callable[[dict[str, Any]], None]
 FAILURE_BACKOFF_S = 60.0
 
 
-def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, lease_sec: float = LEASE_TTL_S,
+def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, handoff: Handoff | None = None,
+            on_start: OnStart | None = None, lease_sec: float = LEASE_TTL_S,
             heartbeat_sec: float = HEARTBEAT_S) -> bool:
     """Run one claimed job to a settle (or release). Returns True if it was settled."""
     job_id, token = job["id"], job["lease_token"]
@@ -50,6 +59,8 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, lease_sec: float = LEA
 
     threading.Thread(target=beat, name=f"heartbeat-{job_id}", daemon=True).start()
     try:
+        if on_start is not None:
+            on_start(job)
         fields = fn(job)
     except Exception as e:
         log.exception("%s: job function raised", job_id)
@@ -58,7 +69,7 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, lease_sec: float = LEA
         return False
     finally:
         done.set()
-    if lost.is_set() or not jq.settle(job_id, token, fields):
+    if lost.is_set() or not jq.settle(job_id, token, fields, then=handoff):
         log.warning("%s: lease lost before settling; result dropped", job_id)
         return False
     log.info("%s: %s%s", job_id, fields.get("outcome"),
@@ -68,9 +79,11 @@ def run_one(jq: JobQueue, job: dict[str, Any], fn: JobFn, lease_sec: float = LEA
 
 def serve(
     jq: JobQueue,
-    job_type: JobType,
+    job_types: JobType | tuple[JobType, ...] | list[JobType],
     fn: JobFn,
     *,
+    handoff: Handoff | None = None,
+    on_start: OnStart | None = None,
     concurrency: int = 1,
     docker_slots: int | None = None,
     stop: threading.Event | None = None,
@@ -78,23 +91,40 @@ def serve(
 ) -> None:
     """Run `concurrency` claim loops until `stop` is set."""
     stop = stop or threading.Event()
-    base = f"{socket.gethostname()}:{os.getpid()}:{job_type}"
+    types = [job_types] if isinstance(job_types, str) else list(job_types)
+    name = "+".join(map(str, types))
+    base = f"{socket.gethostname()}:{os.getpid()}:{name}"
 
     def loop(owner: str) -> None:
         while not stop.is_set():
-            job = jq.claim(job_type, owner, LEASE_TTL_S, docker_slots, batch_id=batch_id)
+            job = jq.claim(types, owner, LEASE_TTL_S, docker_slots, batch_id=batch_id)
             if job is None:
                 stop.wait(POLL_S)
                 continue
-            run_one(jq, job, fn)
+            run_one(jq, job, fn, handoff, on_start)
 
-    threads = [threading.Thread(target=loop, args=(f"{base}:{i}",), name=f"{job_type}-{i}")
+    threads = [threading.Thread(target=loop, args=(f"{base}:{i}",), name=f"{name}-{i}")
                for i in range(concurrency)]
     for t in threads:
         t.start()
     for t in threads:
         while t.is_alive():
             t.join(timeout=0.5)
+
+
+# --- the two services ---------------------------------------------------------------
+
+
+def serve_generation(backend: Backend, fn: JobFn, **kw: Any) -> None:
+    """The Generation Service: the revise queue, then the create queue."""
+    serve(JobQueue(backend), GENERATION_TYPES, fn, handoff=handoffs.after_generation(backend),
+          on_start=handoffs.generation_started(backend), **kw)
+
+
+def serve_validate(backend: Backend, fn: JobFn, **kw: Any) -> None:
+    """Build + Validate: holds a Docker slot per job."""
+    serve(JobQueue(backend), JobType.VALIDATE, fn, handoff=handoffs.after_validate(backend),
+          on_start=handoffs.validate_started(backend), **kw)
 
 
 # --- adapters to task-builder's job functions -------------------------------------
@@ -148,8 +178,8 @@ def validate_fn(backend: Backend) -> JobFn:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run generate or validate workers.")
-    parser.add_argument("role", choices=["generate", "validate"])
+    parser = argparse.ArgumentParser(description="Run the Generation Service or Build + Validate.")
+    parser.add_argument("role", choices=["generation", "generate", "validate"])
     parser.add_argument("--concurrency", type=int, default=None)
     parser.add_argument("--batch", default=None, help="only claim this batch's jobs")
     parser.add_argument("--with-reconciler", action="store_true",
@@ -159,20 +189,18 @@ def main() -> None:
 
     backend = from_env()
     log.info("backends: %s", describe(backend))
-    jq = JobQueue(backend)
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
     if args.with_reconciler:
         reconciler.start_thread(backend)
 
-    if args.role == "generate":
-        serve(jq, JobType.GENERATE, generate_fn(backend), concurrency=args.concurrency or 2,
-              stop=stop, batch_id=args.batch)
+    if args.role in ("generation", "generate"):
+        serve_generation(backend, generate_fn(backend), concurrency=args.concurrency or 2,
+                         stop=stop, batch_id=args.batch)
     else:
-        serve(jq, JobType.VALIDATE, validate_fn(backend),
-              concurrency=args.concurrency or DOCKER_SLOTS, docker_slots=DOCKER_SLOTS,
-              stop=stop, batch_id=args.batch)
+        serve_validate(backend, validate_fn(backend), concurrency=args.concurrency or DOCKER_SLOTS,
+                       docker_slots=DOCKER_SLOTS, stop=stop, batch_id=args.batch)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from shared.contracts.models import RejectReason, Stage, TaskStatus
 
-from job_service.service import MAX_BATCH_COUNT
+from api.submit import MAX_BATCH_COUNT
 
 BATCH_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
 
