@@ -1,0 +1,61 @@
+# Autoscaling for `executor` with KEDA (docs/K8S_PLAN.md §4, docs/DEPLOY.md §8).
+#
+# KEDA itself is installed once per cluster, from its official release manifest, pinned:
+#   kubectl --context k3d-sde apply --server-side \
+#     -f https://github.com/kedacore/keda/releases/download/v2.16.1/keda-2.16.1.yaml
+#   kubectl --context k3d-sde -n keda rollout status deploy/keda-operator
+# It is not a resource of this kustomization: it lives in its own namespace (`keda`), and the
+# base's `namespace: sde` would rewrite it. The CRDs below must exist before `apply -k`.
+#
+# The metric is outstanding rollout work in Postgres, the source of truth (Redis is only the
+# claim index): READY + LEASED rollout jobs. Counting LEASED means a scale-down never removes
+# a pod that is still running a rollout while the queue is empty. Each executor pod runs
+# SDE_DOCKER_SLOTS rollouts at once, so the target is that many jobs per replica. min 1 keeps
+# one executor warm; max 4.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: sde-postgres
+  labels:
+    app.kubernetes.io/name: executor
+    app.kubernetes.io/part-of: sde-pipeline
+spec:
+  secretTargetRef:
+    # A postgres:// URL; KEDA's postgresql scaler accepts it as its `connection`.
+    - parameter: connection
+      name: sde-secrets
+      key: DATABASE_URL
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: executor
+  labels:
+    app.kubernetes.io/name: executor
+    app.kubernetes.io/part-of: sde-pipeline
+spec:
+  scaleTargetRef:
+    name: executor
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  pollingInterval: 15
+  cooldownPeriod: 120
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          # Scale down one pod at a time after the queue has been short for 2 min, so a
+          # brief lull between a task's validate and its rollouts doesn't drop executors.
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: postgresql
+      authenticationRef:
+        name: sde-postgres
+      metadata:
+        query: "SELECT count(*) FROM jobs WHERE type = 'rollout' AND status IN ('READY', 'LEASED')"
+        targetQueryValue: "4"  # = SDE_DOCKER_SLOTS per executor pod
+        activationTargetQueryValue: "0"

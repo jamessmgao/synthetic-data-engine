@@ -1,0 +1,43 @@
+# Postgres: the source of truth (compose.dev's postgres; on AWS, RDS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: {app.kubernetes.io/name: postgres}
+  ports: [{name: postgres, port: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels: {app.kubernetes.io/name: postgres}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: postgres}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16.4-alpine
+          # More pods than compose has processes: room so the pools aren't capped as on RDS micro.
+          args: ["-c", "max_connections=200"]
+          env:
+            - {name: POSTGRES_USER, value: sde}
+            - {name: POSTGRES_DB, value: sde}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: sde-secrets, key: POSTGRES_PASSWORD}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "sde"]}
+            periodSeconds: 2
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 2Gi}}

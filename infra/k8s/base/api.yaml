@@ -1,0 +1,36 @@
+# The API service (compose.dev's api).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  selector: {app.kubernetes.io/name: api}
+  ports: [{name: http, port: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels: {app.kubernetes.io/name: api}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: api}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: api}
+    spec:
+      # The image's sde user: only the Docker-using workers run as root (the runner target).
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true}
+      containers:
+        - name: app
+          image: sde-pipeline
+          command: ["python", "-m", "shared.jobs.supervise", "python -m api --host 0.0.0.0 --port 8000"]
+          envFrom:
+            - configMapRef: {name: sde-config}
+            - secretRef: {name: sde-secrets}
+          readinessProbe:
+            tcpSocket: {port: 8000}
+            periodSeconds: 5
+          lifecycle:
+            preStop: {sleep: {seconds: 5}}

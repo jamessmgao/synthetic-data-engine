@@ -1,0 +1,23 @@
+# Schema + bucket, once per deploy; the app pods wait for both (app.yaml). Opening the
+# backends creates them: the schema under the Postgres advisory lock, the bucket if missing.
+# Idempotent. A Job is immutable, so each deploy deletes it first.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bootstrap
+  labels: {app.kubernetes.io/name: bootstrap}
+spec:
+  backoffLimit: 30
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: bootstrap}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: sde-pipeline
+          command: ["python", "-c", "from shared.storage import from_env; from_env()"]
+          envFrom:
+            - configMapRef: {name: sde-config}
+            - secretRef: {name: sde-secrets}
+          env: [{name: SDE_WORK_DIR, value: /tmp/sde-work}]

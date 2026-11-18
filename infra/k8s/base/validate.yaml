@@ -1,0 +1,21 @@
+# Build + Validate (the task-builder gates). Docker from the dind sidecar (dind.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: validate
+  labels: {app.kubernetes.io/name: validate}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: validate}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: validate}
+    spec:
+      containers:
+        - name: app
+          image: sde-pipeline
+          command: ["python", "-m", "validator.service", "validate"]
+          envFrom:
+            - configMapRef: {name: sde-config}
+            - secretRef: {name: sde-secrets}

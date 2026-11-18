@@ -1,0 +1,41 @@
+# Docker for the worker pods (validate, executor, generation), applied as a patch: a
+# privileged dind sidecar per pod, so the pod's limits cover its trials. Harbor and the
+# authoring harness bind-mount trial dirs by path, so the work dir (app.yaml) is mounted at /opt/sde/work in both.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any
+spec:
+  template:
+    spec:
+      initContainers:
+        # A native sidecar: starts first; the worker starts once dockerd answers.
+        - name: dind
+          image: docker:27.3.1-dind
+          restartPolicy: Always
+          securityContext: {privileged: true}
+          command:
+            - dind
+            - dockerd
+            # Unix socket only: the image's entrypoint would also open an unauthenticated tcp :2375.
+            - --host=unix:///var/run/dind/docker.sock
+            # The pod network's MTU (flannel): at 1500, task containers' large packets are dropped.
+            - --mtu=1450
+            # The same for compose-created networks (Harbor's), which ignore --mtu.
+            - --default-network-opt=bridge=com.docker.network.driver.mtu=1450
+          startupProbe:
+            exec: {command: ["docker", "-H", "unix:///var/run/dind/docker.sock", "info"]}
+            periodSeconds: 2
+            failureThreshold: 60
+          volumeMounts:
+            - {name: dind-sock, mountPath: /var/run/dind}
+            - {name: dind-data, mountPath: /var/lib/docker}
+            - {name: work, mountPath: /opt/sde/work}
+      containers:
+        - name: app
+          env: [{name: DOCKER_HOST, value: unix:///var/run/dind/docker.sock}]
+          volumeMounts:
+            - {name: dind-sock, mountPath: /var/run/dind}
+      volumes:
+        - {name: dind-sock, emptyDir: {}}
+        - {name: dind-data, emptyDir: {}}

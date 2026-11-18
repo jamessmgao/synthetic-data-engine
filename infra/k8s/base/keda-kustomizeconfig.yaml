@@ -1,0 +1,8 @@
+# Lets kustomize rewrite KEDA's Secret references to the generated, hash-suffixed name
+# (sde-secrets → sde-secrets-<hash>). List it under `configurations:` in the kustomization.
+nameReference:
+  - kind: Secret
+    fieldSpecs:
+      - kind: TriggerAuthentication
+        group: keda.sh
+        path: spec/secretTargetRef/name

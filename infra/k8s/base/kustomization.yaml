@@ -1,0 +1,33 @@
+# The pipeline on Kubernetes (docs/K8S_PLAN.md §2): data stores, the bootstrap Job, and one
+# Deployment per process. Overlays set the image tag, settings and secrets.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sde
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sde-pipeline
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - s3.yaml
+  - bootstrap-job.yaml
+  - api.yaml
+  - control.yaml
+  - validate.yaml
+  - executor.yaml
+  - generation.yaml
+  - keda.yaml
+configMapGenerator:
+  # The one settings list, the same file compose reads (gitignored, optional: create it
+  # empty). Overlays merge their own keys over it.
+  - name: sde-config
+    envs: [../../../deploy/local.env]
+configurations:
+  - keda-kustomizeconfig.yaml
+patches:
+  - path: app.yaml
+    target: {kind: Deployment, name: "api|control|validate|executor|generation"}
+  - path: dind.yaml
+    target: {kind: Deployment, name: "validate|executor|generation"}

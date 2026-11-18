@@ -1,0 +1,45 @@
+# Local cluster (k3d "sde"). Render with the load restrictor off, because the base reads the settings
+# from deploy/local.env, the one settings list (outside the kustomization dirs):
+#
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone infra/k8s/overlays/local
+#
+# kubectl apply -k has no such flag, so pipe that into `kubectl apply -f -`.
+# deploy/local.env is optional and gitignored: create it empty if it doesn't exist.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Must match the base: generated names (content hash) are substituted only within one namespace.
+namespace: sde
+resources:
+  - ../../base
+images:
+  # Imported into the k3d nodes, never pulled (a non-latest tag means IfNotPresent).
+  - {name: sde-pipeline, newName: sde-pipeline, newTag: local}
+configMapGenerator:
+  - name: sde-config
+    # Over deploy/local.env (the base): these keys win if it sets them too.
+    behavior: merge
+    literals:
+      # In-cluster backends (compose.dev's x-backend-env).
+      - REDIS_URL=redis://redis:6379/0
+      - S3_BUCKET=sde-artifacts
+      - S3_ENDPOINT_URL=http://s3:9000
+      - AWS_DEFAULT_REGION=us-east-1
+      - SDE_WORK_DIR=/opt/sde/work
+      # Every run on this cluster is a mock run: no model spend.
+      - SDE_MOCK_LLM=1
+      # Short mock runs (15 s rollouts leave KEDA time to scale up) and short leases, so a
+      # killed pod's work is re-claimed in under a minute (the chaos test).
+      - SDE_MOCK_ROLLOUT_S=15
+      - SDE_MOCK_LLM_S=0.5
+      - SDE_LEASE_TTL_S=45
+      - SDE_HEARTBEAT_S=15
+      - SDE_SUSPECT_MAX_WAIT_S=10
+secretGenerator:
+  # Local-only throwaway credentials, the same as compose.dev's.
+  - name: sde-secrets
+    literals:
+      - POSTGRES_PASSWORD=sde
+      - DATABASE_URL=postgresql://sde:sde@postgres:5432/sde
+      - AWS_ACCESS_KEY_ID=sde-dev
+      - AWS_SECRET_ACCESS_KEY=sde-dev-secret
+      - SDE_API_KEY=dev-token

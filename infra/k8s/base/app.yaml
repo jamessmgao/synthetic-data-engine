@@ -1,0 +1,34 @@
+# Common to the five app Deployments, applied as a patch: wait for the bootstrap Job's
+# schema and bucket, and a work dir at /opt/sde/work (SDE_WORK_DIR; a private cache, except
+# on the worker pods, where dind.yaml shares it with the Docker sidecar).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-bootstrap
+          image: sde-pipeline
+          command:
+            - python
+            - -c
+            - |
+              import os, time, boto3, psycopg
+              while True:
+                  try:
+                      psycopg.connect(os.environ["DATABASE_URL"]).execute("SELECT 1 FROM jobs LIMIT 0")
+                      boto3.client("s3", endpoint_url=os.environ["S3_ENDPOINT_URL"]).head_bucket(Bucket=os.environ["S3_BUCKET"])
+                      break
+                  except Exception as e:
+                      print("waiting for the bootstrap Job:", e, flush=True)
+                      time.sleep(2)
+          envFrom:
+            - configMapRef: {name: sde-config}
+            - secretRef: {name: sde-secrets}
+      containers:
+        - name: app
+          volumeMounts: [{name: work, mountPath: /opt/sde/work}]
+      volumes:
+        - {name: work, emptyDir: {}}

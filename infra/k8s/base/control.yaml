@@ -1,0 +1,25 @@
+# The one reconciler + the Trace Parser (analyze queue). Exactly one replica, Recreate:
+# the reconciler must never run twice.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control
+  labels: {app.kubernetes.io/name: control}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: control}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: control}
+    spec:
+      # The image's sde user: only the Docker-using workers run as root (the runner target).
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true}
+      containers:
+        - name: app
+          image: sde-pipeline
+          command: ["python", "-m", "shared.jobs.supervise", "python -m shared.jobs.reconciler", "python -m evaluation.trace_parser_service"]
+          envFrom:
+            - configMapRef: {name: sde-config}
+            - secretRef: {name: sde-secrets}

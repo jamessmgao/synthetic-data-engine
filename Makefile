@@ -55,6 +55,22 @@ ps:
 reconcile:       ## one reconciler pass against the current env's backends
 	$(PYTHON) -m shared.jobs.reconciler --once
 
+# --- Local Kubernetes (k3d cluster "sde", context k3d-sde; scripts/k8s-local.sh) ---
+K8S := bash scripts/k8s-local.sh
+
+.PHONY: k8s-up k8s-deploy k8s-status k8s-logs k8s-down
+
+k8s-up:          ## create (or start) the k3d cluster, build + import sde-pipeline:local
+	$(K8S) up
+k8s-deploy:      ## rebuild + import the image, apply infra/k8s/overlays/local, wait
+	$(K8S) deploy
+k8s-status:
+	$(K8S) status
+k8s-logs:        ## make k8s-logs SVC=api|control|validate|executor|generation|postgres|redis|s3
+	SVC=$(SVC) $(K8S) logs
+k8s-down:        ## delete the cluster and everything in it
+	$(K8S) down
+
 # --- AWS deployment (deploy/aws_ops.py; account 284460774261, us-east-2) --------
 AWS_OPS := $(PYTHON) deploy/aws_ops.py
 
@@ -85,3 +101,9 @@ aws-start:
 aws-destroy:     ## delete everything Terraform created (asks for confirmation)
 	$(AWS_OPS) destroy
 aws-up: aws-bootstrap aws-apply aws-secrets aws-deploy aws-smoke  ## all of the above, in order
+
+# --- Local Kubernetes (k3d cluster "sde", docs/DEPLOY.md §8) ---------------------
+.PHONY: k8s-test
+
+k8s-test:        ## chaos test on the k3d cluster (mock mode): kill an executor mid-rollout, restart Postgres
+	$(PYTHON) scripts/k8s_test.py $(ARGS)
