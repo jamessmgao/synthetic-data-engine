@@ -363,12 +363,12 @@ def test_too_easy_revisions_mutate_the_world_and_keep_its_history(backend, tmp_p
     score(backend, parser, 1, "11111")
     v2 = backend.store.job(job_id(T, 2, "revise"))["input"]
     # Cues mean the instruction leaks: remove them first, then defeat the in-memory guard
-    # (remove_cues doesn't count toward the two difficulty operators).
-    assert v2["mutation_operators"] == ["remove_cues", "add_persistent_state", "inject_partial_failure"]
+    # (remove_cues doesn't count toward the two difficulty operators; add_persistent_state is a
+    # last resort, so a default takes the second slot).
+    assert v2["mutation_operators"] == ["remove_cues", "inject_partial_failure", "introduce_global_invariant"]
     assert v2["target_fix"] == "a process-local set of processed job ids"
     assert [m["version"] for m in v2["mutations"]] == [2]
-    assert [r["rule"] for r in v2["mutations"][0]["rules"]] == ["cues_found", "process_local_guard",
-                                                                "process_local_guard"]
+    assert [r["rule"] for r in v2["mutations"][0]["rules"]] == ["cues_found", "process_local_guard", "default"]
     assert v2["mutations"][0]["rules"][1]["evidence"] == 'pass review said "process-local"'
 
     build(backend, 2, "sha2")
@@ -486,7 +486,9 @@ def test_verdict_shows_mutations_and_model_judged_gates():
     ("aws-agent-b1-t08", ["introduce_global_invariant", "generate_counterexample"], "locally_plausible_strategy"),
     ("aws-agent-b1-t06", ["extend_cross_component_dependency", "add_concurrent_execution"],
      "local_reorder_or_serialize"),
-    ("aws-agent-b1-t09", ["introduce_global_invariant", "add_persistent_state"], "pass_review_suggestion"),
+    # its state_and_history suggestion (add_persistent_state) is a last resort: the next one wins
+    ("aws-agent-b1-t09", ["introduce_global_invariant", "extend_cross_component_dependency"],
+     "pass_review_suggestion"),
     ("aws-iter1-t06", ["introduce_global_invariant", "add_concurrent_execution"], "local_reorder_or_serialize"),
 ])
 def test_a_trusted_reviews_suggestion_outranks_keyword_rules(task, harder, third_rule):
@@ -543,6 +545,11 @@ def test_choose_mutations_reads_the_passing_strategy():
     # Commands match only code patterns: the word "lock" in a grep doesn't fire, a Lock() does.
     plain = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["grep -n lock app.py"])], None, [])
     assert "add_concurrent_execution" not in plain["operators"]
+    # A solver's helper script isn't the fix: `= set()` in a benchmark or a /tmp checker doesn't fire.
+    helper = choose_mutations(5, [run(1, ["A.java", "B.java"], 30, ["python3 - <<'PY'\nseen = set()\nPY",
+                                                                     "cat > /tmp/check.py <<'EOF'\nseen = set()\nEOF"])],
+                              None, [])
+    assert "inject_partial_failure" not in helper["operators"]
     coded = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["cat >> app.py <<EOF\nl = threading.Lock()\nEOF"])],
                              None, [])
     assert coded["operators"][0] == "add_concurrent_execution"
@@ -579,7 +586,14 @@ def test_choose_mutations_reads_the_passing_strategy():
     assert "add_persistent_state" not in greedy_c["operators"]
     py_global = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["cat >> w.py <<EOF\ndef f():\n    global SEEN\nEOF"])],
                                  None, [])
-    assert py_global["operators"][0] == "add_persistent_state"
+    # A process-local guard: a partial failure first; add_persistent_state only as a last resort.
+    assert py_global["operators"][0] == "inject_partial_failure"
+    assert py_global["rules"][0]["rule"] == "process_local_guard"
+    assert "add_persistent_state" not in py_global["operators"]
+    fallback = choose_mutations(5, [run(1, ["a.py", "b.py"], 30, ["cat >> w.py <<EOF\ndef f():\n    global SEEN\nEOF"])],
+                                None, [{"operators": ["inject_partial_failure", "introduce_global_invariant",
+                                                      "generate_counterexample"]}])
+    assert fallback["operators"][0] == "add_persistent_state"
     # Already applied operators go last; everything chosen is from the contract's list.
     again = choose_mutations(4, [run(i, ["a.py"], 5) for i in range(1, 5)], None,
                              [{"operators": ["extend_cross_component_dependency"]}])

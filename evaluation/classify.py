@@ -8,7 +8,8 @@ the verifier wrote a binary reward. Everything else is INVALID, which means
 
     INVALID     Harbor recorded an exception (agent/verifier/environment
                 timeouts, API or sandbox errors, missing or empty reward
-                file, ...), there is no verifier result, the reward is not
+                file, ...; not the agent closing its own terminal, see
+                AGENT_CLOSED_TERMINAL), there is no verifier result, the reward is not
                 exactly 0 or 1, or the trial ran under a different agent,
                 model or reasoning effort than the job asked for.
     VALID_PASS  no exception and reward == 1.
@@ -65,8 +66,24 @@ def _config_mismatch(result: dict, expected: dict) -> str | None:
     return None
 
 
+# The agent closed its own terminal: an `exit` (`… || { …; exit 1; }`) or a failing command
+# under `set -e`, typed at the interactive prompt, logs the shell out, the tmux session ends,
+# and terminus-2's next send-keys fails with this. That's the agent's action, not the harness
+# failing: the verifier still checks the final state, so its reward is the measurement. (4 of
+# 4 such INVALIDs on 2026-11-18, aws-iter2-t04 and aws-agent-b1-t10, all at raw reward 1.0,
+# each re-paid as a retry.)
+AGENT_CLOSED_TERMINAL = "no server running on /tmp/tmux-"
+
+
+def _agent_closed_terminal(info: dict) -> bool:
+    return (info.get("exception_type") == "RuntimeError"
+            and AGENT_CLOSED_TERMINAL in (info.get("exception_message") or ""))
+
+
 def _exception(result: dict) -> str | None:
     info = result.get("exception_info")
+    if info and _agent_closed_terminal(info):
+        return None
     if not info:
         # Multi-step tasks record exceptions per step.
         for step in result.get("step_results") or []:

@@ -36,6 +36,10 @@ $family_brief
   recompute-from-scratch routine the fix can simply switch to or call. Otherwise any honest
   invariant names the fix ("service mode must agree with --reference"), and agents pass by
   delegating to it. A reference may exist only in the tests or the repro, never in `/app`.
+- **Not the textbook missing piece.** If the honest guarantee implies a standard remedy (store
+  the idempotency key with the effect, a scope chain for shadowing, an index for a slow scan),
+  that remedy is already in the system, subtly wrong (a separate write, after the ack, the wrong
+  key, lost on compaction). Else the instruction names the fix.
 - **The plausible wrong fix** is what a capable engineer would try first: it makes the visible
   symptom go away but still fails repro.sh, only on a deeper schedule (another crash point, a
   second retry, a concurrent worker) or on a dependent (e.g. a process-local dedup set that a

@@ -202,6 +202,15 @@ def node_ips(server: str) -> set[str]:
                                " 2>/dev/null || true"], timeout_s=120).split())
 
 
+def joining_ips(server: str) -> set[str]:
+    """The InternalIPs of nodes still tainted {JOINING}: a join that didn't finish."""
+    out = remote(server, [f"{KUBECTL} get nodes -o jsonpath='{{range .items[*]}}"
+                          "{.status.addresses[?(@.type==\"InternalIP\")].address}={.spec.taints[*].key};{end}'"
+                          " 2>/dev/null || true"], timeout_s=120)
+    return {ip for ip, _, taints in (e.partition("=") for e in out.strip().split(";") if e)
+            if JOINING in taints.split()}
+
+
 def cluster_runners() -> list[str]:
     """The runners that are K3s nodes: what a deploy ships to and builds on. A runner added by
     Terraform but not joined yet has no K3s to import into (`join` brings it in)."""
@@ -223,7 +232,11 @@ def cmd_join() -> None:
     ids = runners()
     server = ids[0]
     ips = runner_ips(ids)
-    new = [i for i in ids if ips[i] not in node_ips(server)]
+    # Not a node yet, or a node a cut-off join left tainted (its images may be missing): every
+    # step below is idempotent, so a re-run resumes those (2026-11-18: an AWS token expired
+    # mid-join and a re-run saw "already K3s nodes", leaving 8 Spot nodes tainted).
+    unfinished = joining_ips(server)
+    new = [i for i in ids if ips[i] not in node_ips(server) or ips[i] in unfinished]
     if not new:
         print(f"all {len(ids)} runners are already K3s nodes")
         return

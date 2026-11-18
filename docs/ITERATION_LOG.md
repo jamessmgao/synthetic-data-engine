@@ -270,3 +270,33 @@ database 0/1, distributed 0/1).
   - pointer placeholders retried.
 - **Not yet (the user's call):** the world-time leak check, the repro/explore.py schedule
   explorer, merging world and task authoring (kept separate).
+
+## Window 1 (sliding window, six lanes): started 2026-11-18 ~21:00 UTC
+
+**Release:** 5e1073985063 (main 4916619 + join-resume), deployed ~20:55-21:00 UTC with the bundle:
+drain on deploy, per-release image tags, DB-blip ride-out, Spot interruption handler, dashboard
+(leak-review panel, Prod / Dev). Cluster: 17 nodes (9 on-demand, 8 Spot), RDS db.t4g.medium,
+generation 11 x 3 sessions, executor KEDA 2-10 x 3 agent runs, validate 4.
+
+**Changes in this window** (one per lever):
+
+| Lever | Change | Evidence | Expected |
+|---|---|---|---|
+| task_author.md (instruction) | the symptom never states the triggering inputs, sequence or state; a mutated world's create never restates the case the mutation added | leak-review failures: aws-iter2-t03 v1 ("a retry reserves units again"), t05 v2, t11 v2, t02 v2, iter1-t01 v3, iter1-t06 v3, b1-t03 v3 | fewer semantic / blind-specific leaks, especially on mutated worlds |
+| world.md (rules) | "not the textbook missing piece": when the honest guarantee implies a standard remedy, the remedy is already in the system, subtly wrong | aws-iter2-t12 (leak x3: idempotency key with the effect), t02 v2 (scope chain), the perf family (one index) | fewer worlds whose guarantee names the fix |
+| calibration.py | keyword rules read only commands that write the task's code (not the solvers' helper scripts) | aws-iter2-t04 v3 got inject_partial_failure from `= set()` in a Python benchmark of a Java task | fewer misfired mutation operators |
+
+**Tasks:** 25, all window 1 (jobs claimed by the old pods were handed back and re-ran on the new
+release).
+
+| Lane | Session | Batch | Families | Lever |
+|---|---|---|---|---|
+| L1 | api-service-15 | aws-w1-l1 | cross_component_stateful, database_consistency | world.md |
+| L2 | ...-ba | aws-w1-l2 | compilers_parsers, algorithmic_constraints | family briefs |
+| L3 | ...-29 | aws-w1-l3 | performance_resources, distributed_concurrency | task_author.md |
+| L4 | ...-9b | aws-w1-l4 | all six (drew algorithmic + compilers only) | world_mutation.md, calibration.py |
+| L5 | infrastructure-be | aws-w1-l5 | all six | harness, self-checks, classify; infrastructure |
+| L6 | (no session yet) | | | spec sampler and dial |
+
+Lanes top up one task per decided task. Queued for window 2: calibration `add_persistent_state`
+as a last resort (L4, 9af8ab7: 0 of 7 such mutations reached the band).

@@ -52,6 +52,33 @@ def test_any_exception_is_invalid_even_with_a_reward(exc):
     assert m.raw_reward == 0.0  # kept for the audit, never scored
 
 
+CLOSED = ("x__env: failed to send non-blocking keys: command=\"tmux send-keys -t terminus-2 -- 'ls\\n'\", "
+          "return_code=1, stderr=None, stdout='no server running on /tmp/tmux-1000/default\\n'")
+
+
+@pytest.mark.parametrize("reward,outcome", [(1.0, VALID_PASS), (0.0, VALID_FAIL)])
+def test_the_agent_closing_its_own_terminal_is_measured_by_the_verifier(reward, outcome):
+    # An `exit 1` (or set -e) at the prompt logged the shell out; the verifier still ran.
+    t = trial(verifier_result={"rewards": {"reward": reward}},
+              exception_info={"exception_type": "RuntimeError", "exception_message": CLOSED})
+    m = classify(t, EXPECTED)
+    assert (m.outcome, m.reward, m.error) == (outcome, reward, None)
+
+
+def test_a_closed_terminal_without_a_verifier_result_is_still_invalid():
+    t = trial(verifier_result=None, exception_info={"exception_type": "RuntimeError", "exception_message": CLOSED})
+    assert classify(t, EXPECTED).outcome == INVALID
+
+
+def test_other_send_keys_failures_stay_invalid():
+    # A refused send (e.g. a NUL byte) is the harness's problem, not a closed terminal.
+    t = trial(exception_info={"exception_type": "ValueError", "exception_message": "embedded null byte"})
+    assert classify(t, EXPECTED).outcome == INVALID
+    t = trial(exception_info={"exception_type": "RuntimeError",
+                              "exception_message": "failed to send non-blocking keys: return_code=1, stdout=''"})
+    assert classify(t, EXPECTED).outcome == INVALID
+
+
 def test_step_exception_is_invalid():
     t = trial(step_results=[{"step_name": "s1", "exception_info": {"exception_type": "AgentTimeoutError",
                                                                     "exception_message": ""}}])

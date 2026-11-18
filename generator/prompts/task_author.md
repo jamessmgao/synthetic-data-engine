@@ -67,8 +67,8 @@ per line." NEVER: the counterexample (its steps, schedule or
 trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
 that workers can be killed at any moment and restarted), the cause, the files to change, or
 the shape of the fix. The leak review rejects all of these. The symptom is what
-users saw, never the inputs or interleaving that caused it, and an outcome holds whichever
-path produces it ("each request ID is debited at most once, whichever path processes it").
+users saw (a wrong total, a double charge), never the inputs, sequence or state that trigger
+it; for a mutated world, never the case the mutation added. An outcome holds on every path.
 
 Every event, field, file or output the tests rely on is REQUIRED wherever it is described (the
 request, or the environment's README / `--help`), never a "may" an agent can ignore (BAD: "the

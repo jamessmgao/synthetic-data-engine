@@ -124,6 +124,10 @@ MUTATION_OPERATORS = [
     "compose_failure_modes", "expand_state_space", "introduce_temporal_constraint", "remove_cues",
 ]
 MAX_MUTATIONS = 2  # difficulty operators per mutation; remove_cues comes on top
+# Chosen only when nothing else fits: of 7 decided mutations with add_persistent_state, none
+# landed in band (4 stayed 5/5, 1 went 5 → 4, 2 failed the leak review), while
+# extend_cross_component_dependency and introduce_global_invariant took 3 tasks into the band.
+LAST_RESORT = ("add_persistent_state",)
 
 # How the passing agents won → the mutations that defeat it (docs/ANALYSIS.md §5). Each
 # rule: (name, phrases in the pass review's fix_applied / simple_strategy, code patterns
@@ -184,6 +188,15 @@ TECHNIQUE_OPERATORS = {
 }
 
 
+_WRITES = ("cat >", "tee ", "sed -i", "patch ", "write_text", "open(")
+
+
+def _edits_app(command: str) -> bool:
+    """A solver command that writes the task's code: it writes a file, and not a /tmp helper
+    (a `python3 - <<PY` benchmark writes nothing and doesn't count either)."""
+    return any(w in command for w in _WRITES) and "/tmp/" not in command
+
+
 def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | None,
                      history: list[dict]) -> dict[str, Any]:
     """Which world mutations the next version applies, from the evidence (fixed rules, no model).
@@ -203,8 +216,11 @@ def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | Non
 
     analysis = analysis if (analysis or {}).get("trusted") else {}
     passing = [r for r in rollouts if r["outcome"] == Outcome.VALID_PASS]
-    commands = "\n".join(c.get("input", "") for r in passing
-                         for c in (r.get("trace_metrics") or {}).get("tool_calls") or [])
+    # Only commands that write the task's code: a solver's own helper scripts (benchmarks,
+    # checkers) aren't the fix (aws-iter2-t04 v3 got inject_partial_failure from `= set()` in a
+    # Python benchmark of a Java task).
+    commands = "\n".join(cmd for r in passing for c in (r.get("trace_metrics") or {}).get("tool_calls") or []
+                         if _edits_app(cmd := c.get("input", "")))
     said = " ".join(filter(None, [analysis.get("fix_applied"), analysis.get("simple_strategy")])).lower()
 
     hits: list[dict[str, str]] = []  # {operator, why, rule, evidence}
@@ -244,6 +260,7 @@ def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | Non
     hit(("introduce_global_invariant",), "make independently valid actions interact", "default", "no specific rule")
     hit(("generate_counterexample",), "add an input where the plausible fix is wrong", "default", "no specific rule")
 
+    hits.sort(key=lambda h: h["operator"] in LAST_RESORT)  # stable: the rest keep their order
     used = {op for m in history for op in m.get("operators") or []}
     chosen: list[dict[str, str]] = [h for h in hits[:1] if h["operator"] == "remove_cues"]  # a leak first, always
     harder = 0

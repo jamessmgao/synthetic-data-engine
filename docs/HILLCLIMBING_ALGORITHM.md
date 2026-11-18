@@ -123,21 +123,31 @@ the dashboard's Prod numbers and of the yield.
 - If a deploy fails on expired AWS credentials (ExpiredToken), stop deploying, keep monitoring and
   tuning locally, and note it in the log. The cluster and the API keep running.
 
-## Your team: agent sessions
+## Your team: six agent sessions, one manager
 
-You manage the other agent sessions: delegate to them, and keep the decisions and the branch
-yourself.
+Use all six agent sessions. Split the cluster's capacity between them: each runs its own
+mini-batch of tasks (about a sixth of the cluster: today 33 authoring sessions / 6 ≈ 5-6 tasks in
+flight each, kept topped up), under its own strategy, and owns those tasks end to end.
 
-- **Delegate the watching and the analysis:** following tasks through their stages; reading
-  solver trajectories and Trace Parser analyses; diagnosing stuck or failed jobs; drafting a
-  proposed change per finding, with the evidence behind it; infrastructure work on branches.
-- **Keep for yourself:** the decision on each change; all edits to prompts and the revision logic;
-  commits to main; deploys; task submission and cancellation; the iteration log.
-- **How they work:** each session has its own worktree and branch; they propose changes as
-  branches for you to review, merge into main or reject; they never push to main, deploy, cancel
-  tasks, or change budgets or cluster settings themselves unless the user asks them directly;
-  they report back with evidence (job ids, trajectory excerpts, pass counts).
-- **Every limit above applies to them too.**
+- **Each session (a "lane"):**
+  - has a strategy: a set of families, or a lever to work on (e.g. world design, instruction
+    wording, mutations and revisions, family briefs, calibration), so lanes test different ideas
+    in parallel and don't edit the same lever;
+  - submits its mini-batch under its own batch id (`aws-w<window>-<lane>`), keeps it topped up as
+    tasks finish, and watches its own jobs: every stage, the solver trajectories, the Trace
+    Parser analyses, the leak reviews;
+  - turns findings into small, targeted tweaks on its own branch (one per finding, with the
+    evidence and the expected effect), and reports them to the manager;
+  - never pushes to main, deploys, cancels other lanes' tasks, or changes budgets or cluster
+    settings, unless the user asks it directly.
+- **The manager (you):**
+  - assigns the lanes and their strategies, and keeps capacity split evenly;
+  - reviews each lane's tweaks, merges the good ones into main (one change per lever per
+    window, so each window can still say which change did what), runs the tests, and deploys
+    periodically, as the lanes' mini-batches complete (a drained deploy loses no work);
+  - keeps the iteration log: per window, which lanes' changes shipped and what the yield did;
+  - handles the infrastructure, or gives it to one lane.
+- **Every limit above applies to every session.**
 
 ## Done when
 
