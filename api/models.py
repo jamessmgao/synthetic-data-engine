@@ -111,6 +111,7 @@ class BatchSummary(BaseModel):
     cancelled: int = 0
     in_progress: int
     created_at: str
+    dev: bool = False  # in SDE_DEV_BATCHES, or every recorded cost 0 (a mock run)
 
 
 class TaskCreated(BaseModel):
@@ -128,4 +129,5 @@ class TaskSummary(BaseModel):
     stage: Stage
     pass_pattern: str  # one char per rollout slot: ✓ pass, ✗ fail, · not yet scored
     cost_usd: float | None
+    dev: bool = False  # recorded cost exactly 0 (mock runs); left out of reports by default
     created_at: str

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "cn";
+import { ScopeToggle, useScope } from "@/components/dev-toggle";
 import { QueryState } from "@/components/status";
 import { TasksTable } from "@/components/tasks-table";
 import { useApi } from "@/lib/api";
@@ -10,11 +11,14 @@ import type { TaskSummary } from "@/lib/types";
 const FILTERS = ["ALL", "CALIBRATING", "ACCEPTED", "REJECTED", "CANCELLED"] as const;
 
 export default function TasksPage() {
+  const [scope, setScope] = useScope();
+  // Every task once (the API's dev flag), split here: the other view's count comes free.
   const tasks = useApi<TaskSummary[]>("/v1/tasks");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("ALL");
   const [q, setQ] = useState("");
 
-  const all = tasks.data ?? [];
+  const every = tasks.data ?? [];
+  const all = every.filter((t) => t.dev === (scope === "dev"));
   const count = (f: string) => (f === "ALL" ? all.length : all.filter((t) => matches(t, f)).length);
   const shown = all
     .filter((t) => filter === "ALL" || matches(t, filter))
@@ -23,7 +27,10 @@ export default function TasksPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold">Tasks</h1>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <h1 className="text-xl font-semibold">Tasks</h1>
+        <ScopeToggle scope={scope} onChange={setScope} other={tasks.data ? every.length - all.length : undefined} />
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex rounded-lg border p-0.5 text-sm">
           {FILTERS.map((f) => (

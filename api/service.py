@@ -13,6 +13,7 @@ What the services write and these read (PRD §5.1):
   - analyze (Trace Parser): `result.action` and its review cost.
 """
 
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -76,15 +77,30 @@ def _sum_cost(jobs) -> float | None:
     return round(sum(costs), 6) if costs else None
 
 
+def dev_batches() -> frozenset[str]:
+    """Batches counted as dev whatever they cost (SDE_DEV_BATCHES, a comma list; aws-prod
+    sets it): early or abandoned real batches the reports shouldn't mix in."""
+    return frozenset(b.strip() for b in os.environ.get("SDE_DEV_BATCHES", "").split(",") if b.strip())
+
+
+def _is_dev(task: dict, jobs) -> bool:
+    """A dev task: its batch is in dev_batches(), or its recorded cost is exactly 0 (mock
+    models: the lt-* load tests, prodmock, other mock runs). One with nothing recorded yet
+    (None) isn't: a real task just created."""
+    return task.get("batch_id") in dev_batches() or _sum_cost(jobs) == 0
+
+
 def _gate_passed(gate: Any) -> bool:
     return gate is True or (isinstance(gate, dict) and gate.get("passed") is True)
 
 
 def list_tasks(store: SqlStore, status: str | None = None, since: str | None = None,
-               batch_id: str | None = None) -> list[dict]:
-    """Every task (optionally one status, one batch, or created at/after `since`), oldest first."""
+               batch_id: str | None = None, scope: str = "all") -> list[dict]:
+    """Every task (optionally one status, one batch, created at/after `since`, or one scope:
+    prod / dev; all by default, as before), oldest first."""
     tasks = store.tasks(status=status, since=since, batch_id=batch_id)
     jobs_by_task = _jobs_by_task(store, tasks)
+    tasks = [t for t in tasks if _in_scope(scope, t, jobs_by_task[t["id"]])]
     n_runs = eval_config()["n_runs"]
     return [
         {
@@ -96,6 +112,7 @@ def list_tasks(store: SqlStore, status: str | None = None, since: str | None = N
             "stage": t["stage"],
             "pass_pattern": pass_pattern(jobs_by_task[t["id"]], t["current_version"], n_runs),
             "cost_usd": _sum_cost(jobs_by_task[t["id"]]),
+            "dev": _is_dev(t, jobs_by_task[t["id"]]),
             "created_at": t["created_at"],
         }
         for t in tasks
@@ -137,6 +154,40 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
         "pass_pattern": pass_pattern(jobs, version, n_runs),
         "cost_usd": _sum_cost(vjobs),
         "analysis": _analysis_view(vjobs, scored),
+        **_leak_reviews(generates, validates, built[-1]["bundle_sha256"] if built else None),
+    }
+
+
+# The leak gate's detail (validator/gates.py gate_leak), as the task view shows it.
+_LEAK_KEYS = ("passed", "verdict", "leaks", "unverified_quotes", "direct", "strong_hints", "blind",
+              "blind_leak", "cut_fields", "inconclusive", "skipped", "cost_usd", "adopted")
+
+
+def _leak_view(job: dict, detail: dict, sha: str | None = None) -> dict:
+    sha = (job["result"] or {}).get("bundle_sha256") or job["bundle_sha256"] or sha
+    return {"job_id": job["id"], "job_type": job["type"], "origin": (job["input"] or {}).get("origin"),
+            "outcome": job["outcome"], "bundle_sha256": sha,
+            **{k: detail.get(k) for k in _LEAK_KEYS},
+            # The raw record: /v1/artifacts/leak_reviews/<sha>/file?path=review.json
+            "raw": {"kind": "leak_reviews", "key": sha, "path": "review.json"} if sha else None}
+
+
+def _leak_reviews(generates: list[dict], validates: list[dict], final_sha: str | None) -> dict:
+    """A version's leak review: the gate on its final bundle (the last validate's, else the
+    create / revise job's own), and every earlier attempt whose draft was another bundle
+    (a create or repair the review sent back). The gate records it whether it passed or not."""
+    reviewed = [(j, (j["result"] or {}).get("leak")) for j in generates]
+    reviewed = [(j, d) for j, d in reviewed if isinstance(d, dict)]
+    final = next(((j, ((j["result"] or {}).get("gates") or {}).get("leak")) for j in reversed(validates)
+                  if isinstance(((j["result"] or {}).get("gates") or {}).get("leak"), dict)), None)
+    if final is None:
+        final = next(((j, d) for j, d in reversed(reviewed)
+                      if final_sha and (j["result"] or {}).get("bundle_sha256") == final_sha), None)
+    shown = final[0]["id"] if final else None
+    return {
+        "leak_review": _leak_view(*final, sha=final_sha) if final else None,
+        "leak_attempts": [_leak_view(j, d) for j, d in reviewed
+                          if j["id"] != shown and (j["result"] or {}).get("bundle_sha256") != final_sha],
     }
 
 
@@ -224,6 +275,7 @@ def get_task(store: SqlStore, task_id: str) -> dict:
         "decision": decision_text(task, jobs),
         "reason": task["reason"],
         "cost_usd": _sum_cost(jobs),
+        "dev": _is_dev(task, jobs),
     }
 
 
@@ -252,7 +304,7 @@ def queue(store: SqlStore) -> dict:
 
 # --- artifacts: the files behind a result (read-only) -------------------------
 
-ARTIFACT_KINDS = ("bundles", "worlds", "traces")
+ARTIFACT_KINDS = ("bundles", "worlds", "traces", "leak_reviews")
 _ARTIFACT_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$")
 MAX_LISTED_FILES = 5000
 MAX_FILE_BYTES = 1_000_000
@@ -265,6 +317,8 @@ def _artifact_root(artifacts: LocalArtifactStore, kind: str, key: str) -> Path:
         raise NotFound(f"no artifact {kind}/{key}")
     if kind == "traces":
         root = artifacts.trace_dir(key) if artifacts.fetch_trace(key) else None
+    elif kind == "leak_reviews":  # by bundle sha: leak_reviews/<sha>/review.json (shared/jobs/worker.py)
+        root = artifacts.root / kind / key if artifacts.fetch_file(f"{kind}/{key}/review.json") else None
     else:
         root = artifacts.tree_path(kind, key)
     if root is None or not root.is_dir():
@@ -297,21 +351,47 @@ def artifact_file(artifacts: LocalArtifactStore, kind: str, key: str, path: str)
             "text": None if binary else head.decode("utf-8", errors="replace")}
 
 
-def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None = None) -> dict:
+def report(store: SqlStore, task_ids: list[str] | None = None, since: str | None = None,
+           scope: str = "prod") -> dict:
     """summary.json (docs/PRD.md §4) over the named tasks, or those created at/after
     `since` (all tasks if neither is given). Counts are over initial candidates
-    (tasks), not versions; `null` means not measured yet, never zero."""
+    (tasks), not versions; `null` means not measured yet, never zero. Dev tasks (_is_dev)
+    count only in `scope` dev or all (scope_of); `other_scope` says how many the other view has."""
     tasks = store.tasks(ids=task_ids, since=since)
     if task_ids and len(tasks) != len(set(task_ids)):
         missing = sorted(set(task_ids) - {t["id"] for t in tasks})
         raise NotFound(f"unknown task ids: {missing}")
     if not tasks:
         raise NotFound("no tasks match")
-    return {**_summary(store, tasks), "budget": budget.status(store.conn)}
+    return {**_summary(store, tasks, scope), "budget": budget.status(store.conn)}
 
 
-def _summary(store: SqlStore, tasks: list[dict]) -> dict:
+SCOPES = ("prod", "dev", "all")
+
+
+def scope_of(scope: str | None, include_dev: bool = False) -> str:
+    """prod (the default: tasks with real spend), dev (mock runs only), or all. The older
+    include_dev=true still means all."""
+    scope = scope or ("all" if include_dev else "prod")
+    if scope not in SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(SCOPES)}")
+    return scope
+
+
+def _in_scope(scope: str, task: dict, jobs: list[dict]) -> bool:
+    return scope == "all" or (scope == "dev") == _is_dev(task, jobs)
+
+
+def _summary(store: SqlStore, tasks: list[dict], scope: str = "prod") -> dict:
     jobs_by_task = _jobs_by_task(store, tasks)
+    kept = [t for t in tasks if _in_scope(scope, t, jobs_by_task[t["id"]])]
+    return {**_measure(tasks=kept, jobs_by_task=jobs_by_task), "scope": scope,
+            # Tasks the other view (prod <-> dev) has; 0 for all.
+            "other_scope": len(tasks) - len(kept),
+            "include_dev": scope != "prod", "dev_excluded": len(tasks) - len(kept) if scope == "prod" else 0}
+
+
+def _measure(tasks: list[dict], jobs_by_task: dict[str, list[dict]]) -> dict:
     all_jobs = [j for t in tasks for j in jobs_by_task[t["id"]]]
     cfg = eval_config()
 
@@ -333,10 +413,11 @@ def _summary(store: SqlStore, tasks: list[dict]) -> dict:
     accepted = [t for t in tasks if t["status"] == TaskStatus.ACCEPTED]
 
     finished = [j["finished_at"] for j in all_jobs if j["finished_at"]]
-    started = min(t["created_at"] for t in tasks)
+    # (No tasks left once dev ones are excluded, e.g. a load-test batch: an empty report.)
     wall_clock = (
-        round((datetime.fromisoformat(max(finished)) - datetime.fromisoformat(started)).total_seconds())
-        if finished
+        round((datetime.fromisoformat(max(finished))
+               - datetime.fromisoformat(min(t["created_at"] for t in tasks))).total_seconds())
+        if finished and tasks
         else None
     )
     # More than one config hash means rollouts weren't all measured the same way.
@@ -463,8 +544,16 @@ def cancel_batch(store: SqlStore, batch_id: str, by: str = "user", note: str = "
 
 
 def list_batches(store: SqlStore) -> list[dict]:
-    """Every batch with its outcome counts, newest first."""
-    return store.batches()
+    """Every batch with its outcome counts, newest first; `dev` when it's in dev_batches()
+    or everything it recorded cost exactly 0 (a mock run)."""
+    spend = {r["batch_id"]: (r["n"], r["spent"]) for r in store.conn.execute(
+        "SELECT t.batch_id AS batch_id, COUNT(j.cost_usd) AS n, COALESCE(SUM(j.cost_usd), 0) AS spent"
+        " FROM tasks t JOIN jobs j ON j.task_id = t.id WHERE t.batch_id IS NOT NULL GROUP BY t.batch_id"
+    ).fetchall()}
+    listed = dev_batches()
+    return [{**b, "dev": b["batch_id"] in listed
+             or (spend.get(b["batch_id"], (0, 0))[0] > 0 and spend[b["batch_id"]][1] == 0)}
+            for b in store.batches()]
 
 
 def _batch_tasks(store: SqlStore, batch_id: str) -> list[dict]:
@@ -474,17 +563,17 @@ def _batch_tasks(store: SqlStore, batch_id: str) -> list[dict]:
     return tasks
 
 
-def get_batch(store: SqlStore, batch_id: str) -> dict:
-    """One batch: task count per status and each task's summary."""
+def get_batch(store: SqlStore, batch_id: str, scope: str = "all") -> dict:
+    """One batch: task count per status and each task's summary (the summaries in `scope`)."""
     tasks = _batch_tasks(store, batch_id)
     return {
         "batch_id": batch_id,
         "counts_by_status": dict(Counter(t["status"] for t in tasks)),
-        "tasks": list_tasks(store, batch_id=batch_id),
+        "tasks": list_tasks(store, batch_id=batch_id, scope=scope),
     }
 
 
-def batch_report(store: SqlStore, batch_id: str) -> dict:
-    """summary.json over one batch's tasks."""
-    return {"batch_id": batch_id, **_summary(store, _batch_tasks(store, batch_id)),
+def batch_report(store: SqlStore, batch_id: str, scope: str = "prod") -> dict:
+    """summary.json over one batch's tasks in `scope` (prod by default)."""
+    return {"batch_id": batch_id, **_summary(store, _batch_tasks(store, batch_id), scope),
             "budget": budget.status(store.conn, batch_id), "pipeline_budget": budget.status(store.conn)}

@@ -101,8 +101,18 @@ def wait_for_ssm(instance: str, timeout_s: int = 600) -> None:
 
 
 def runners() -> list[str]:
-    """Runner instance ids; [0] is the control runner."""
-    return outputs()["runner_instance_ids"]
+    """Runner instance ids; [0] is the control runner. An apply still running, or one that
+    failed partway (Spot launches, 2026-11-18), leaves null entries: they're skipped, with a
+    warning, instead of failing every SSM call that iterates the runners."""
+    ids = outputs()["runner_instance_ids"]
+    missing = [n for n, i in enumerate(ids) if not i]
+    if missing:
+        print(f"warning: runner{'s' if len(missing) > 1 else ''} {missing} {'have' if len(missing) > 1 else 'has'}"
+              " no instance in the Terraform state (an apply in progress or failed partway); skipped",
+              file=sys.stderr, flush=True)
+    if not ids or not ids[0]:
+        sys.exit("runner[0] (the K3s server / control runner) has no instance in the Terraform state")
+    return [i for i in ids if i]
 
 
 def on_all(fn, instances: list[str]) -> list[str]:

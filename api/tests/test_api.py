@@ -279,6 +279,100 @@ def test_fresh_report_has_nulls_not_zeros(client):
     assert r["yield"]["learnable_rate"] is None  # nothing has finished
 
 
+# --- dev tasks: recorded cost exactly 0 (mock runs), left out of reports by default ----
+
+def test_dev_tasks_are_flagged_and_left_out_of_reports(client, backend, worked_batch):
+    dev = create(client, task_id="lt-000")["task_id"]
+    rollout(backend, dev, 1, 1, "VALID_PASS", cost_usd=0.0)
+    set_task(backend, dev, status="ACCEPTED", accepted_version=1)
+
+    by_id = {t["id"]: t for t in client.get("/v1/tasks", headers=AUTH).json()}
+    assert by_id["lt-000"]["dev"] is True
+    # Paid, and not measured yet (None), are both prod.
+    assert not any(by_id[t]["dev"] for t in ("t-01", "t-02", "t-03"))
+    assert client.get("/v1/tasks/lt-000", headers=AUTH).json()["dev"] is True
+
+    prod = client.get("/v1/report", headers=AUTH).json()
+    assert (prod["scope"], prod["candidates"], prod["other_scope"]) == ("prod", 3, 1)
+    assert prod["yield"]["learnable_rate"] == 0.5  # the dev accept doesn't count
+    dev_only = client.get("/v1/report", params={"scope": "dev"}, headers=AUTH).json()
+    assert (dev_only["candidates"], dev_only["other_scope"], dev_only["yield"]["accepted"]) == (1, 3, 1)
+    both = client.get("/v1/report", params={"scope": "all"}, headers=AUTH).json()
+    assert (both["candidates"], both["other_scope"]) == (4, 0)
+    assert both["yield"]["accepted"] == 2 and both["valid_rollouts"] == prod["valid_rollouts"] + 1
+    # The older include_dev=true still means all; a bad scope is a 422.
+    assert client.get("/v1/report", params={"include_dev": "true"}, headers=AUTH).json()["candidates"] == 4
+    assert client.get("/v1/report", params={"scope": "nope"}, headers=AUTH).status_code == 422
+    # The task list takes the same scope (all by default, as before).
+    assert {t["id"] for t in client.get("/v1/tasks", params={"scope": "dev"}, headers=AUTH).json()} == {"lt-000"}
+    assert len(client.get("/v1/tasks", params={"scope": "prod"}, headers=AUTH).json()) == 3
+    assert len(client.get("/v1/tasks", headers=AUTH).json()) == 4
+
+
+def test_an_all_dev_batch_reports_empty_by_default(client, backend):
+    ids = create_batch(client, count=2, batch_id="lt-s1")["task_ids"]
+    for tid in ids:
+        rollout(backend, tid, 1, 1, "VALID_PASS", cost_usd=0.0)
+    r = client.get("/v1/batches/lt-s1/report", headers=AUTH).json()
+    assert (r["candidates"], r["other_scope"], r["wall_clock_s"]) == (0, 2, None)
+    assert r["yield"]["learnable_rate"] is None
+    assert client.get("/v1/batches/lt-s1/report", params={"scope": "dev"},
+                      headers=AUTH).json()["candidates"] == 2
+    assert {b["batch_id"]: b["dev"] for b in client.get("/v1/batches", headers=AUTH).json()} == {"lt-s1": True}
+
+
+def test_listed_batches_are_dev_whatever_they_cost(client, backend, monkeypatch):
+    monkeypatch.setenv("SDE_DEV_BATCHES", "revival-1, aws-b1")
+    paid = create_batch(client, count=1, batch_id="aws-b1")["task_ids"][0]
+    rollout(backend, paid, 1, 1, "VALID_PASS", cost_usd=1.5)
+    real = create_batch(client, count=1, batch_id="aws-b2")["task_ids"][0]
+    rollout(backend, real, 1, 1, "VALID_PASS", cost_usd=1.0)
+    by_id = {t["id"]: t["dev"] for t in client.get("/v1/tasks", headers=AUTH).json()}
+    assert by_id == {paid: True, real: False}
+    assert {b["batch_id"]: b["dev"] for b in client.get("/v1/batches", headers=AUTH).json()} == \
+        {"aws-b1": True, "aws-b2": False}
+    assert client.get("/v1/report", headers=AUTH).json()["task_ids"] == [real]
+
+
+LEAK_PASS = {"passed": True, "verdict": "clean", "leaks": [], "unverified_quotes": [], "direct": 0,
+             "strong_hints": 0, "blind_leak": False, "cost_usd": 0.02, "adopted": False,
+             "blind": {"prediction": {"predicted_fix": "Add a retry around the write.",
+                                      "predicted_failure": "a lost update"},
+                       "judge": {"match": "generic", "why": "Names no file or mechanism."}}}
+
+
+def test_leak_reviews_per_version_and_attempt(client, backend):
+    tid = create(client, task_id="t-leak")["task_id"]
+    failed = {**LEAK_PASS, "passed": False, "blind_leak": True,
+              "blind": {**LEAK_PASS["blind"], "judge": {"match": "specific", "why": "Names the lock."}}}
+    add_job(backend, tid, 1, "create", job_id(tid, 1, "create"), outcome="FAILED", bundle_sha256="sha-draft1",
+            result={"bundle_sha256": "sha-draft1", "leak": failed})
+    add_job(backend, tid, 1, "create", job_id(tid, 1, "create") + "-repair1", outcome="OK",
+            bundle_sha256="sha-final", input={"origin": "repair"},
+            result={"bundle_sha256": "sha-final", "leak": LEAK_PASS})
+    add_job(backend, tid, 1, "validate", job_id(tid, 1, "validate", 0), outcome="OK",
+            result={"gates": {**GOOD_GATES, "leak": {**LEAK_PASS, "adopted": True}}})
+    (v1,) = client.get(f"/v1/tasks/{tid}", headers=AUTH).json()["versions"]
+    review = v1["leak_review"]
+    assert (review["passed"], review["job_type"], review["bundle_sha256"], review["adopted"]) == \
+        (True, "validate", "sha-final", True)
+    assert review["blind"]["judge"] == {"match": "generic", "why": "Names no file or mechanism."}
+    assert review["raw"] == {"kind": "leak_reviews", "key": "sha-final", "path": "review.json"}
+    (attempt,) = v1["leak_attempts"]  # the draft the review sent back; the repair's is the final one
+    assert (attempt["passed"], attempt["bundle_sha256"], attempt["blind"]["judge"]["match"]) == \
+        (False, "sha-draft1", "specific")
+
+
+def test_raw_leak_review_is_an_artifact(client, backend):
+    d = backend.work_dir / "leak_reviews" / "sha-final"
+    d.mkdir(parents=True)
+    (d / "review.json").write_text('{"version": 4}\n')
+    r = client.get("/v1/artifacts/leak_reviews/sha-final/file", params={"path": "review.json"}, headers=AUTH)
+    assert r.status_code == 200 and r.json()["text"] == '{"version": 4}\n'
+    assert client.get("/v1/artifacts/leak_reviews/nope/file", params={"path": "review.json"},
+                      headers=AUTH).status_code == 404
+
+
 # --- batches: N tasks under one label, reported together ---------------------
 
 

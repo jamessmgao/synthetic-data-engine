@@ -41,7 +41,9 @@ IMAGE = "sde-pipeline:local"
 UI_IMAGE = "sde-dashboard:local"  # the aws-prod overlays' dashboard, built on the server only
 # `deploy --only a,b`: component → the Deployments (app.kubernetes.io/name) it applies and rolls.
 COMPONENTS = {"ui": ("dashboard", "dashboard-tunnel"), "api": ("api",), "control": ("control",),
-              "validate": ("validate",), "executor": ("executor",), "generation": ("generation",)}
+              "validate": ("validate",), "executor": ("executor",), "generation": ("generation",),
+              "spot": ("spot-termination",)}  # a DaemonSet with a public image: nothing to build
+DAEMONSETS = ("spot-termination",)
 # Quick tunnels: a restart gives a new URL, so a deploy restarts them only when their spec changes.
 TUNNELS = ("public-tunnel", "dashboard-tunnel")
 JOINING = "sde/joining"  # the taint `join` holds on a new node until its images are in
@@ -118,15 +120,17 @@ def ship(ref: str, server_only: bool = False, targets: list[str] | None = None) 
 def build_and_import(release: str, targets: list[str] | None = None) -> None:
     """Build the image into each node's Docker and copy it into K3s's containerd.
 
-    `ctr import` can report success without the image landing, so crictl checks each node.
+    Tagged both :local (the test overlays) and :<release sha> (aws-prod pins that: see
+    pin_tags). `ctr import` can report success without the image landing, so crictl checks.
     """
+    sha_image = f"sde-pipeline:{release_tag(release)}"
     cmds = [
         f"cd {release} && docker build -q --provenance=false --sbom=false"
-        f" -f deploy/Dockerfile --target runner -t {IMAGE} . >/dev/null",
-        f"docker save {IMAGE} | k3s ctr -n k8s.io images import - >/dev/null",
-        f"k3s crictl images -q docker.io/library/{IMAGE} | grep -q ."
-        f" || {{ echo \"image {IMAGE} missing on $(hostname) after import\" >&2; exit 1; }}",
-        f"echo \"$(hostname): {IMAGE} imported\"",
+        f" -f deploy/Dockerfile --target runner -t {IMAGE} -t {sha_image} . >/dev/null",
+        f"docker save {IMAGE} {sha_image} | k3s ctr -n k8s.io images import - >/dev/null",
+        f"k3s crictl images -q docker.io/library/{sha_image} | grep -q ."
+        f" || {{ echo \"image {sha_image} missing on $(hostname) after import\" >&2; exit 1; }}",
+        f"echo \"$(hostname): {sha_image} imported\"",
     ]
     for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), targets or cluster_runners()):
         print(log.strip())
@@ -246,6 +250,16 @@ def cmd_join() -> None:
     ], timeout_s=900), new)
     wait_ready(server, new, len(ids))
     build_and_import(release, targets=new)
+    # After scoped deploys the Deployments can run different releases' sde-pipeline:<sha>:
+    # build every one in use, from its release dir on the server, so any pod can land here.
+    used = remote(server, [f"{K} get deploy -o jsonpath='{{..image}}' | tr ' ' '\\n'"
+                           " | sed -n 's/^sde-pipeline:\\(.*\\)$/\\1/p' | sort -u"], timeout_s=60).split()
+    for tag in sorted(set(used) - {"local", release_tag(release)}):
+        full = remote(server, [f"basename $(ls -d /opt/sde/releases/{tag}* | head -1)"], timeout_s=60).strip()
+        print(f"also sde-pipeline:{tag}, in use by a Deployment…", flush=True)
+        build_and_import(ship(full, targets=new), targets=new)
+    if set(used) - {"local", release_tag(release)}:  # ship() relinked CURRENT to the older one
+        on_all(lambda i: remote(i, [f"ln -sfn {release} {CURRENT}"], timeout_s=60), new)
     # K3s applies --node-taint only when the node registers, so removing it once is enough.
     hosts = on_all(lambda i: remote(i, ["hostname"], timeout_s=60).strip(), new)
     print(remote(server, [*(f"{KUBECTL} taint node {h} {JOINING}:NoSchedule- || true" for h in hosts),
@@ -281,13 +295,36 @@ def authoring_image(release: str, targets: list[str] | None = None) -> str:
 def dashboard_image(release: str) -> None:
     """Build the dashboard (web/Dockerfile) on the server, where its pod is pinned, and import it
     into K3s. Docker's layer cache makes an unchanged web/ a no-op rebuild."""
+    sha_image = f"sde-dashboard:{release_tag(release)}"
     print(remote(runners()[0], [
-        f"cd {release} && docker build -q -t {UI_IMAGE} web >/dev/null",
-        f"docker save {UI_IMAGE} | k3s ctr -n k8s.io images import - >/dev/null",
-        f"k3s crictl images -q docker.io/library/{UI_IMAGE} | grep -q ."
-        f" || {{ echo \"image {UI_IMAGE} missing after import\" >&2; exit 1; }}",
-        f"echo \"{UI_IMAGE} imported on the server\"",
+        f"cd {release} && docker build -q -t {UI_IMAGE} -t {sha_image} web >/dev/null",
+        f"docker save {UI_IMAGE} {sha_image} | k3s ctr -n k8s.io images import - >/dev/null",
+        f"k3s crictl images -q docker.io/library/{sha_image} | grep -q ."
+        f" || {{ echo \"image {sha_image} missing after import\" >&2; exit 1; }}",
+        f"echo \"{sha_image} imported on the server\"",
     ], timeout_s=1800).strip())
+
+
+def release_tag(release: str) -> str:
+    """The image tag of a release (/opt/sde/releases/<sha>): its sha's first 12 characters."""
+    return release.rstrip("/").rsplit("/", 1)[-1][:12]
+
+
+def pin_tags(release: str, images: tuple[str, ...]) -> list[str]:
+    """Commands that point aws-prod's `images:` entries at this release's tags, in the release's
+    copy of the overlay (as authoring.env is written there). A pod restarted later then runs
+    the version it was deployed with, never whatever :local a later build left on its node.
+    Idempotent (a release dir is reused when the same sha is deployed again); fails if the line
+    isn't there, rather than deploying :local by accident."""
+    k = "infra/k8s/overlays/aws-prod/kustomization.yaml"
+    tag = release_tag(release)
+    cmds = []
+    for name in images:
+        head = f"{{name: {name}, newName: {name}, newTag: "
+        cmds += [f"grep -qF {shlex.quote(head)} {k} || {{ echo 'no {name} image line in {k}' >&2; exit 1; }}",
+                 f"sed -i 's/{{name: {name}, newName: {name}, newTag: [^}}]*}}/{head}{tag}}}/' {k}",
+                 f"grep -qF {shlex.quote(head + tag + '}')} {k} || {{ echo 'pinning {name} failed' >&2; exit 1; }}"]
+    return cmds
 
 
 def prod_secret_cmds() -> list[str]:
@@ -338,11 +375,14 @@ def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
     Images: ui → sde-dashboard (web/, the server only); api / control / validate / executor →
     sde-pipeline (every node); generation → sde-pipeline plus the authoring tarball."""
     names = [n for c in only for n in COMPONENTS[c]]
-    pipeline = [n for n in names if n not in COMPONENTS["ui"]]
+    pipeline = [n for n in names if n not in (*COMPONENTS["ui"], *DAEMONSETS)]
     release = ship(ref, server_only=not pipeline)
     if "ui" in only:
         dashboard_image(release)
-    pre = [f"cd {release} && touch deploy/local.env"]
+    pre = [f"cd {release} && touch deploy/local.env",
+           # Only the images this deploy built get this release's tag; the objects of the
+           # other components aren't applied, so they keep the tags they run.
+           *pin_tags(release, (("sde-pipeline",) if pipeline else ()) + (("sde-dashboard",) if "ui" in only else ()))]
     if pipeline:
         build_and_import(release)
         pre += prod_secret_cmds()
@@ -356,18 +396,18 @@ def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
                 f'[ -n "$live" ] || {{ echo "cannot read the live SDE_AUTHORING_IMAGE" >&2; exit 1; }}',
                 f"echo SDE_AUTHORING_IMAGE=$live > {env}"]
     sel = names + (["sde-config", "bootstrap"] if pipeline else [])
-    rolled = [n for n in names if n not in TUNNELS]
+    rolled = [n for n in names if n not in (*TUNNELS, *DAEMONSETS)]
     print(f"deploying only {', '.join(names)} from {path}…", flush=True)
     rolled_sel = "app.kubernetes.io/name in (" + ",".join(rolled) + ")"
     print(remote(runners()[0], [
         *pre,
         *([f"{K} delete job bootstrap --ignore-not-found"] if pipeline else []),
-        template_snapshot(rolled_sel),
+        *([template_snapshot(rolled_sel)] if rolled else []),
         f"set -o pipefail;{KUBECTL} kustomize --load-restrictor LoadRestrictionsNone {path}"
         f" | {KUBECTL} apply -l {shlex.quote('app.kubernetes.io/name in (' + ','.join(sel) + ')')} -f -",
         *([f"{K} wait job/bootstrap --for=condition=complete --timeout=300s"] if pipeline else []),
-        restart_unchanged(rolled_sel),
-        *(f"{K} rollout status deploy/{n} --timeout=300s" for n in names),
+        *([restart_unchanged(rolled_sel)] if rolled else []),
+        *(f"{K} rollout status {'daemonset' if n in DAEMONSETS else 'deploy'}/{n} --timeout=1800s" for n in names),
     ], timeout_s=1800))
     cmd_public()
 
@@ -387,6 +427,7 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
     build_and_import(release)
     pre = [f"cd {release} && touch deploy/local.env"]  # the base's optional settings file
     if prod:
+        pre += pin_tags(release, ("sde-pipeline", "sde-dashboard"))
         dashboard_image(release)
         tag = authoring_image(release)
         # The overlay merges this into sde-config (agreed with K1); the file is gitignored.
@@ -410,7 +451,7 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
         f"for s in $({K} get statefulset -o name); do {K} rollout status $s --timeout=300s; done",
         f"if {K} get job/bootstrap >/dev/null 2>&1; then"
         f" {K} wait job/bootstrap --for=condition=complete --timeout=300s; fi",
-        f"for d in $({K} get deploy -o name); do {K} rollout status $d --timeout=300s; done",
+        f"for d in $({K} get deploy -o name); do {K} rollout status $d --timeout=1800s; done",
     ], timeout_s=1800))
     cmd_status()
     if prod:

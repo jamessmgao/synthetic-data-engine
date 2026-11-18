@@ -5,8 +5,16 @@ kind: Deployment
 metadata:
   name: generation
 spec:
+  # Drain on deploy: new pods come up first (never fewer than `replicas` serving), and an old
+  # one, on SIGTERM, stops claiming and lets its running sessions finish (SDE_DRAIN_ON_TERM_S,
+  # 60 min) before it exits; at the deadline it hands what's left back (attempt refunded).
+  # Old pods drain alongside the new ones, so memory and RDS connections rise for that hour.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 2, maxUnavailable: 0}
   template:
     spec:
+      terminationGracePeriodSeconds: 3900  # the drain (3600 s) plus the release and exit
       containers:
         # 3 authoring sessions per pod (30 on 10 pods; the user's call, 2026-11-18, up from 2): sessions wait on the
         # model, so nodes ran at 4-8% CPU and 5.4-6 GB free with 1 each. The docker wrapper's label scope
@@ -18,6 +26,7 @@ spec:
             # One role container at a time per session: 3 sessions x 2 parallel roles x 2 GB caps could
             # ask 12 GB of a 6 GiB dind, and an OOM inside dind reads as a failed self-check, not infra.
             - {name: SDE_TASK_PARALLEL, value: "1"}
+            - {name: SDE_DRAIN_ON_TERM_S, value: "3600"}
           # Measured ~370-450 MiB with one session; a runaway is stopped, not the node.
           resources:
             requests: {memory: 512Mi}

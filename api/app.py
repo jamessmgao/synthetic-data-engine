@@ -10,6 +10,7 @@ whichever tasks the caller names (or created since a time).
 
 import hmac
 import os
+from typing import Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -20,6 +21,9 @@ from api.submit import BatchConflict, TaskConflict, create_batch, create_task
 from shared.taxonomy.taxonomy import families_listing
 
 from . import service
+
+# Which tasks a report or listing covers (api/service.py scope_of): prod, dev or all.
+Scope = Literal["prod", "dev", "all"]
 from .models import (BatchCreated, BatchRequest, BatchSummary, CancelRequest, TaskCreated, TaskRequest,
                      TaskSummary)
 
@@ -54,13 +58,17 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
         return families_listing()
 
     @v1.get("/tasks", response_model=list[TaskSummary])
-    def list_tasks(status: str | None = None, since: str | None = None):
-        return service.list_tasks(store, status=status, since=since)
+    def list_tasks(status: str | None = None, since: str | None = None, scope: Scope = "all"):
+        return service.list_tasks(store, status=status, since=since, scope=scope)
 
     @v1.get("/report")
-    def get_report(task_id: list[str] | None = Query(None), since: str | None = None):
-        """Yield, cost and time over the named tasks, or those created at/after `since`."""
-        return service.report(store, task_ids=task_id, since=since)
+    def get_report(task_id: list[str] | None = Query(None), since: str | None = None,
+                   scope: Scope | None = None, include_dev: bool = False):
+        """Yield, cost and time over the named tasks, or those created at/after `since`, in
+        `scope`: prod (the default), dev (mock runs, SDE_DEV_BATCHES) or all.
+        include_dev=true (older) means all."""
+        return service.report(store, task_ids=task_id, since=since,
+                              scope=service.scope_of(scope, include_dev))
 
     @v1.get("/tasks/{task_id}")
     def get_task(task_id: str):
@@ -107,13 +115,13 @@ def create_app(backend: Backend | None = None, api_key: str | None = None) -> Fa
         return service.list_batches(store)
 
     @v1.get("/batches/{batch_id}")
-    def get_batch(batch_id: str):
-        return service.get_batch(store, batch_id)
+    def get_batch(batch_id: str, scope: Scope = "all"):
+        return service.get_batch(store, batch_id, scope=scope)
 
     @v1.get("/batches/{batch_id}/report")
-    def get_batch_report(batch_id: str):
-        """summary.json over the batch, with its yield block."""
-        return service.batch_report(store, batch_id)
+    def get_batch_report(batch_id: str, scope: Scope | None = None, include_dev: bool = False):
+        """summary.json over the batch's tasks in `scope` (prod by default), with its yield block."""
+        return service.batch_report(store, batch_id, scope=service.scope_of(scope, include_dev))
 
     app.include_router(v1)
 

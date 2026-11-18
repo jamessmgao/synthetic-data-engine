@@ -68,7 +68,9 @@ resource "aws_instance" "runner" {
   count                       = var.runner_count
   ami                         = data.aws_ssm_parameter.al2023.value
   instance_type               = var.runner_instance_type
-  subnet_id                   = aws_subnet.public[count.index % 2].id
+  # Spot runners all in the first subnet's AZ: the second had no m7i-flex.large Spot capacity
+  # (2026-11-18). On-demand runners alternate the two subnets as before.
+  subnet_id = count.index >= var.on_demand_count ? aws_subnet.public[0].id : aws_subnet.public[count.index % 2].id
   vpc_security_group_ids      = [aws_security_group.runner.id]
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.runner.name

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { JobsTable } from "@/components/jobs-table";
+import { LeakReviewPanel } from "@/components/leak-review";
 import { PassPattern, QueryState, StatusBadge } from "@/components/status";
 import { useApi } from "@/lib/api";
 import { duration, localTime, usd } from "@/lib/format";
@@ -31,6 +32,11 @@ export default function TaskPage() {
             <CardContent className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-3">
                 <StatusBadge value={d.task.status} />
+                {d.dev && (
+                  <Badge variant="secondary" title="Mock run (recorded cost 0): left out of reports by default">
+                    dev
+                  </Badge>
+                )}
                 <span className="font-medium">{d.decision}</span>
               </div>
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-foreground">
@@ -143,6 +149,21 @@ function VersionCard({ v, rollouts, accepted }: { v: Version; rollouts: Rollout[
             )}
           </span>
         </div>
+        {(v.leak_review || v.leak_attempts.length > 0) && (
+          <details open={v.leak_review?.passed === false || undefined} className="group">
+            <summary className="cursor-pointer text-sm text-muted-foreground select-none">
+              Leak review
+              {v.leak_review && ` · ${v.leak_review.passed ? "passed" : v.leak_review.passed === false ? "failed" : "—"}`}
+              {v.leak_attempts.length > 0 && ` · ${v.leak_attempts.length} earlier draft${v.leak_attempts.length > 1 ? "s" : ""}`}
+            </summary>
+            <div className="mt-2 flex flex-col gap-2">
+              {v.leak_review && <LeakReviewPanel review={v.leak_review} title="Final bundle" />}
+              {v.leak_attempts.map((a, i) => (
+                <LeakReviewPanel key={a.job_id} review={a} title={`Earlier draft ${i + 1}`} />
+              ))}
+            </div>
+          </details>
+        )}
         {rollouts.length > 0 && (
           <div className="flex flex-col divide-y rounded-lg border">
             {rollouts.map((r) => (

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ProgressBar } from "@/components/status";
+import { Badge } from "@/components/ui/badge";
 import { ago } from "@/lib/format";
 import type { BatchSummary } from "@/lib/types";
 
@@ -29,6 +30,11 @@ export function BatchesTable({ batches }: { batches: BatchSummary[] }) {
               <Link href={`/batches/${encodeURIComponent(b.batch_id)}`} className="font-mono text-xs underline-offset-4 hover:underline">
                 {b.batch_id}
               </Link>
+              {b.dev && (
+                <Badge variant="secondary" className="ml-1.5 align-middle" title="Dev batch (mock runs, or listed in SDE_DEV_BATCHES): left out of Prod numbers">
+                  dev
+                </Badge>
+              )}
             </TableCell>
             <TableCell className="text-right tabular-nums">{b.tasks}</TableCell>
             <TableCell>

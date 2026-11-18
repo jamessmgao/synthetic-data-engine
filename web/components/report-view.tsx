@@ -81,7 +81,7 @@ function BreakdownTable({ rows }: { rows: Record<string, Breakdown> }) {
             <TableCell className="text-right tabular-nums">{b.accepted}</TableCell>
             <TableCell className="text-right tabular-nums">{b.rejected}</TableCell>
             <TableCell className="text-right tabular-nums">{pct(b.learnable_rate)}</TableCell>
-            <TableCell className="text-right tabular-nums" title={`${b.valid_rollouts} valid rollouts`}>
+            <TableCell className="text-right tabular-nums" title={`${b.valid_rollouts} valid agent runs`}>
               {pct(b.pass_rate)}
             </TableCell>
           </TableRow>

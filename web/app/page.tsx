@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BatchesTable } from "@/components/batches-table";
+import { ScopeToggle, scopeQuery, useScope } from "@/components/dev-toggle";
 import { JobsTable } from "@/components/jobs-table";
 import { QueryState, Stat } from "@/components/status";
 import { ApiError, useApi } from "@/lib/api";
@@ -15,7 +16,8 @@ const JOB_TYPES = ["world", "world_check", "create", "revise", "validate", "roll
 const JOB_STATUSES: JobStatus[] = ["READY", "LEASED", "DONE", "DEAD"];
 
 export default function Overview() {
-  const report = useApi<Report>("/v1/report");
+  const [scope, setScope] = useScope();
+  const report = useApi<Report>(`/v1/report${scopeQuery(scope)}`);
   const queue = useApi<Queue>("/v1/queue");
   const batches = useApi<BatchSummary[]>("/v1/batches");
   const noTasks = report.error instanceof ApiError && report.error.status === 404;
@@ -23,9 +25,12 @@ export default function Overview() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Overview</h1>
-        <p className="text-sm text-muted-foreground">Every task the pipeline has. Refreshes every 10 s.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">Overview</h1>
+          <p className="text-sm text-muted-foreground">Every task the pipeline has. Refreshes every 10 s.</p>
+        </div>
+        <ScopeToggle scope={scope} onChange={setScope} other={r?.other_scope} />
       </div>
 
       {!noTasks && <QueryState error={report.error} isLoading={report.isLoading} />}
@@ -40,7 +45,7 @@ export default function Overview() {
           />
           <Stat label="Learnable rate" value={pct(r.yield.learnable_rate)} hint="accepted / finished" />
           <Stat label="Cost" value={usd(r.cost_usd.total)} hint={`${usd(r.cost_usd.per_accepted)} per accepted`} />
-          <Stat label="Rollouts" value={r.valid_rollouts} hint={`${r.invalid_rollouts} invalid · ${duration(r.wall_clock_s)} wall`} />
+          <Stat label="Agent runs" value={r.valid_rollouts} hint={`${r.invalid_rollouts} invalid · ${duration(r.wall_clock_s)} wall`} />
         </div>
       )}
       {noTasks && <p className="text-sm text-muted-foreground">No tasks yet.</p>}

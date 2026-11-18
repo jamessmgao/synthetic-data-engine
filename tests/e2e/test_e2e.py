@@ -185,9 +185,11 @@ def test_a_batch_runs_to_its_yield_report(make_pipeline):
 
     status = p.api("GET", "/v1/batches/e2e")
     assert status["counts_by_status"] == {"ACCEPTED": 4, "REJECTED": 4}
-    assert p.api("GET", "/v1/batches") == [{"batch_id": "e2e", "tasks": 8, "accepted": 4, "rejected": 4,
-                                            "cancelled": 0, "in_progress": 0, "created_at": status["tasks"][0]["created_at"]}]
-    report = p.api("GET", "/v1/batches/e2e/report")
+    # (`dev`, and the report's scope, depend on the scenario's mock costs: not what this checks.)
+    assert [{k: v for k, v in b.items() if k != "dev"} for b in p.api("GET", "/v1/batches")] == \
+        [{"batch_id": "e2e", "tasks": 8, "accepted": 4, "rejected": 4,
+          "cancelled": 0, "in_progress": 0, "created_at": status["tasks"][0]["created_at"]}]
+    report = p.api("GET", "/v1/batches/e2e/report?scope=all")
     assert report["batch_id"] == "e2e" and {k: report[k] for k in EXPECTED_REPORT} == EXPECTED_REPORT
     assert report["yield"] == {"candidates": 8, "functional": 6, "accepted": 4, "accepted_v1": 3,
                                "learnable_rate": 0.5}

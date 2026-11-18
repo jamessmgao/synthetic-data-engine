@@ -49,6 +49,7 @@ from typing import Callable
 
 from evaluation import harbor, settings
 from evaluation.classify import INVALID, classify
+from shared.storage import dbretry
 from shared.storage import Backend, describe, from_env
 from shared.storage.sql import rollout_job_id
 from shared.jobs.jobqueue import JobQueue
@@ -56,6 +57,8 @@ from shared.contracts.models import DOCKER_SLOTS, HEARTBEAT_S, LEASE_TTL_S, MAX_
 
 log = logging.getLogger("executor")
 HEARTBEAT_RETRY_S = 5.0  # after a failed heartbeat, retry sooner than the normal interval
+LOOP_ERROR_WAIT_S = 5.0  # after an unexpected error in a worker loop
+STARTUP_WAIT_S = 600.0  # how long a starting executor waits for the database
 
 
 def rollout_job(task_id: str, version: int, slot: int, bundle_sha256: str, retry: int = 0,
@@ -146,7 +149,8 @@ class Executor:
 
     def run_one(self, owner: str) -> bool:
         """Claim and process one rollout job. Returns False if there was nothing to claim."""
-        job = self.queue.claim(JobType.ROLLOUT, owner, self.lease_sec, self.docker_slots)
+        job = dbretry.retry(lambda: self.queue.claim(JobType.ROLLOUT, owner, self.lease_sec, self.docker_slots),
+                            f"{owner}: claim", stop=self.stop)
         if job is None:
             return False
         self.process(job)
@@ -169,7 +173,8 @@ class Executor:
             if lease_lost.is_set():
                 log.warning("%s: lease lost to another worker; dropped without recording", job_id)
             else:
-                self.queue.release(job_id, token, refund_attempt=True)
+                dbretry.retry(lambda: self.queue.release(job_id, token, refund_attempt=True),
+                              f"{job_id}: release", budget_s=self.lease_sec)
                 log.info("%s: stopped for shutdown; released back to the queue", job_id)
             return
         finally:
@@ -180,7 +185,10 @@ class Executor:
 
         followups = (*followups, analyze_job(job))
         # Fenced: with the lease lost this changes nothing, except a cancelled job keeps its cost.
-        if not self.queue.settle(job_id, token, fields, followups) or lease_lost.is_set():
+        # Through a database blip the settle is retried within the lease (fenced either way).
+        settled = dbretry.retry(lambda: self.queue.settle(job_id, token, fields, followups),
+                                f"{job_id}: settle", budget_s=self.lease_sec)
+        if not settled or lease_lost.is_set():
             log.warning("%s: lease lost before settling; result discarded (the new owner will adopt it)", job_id)
             return
         if fields["outcome"] == INVALID:
@@ -269,16 +277,24 @@ class Executor:
     # --- worker loop ----------------------------------------------------------------
 
     def _worker(self, owner: str, idle: Callable[[], bool] | None) -> None:
+        # An error never ends this thread (see shared/storage/dbretry.py): it is logged, and the loop
+        # goes on after a short wait.
         while not self.stop.is_set():
-            pause = self.breaker.open_for()
-            if pause:
-                self.stop.wait(min(pause, self.poll_sec * 10))
-                continue
-            if self.run_one(owner):
-                continue
-            if idle is not None and idle():
-                return
-            self.stop.wait(self.poll_sec)
+            try:
+                pause = self.breaker.open_for()
+                if pause:
+                    self.stop.wait(min(pause, self.poll_sec * 10))
+                    continue
+                if self.run_one(owner):
+                    continue
+                if idle is not None and idle():
+                    return
+                self.stop.wait(self.poll_sec)
+            except Exception:
+                if self.stop.is_set():
+                    return
+                log.exception("%s: worker loop error; going on in %.0fs", owner, LOOP_ERROR_WAIT_S)
+                self.stop.wait(LOOP_ERROR_WAIT_S)
 
     def serve(self, n_workers: int | None = None, idle: Callable[[], bool] | None = None) -> None:
         """Run worker threads until ``stop`` is set, or until ``idle()`` says nothing is left."""
@@ -329,7 +345,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(threadName)s %(message)s")
 
-    backend = from_env()
+    # Starting while the database is away waits for it (nothing is running yet).
+    backend = dbretry.retry(from_env, "connecting to the backends", budget_s=STARTUP_WAIT_S)
     log.info("executor: %d workers, backends %s, agent %s", args.workers, describe(backend), harbor.pinned_agent())
     Executor(backend).serve(n_workers=args.workers, idle=no_open_rollouts(backend) if args.until_idle else None)
 

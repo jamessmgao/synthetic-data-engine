@@ -25,6 +25,7 @@ export interface BatchSummary {
   cancelled: number;
   in_progress: number;
   created_at: string;
+  dev: boolean; // mock runs, or in the API's SDE_DEV_BATCHES
 }
 
 export interface TaskSummary {
@@ -36,6 +37,7 @@ export interface TaskSummary {
   stage: string;
   pass_pattern: string;
   cost_usd: number | null;
+  dev: boolean; // recorded cost exactly 0: a mock run (load test, prodmock)
   created_at: string;
 }
 
@@ -77,6 +79,8 @@ export interface Report {
   by_family: Record<string, Breakdown>;
   by_mechanism: Record<string, Breakdown>;
   yield: { candidates: number; functional: number; accepted: number; accepted_v1: number; learnable_rate: number | null };
+  scope: "prod" | "dev" | "all";
+  other_scope: number; // tasks the other view (prod <-> dev) has
 }
 
 export interface Job {
@@ -120,6 +124,38 @@ export interface Version {
   pass_count: number | null;
   pass_pattern: string;
   cost_usd: number | null;
+  leak_review: LeakReview | null; // the leak gate on the final bundle
+  leak_attempts: LeakReview[]; // earlier drafts (a create or repair it sent back)
+}
+
+// The leak gate (validator/gates.py gate_leak) on one bundle: a semantic review of the
+// instruction against the hidden fix, and a blind prediction from the instruction alone,
+// judged against the real fix (only "specific" is a leak).
+export interface LeakReview {
+  job_id: string;
+  job_type: string;
+  origin: string | null;
+  outcome: string | null;
+  bundle_sha256: string | null;
+  passed: boolean | null;
+  verdict: string | null; // clean | leak | inconclusive
+  leaks: { quote: string; reveals: string; severity: string }[] | null;
+  unverified_quotes: { quote: string; reveals: string; severity: string }[] | null;
+  direct: number | null;
+  strong_hints: number | null;
+  blind: {
+    prediction?: { predicted_fix?: string; predicted_failure?: string; [k: string]: unknown } | null;
+    judge?: { match: "specific" | "generic" | "none"; why: string } | null;
+    skipped?: string;
+    inconclusive?: boolean;
+  } | null;
+  blind_leak: boolean | null;
+  cut_fields: string[] | null;
+  inconclusive: string[] | null;
+  skipped: string | null;
+  cost_usd: number | null;
+  adopted: boolean | null;
+  raw: { kind: string; key: string; path: string } | null;
 }
 
 export interface ToolCall {
@@ -176,6 +212,7 @@ export interface TaskDetail {
   decision: string;
   reason: string | null;
   cost_usd: number | null;
+  dev: boolean;
 }
 
 export interface ArtifactListing {

@@ -9,9 +9,9 @@ import { useApi } from "@/lib/api";
 import { bytes } from "@/lib/format";
 import type { ArtifactFile, ArtifactListing } from "@/lib/types";
 
-const TITLES: Record<string, string> = { bundles: "Task bundle", worlds: "World", traces: "Trace" };
+const TITLES: Record<string, string> = { bundles: "Task bundle", worlds: "World", traces: "Trace", leak_reviews: "Leak review" };
 // Opened first when no file is picked: the task statement, then whatever explains a run.
-const DEFAULT_FILES = ["instruction.md", "README.md", "result.json", "task.toml"];
+const DEFAULT_FILES = ["instruction.md", "README.md", "result.json", "review.json", "task.toml"];
 
 export default function ArtifactPage() {
   return (
