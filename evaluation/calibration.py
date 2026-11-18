@@ -197,8 +197,15 @@ def _edits_app(command: str) -> bool:
     return any(w in command for w in _WRITES) and "/tmp/" not in command
 
 
+# Performance worlds that came in too easy were a few small files with the bottleneck in plain
+# sight; of their decided mutations, the two with extend_cross_component_dependency both ended in
+# band (aws-iter1-t03 4 -> 3; aws-agent-b1-t09 4 -> 0, then in band eased), the five without it
+# none (four stayed 5/5). For them it comes first, ahead of the reviewer's suggestion.
+CROSS_FIRST_FAMILIES = ("performance_resources",)
+
+
 def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | None,
-                     history: list[dict]) -> dict[str, Any]:
+                     history: list[dict], family: str | None = None) -> dict[str, Any]:
     """Which world mutations the next version applies, from the evidence (fixed rules, no model).
 
     Returns {"operators", "why", "rules", "target_fix"}: `rules` says, per operator, which
@@ -242,6 +249,9 @@ def choose_mutations(pass_count: int, rollouts: list[dict], analysis: dict | Non
             hit((op,), s.get("change") or f"suggested: {s['technique']}", "pass_review_suggestion",
                 f"technique {s['technique']}")
 
+    if family in CROSS_FIRST_FAMILIES:
+        hit(("extend_cross_component_dependency",), "move the cost and the semantic it must keep into different "
+            "modules, so rewriting the hot function alone breaks a dependent", "family_cross_first", f"family {family}")
     suggest(suggested[:1])
     touched = [len(f) for r in passing if (f := (r.get("trace_metrics") or {}).get("files_modified")) is not None]
     if touched and median(touched) <= 1:

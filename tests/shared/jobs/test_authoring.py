@@ -149,6 +149,25 @@ def test_world_check_create_chain_with_one_world_repair(backend, jq):
     assert create["input"] == {"origin": "initial", "world_sha256": "w2", "shape": "fix", "dial": 2}
 
 
+def test_a_variant_carries_its_source_world_through_check_repair_and_create(backend, jq):
+    t = add_task(backend)
+    spec = {"family": "database_consistency", "mechanism": "write_skew", "shape": "fix", "dial": 2}
+    with backend.store.tx() as c:
+        insert_job(c, id=f"{t}-v1-world", task_id=t, version=1, type=JobType.WORLD,
+                   input={"origin": "variant", "parent_world_sha256": "src", "variant_of": "src", "spec": spec})
+    jq.publish([f"{t}-v1-world"])
+    run_job(backend, jq, "world", {"outcome": "OK", "result": {"world_sha256": "v1"}}, handoffs.after_world(backend))
+    assert jobs_of(backend, t)[f"{t}-v1-world-check-r0"]["input"]["variant_of"] == "src"
+    run_job(backend, jq, "world_check", {"outcome": "FAILED", "result": {"feedback": "x"}},
+            handoffs.after_world_check(backend))
+    assert jobs_of(backend, t)[f"{t}-v1-world-repair1"]["input"]["variant_of"] == "src"
+    run_job(backend, jq, "world", {"outcome": "OK", "result": {"world_sha256": "v2"}}, handoffs.after_world(backend))
+    run_job(backend, jq, "world_check", {"outcome": "OK", "result": {}}, handoffs.after_world_check(backend))
+    # The create gets the variant world, and the source for the earlier tasks it must not repeat.
+    assert jobs_of(backend, t)[f"{t}-v1-create"]["input"] == {
+        "origin": "initial", "world_sha256": "v2", "shape": "fix", "dial": 2, "variant_of": "src"}
+
+
 def test_world_check_failing_past_the_repair_budget_rejects(backend, jq):
     t = add_task(backend)
     with backend.store.tx() as c:

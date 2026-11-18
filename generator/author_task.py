@@ -67,7 +67,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from shared.contracts import config
-from generator.families import brief_for
+from generator.families import brief_for, domain_line, mechanism_line
 from shared.taskformat.materialize import write_bundle
 from generator.prompting import EASIER_GUIDE, FORMS, HARDENING_TECHNIQUES
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
@@ -265,8 +265,10 @@ def render_task_author_instruction(world: dict, job_input: dict, shape: str, dia
 def render_world_mutation_instruction(job_input: dict, parent_world: dict, parent_dir: str = "/input/parent",
                                       output_dir: str = "/logs/artifacts/world",
                                       solver_runs_dir: str = "/input/solver_runs") -> str:
-    """prompts/world_mutation.md for a `world` job with origin "mutation" (plan §3.6);
-    called by author.run_world_job. Unknown operators raise ValueError."""
+    """prompts/world_mutation.md for a `world` job with origin "mutation" (plan §3.6) or
+    "variant" (variant_template); called by author.run_world_job. Unknown operators raise ValueError."""
+    if job_input.get("origin") == "variant":
+        return _render_variant(job_input, parent_world, parent_dir, output_dir)
     mutation = job_input.get("mutation") or {}
     operators = mutation.get("operators") or []
     unknown = [op for op in operators if op not in MUTATION_OPERATORS]
@@ -295,6 +297,51 @@ def render_world_mutation_instruction(job_input: dict, parent_world: dict, paren
         hardness=hardness_section(job_input.get("hardness")),
         # With worlds reused, a mutation is the only new world: the family brief reaches it here.
         family_brief=brief_for((job_input.get("spec") or parent_world.get("spec") or {}).get("family")),
+    ).rstrip() + "\n"
+
+
+MUTATION_WHY_HEADING = "# Why it was too easy"
+MUTATION_TO_MAKE_HEADING = "# The mutation to make"
+
+
+def variant_template() -> str:
+    """world_mutation.md for a variant (a reused world's new task: a new scenario on the same
+    system, nothing has run on it yet): its opening paragraph is world_variant.md's first
+    paragraph, and the block from MUTATION_WHY_HEADING up to MUTATION_TO_MAKE_HEADING is the
+    rest of world_variant.md. Everything else (the parent, the operators, the family brief,
+    what makes a good mutation, the check contract) is world_mutation.md's."""
+    mutation = (PROMPTS / "world_mutation.md").read_text()
+    variant = (PROMPTS / "world_variant.md").read_text().strip()
+    opening, _, body = variant.partition("\n\n")
+    _, _, rest = mutation.partition("\n\n")
+    head, found, tail = rest.partition(MUTATION_WHY_HEADING)
+    _, found_next, tail = tail.partition(MUTATION_TO_MAKE_HEADING)
+    if not (found and found_next):
+        raise ValueError(f"world_mutation.md lacks {MUTATION_WHY_HEADING!r} or {MUTATION_TO_MAKE_HEADING!r}")
+    return f"{opening}\n\n{head}{body}\n\n{MUTATION_TO_MAKE_HEADING}{tail}"
+
+
+def _render_variant(job_input: dict, parent_world: dict, parent_dir: str, output_dir: str) -> str:
+    operators = (job_input.get("mutation") or {}).get("operators") or []
+    unknown = [op for op in operators if op not in MUTATION_OPERATORS]
+    if unknown or not operators:
+        raise ValueError(f"variant operators {operators!r} must be among {sorted(MUTATION_OPERATORS)}")
+    earlier = job_input.get("earlier_instructions") or []
+    return Template(variant_template()).safe_substitute(
+        parent_dir=parent_dir, output_dir=output_dir,
+        parent_sha=job_input.get("parent_world_sha256") or "",
+        parent_summary=world_summary(parent_world),
+        earlier_tasks=_bullets([" ".join(t.split()) for t in earlier]) if earlier else "(none recorded)",
+        mechanism=(job_input.get("spec") or {}).get("mechanism") or "(the family's other mechanism)",
+        # world_variant.md (L4) may place these: the reseeded spec's domain and defect pattern.
+        domain_line=domain_line(job_input.get("spec") or {}),
+        mechanism_line=mechanism_line(job_input.get("spec") or {}),
+        operators_section="\n".join(f"- **{op}**: {MUTATION_OPERATORS[op]}" for op in operators),
+        why=(job_input.get("mutation") or {}).get("why") or "a new scenario on the same system",
+        hardness="(not recorded: nothing has run on this world's variants yet)",
+        history="(none: this is the first world of its own line)",
+        family_brief=brief_for((job_input.get("spec") or parent_world.get("spec") or {}).get("family")),
+        techniques="\n".join(f"- {name}: {text}" for name, text in HARDENING_TECHNIQUES.items()),
     ).rstrip() + "\n"
 
 

@@ -168,7 +168,7 @@ def after_world(backend: Backend):
             "version": n,
             "input": {"world_sha256": sha, "world_dir": str(backend.artifacts.world_path(sha)),
                       "spec": (job["input"] or {}).get("spec"), "round": k,
-                      **({"author_check": author} if author else {})},
+                      **({"author_check": author} if author else {}), **_variant_of(job)},
         }]
 
     return handoff
@@ -197,7 +197,7 @@ def after_world_check(backend: Backend):
             return [{
                 "id": job_id(tid, n, "create"), "type": JobType.CREATE, "task_id": tid, "version": n,
                 "input": {"origin": "initial", "world_sha256": sha, "shape": spec.get("shape"),
-                          "dial": spec.get("dial")},
+                          "dial": spec.get("dial"), **_variant_of(job)},
             }]
         if k >= MAX_REPAIRS_PER_VERSION:
             tasks.reject(conn, tid, RejectReason.INVALID, Stage.INVALID, version=n, stages=live)
@@ -208,10 +208,18 @@ def after_world_check(backend: Backend):
         return [{
             "id": job_id(tid, n, "world-repair", k + 1), "type": JobType.WORLD, "task_id": tid,
             "version": n,
-            "input": {"origin": "repair", "world_sha256": sha, "feedback": feedback, "spec": spec},
+            "input": {"origin": "repair", "world_sha256": sha, "feedback": feedback, "spec": spec,
+                      **_variant_of(job)},
         }]
 
     return handoff
+
+
+def _variant_of(job: dict[str, Any]) -> dict[str, Any]:
+    """A variant world's source (a reused world): carried world → world_check → create, and
+    through world repairs, for lineage and the earlier tasks its create must not repeat."""
+    source = (job["input"] or {}).get("variant_of")
+    return {"variant_of": source} if source else {}
 
 
 # --- Build + Validate ---------------------------------------------------------------

@@ -27,9 +27,11 @@ spec:
             # ask 12 GB of a 6 GiB dind, and an OOM inside dind reads as a failed self-check, not infra.
             - {name: SDE_TASK_PARALLEL, value: "1"}
             - {name: SDE_DRAIN_ON_TERM_S, value: "3600"}
-          # Measured ~370-450 MiB with one session; a runaway is stopped, not the node.
+          # Measured ~370-450 MiB with one session; a runaway is stopped, not the node. CPU: sessions
+          # wait on the model, measured 4-34m with spikes to 250-750m (2026-11-18 23:15, 17 pods); the
+          # request is the typical load, and spikes burst above it (no CPU limit).
           resources:
-            requests: {memory: 512Mi}
+            requests: {cpu: 100m, memory: 512Mi}
             limits: {memory: 2Gi}
       initContainers:
         # The sandbox: the sessions' agent containers (55-130 MiB each now) and their self-check test
@@ -38,7 +40,11 @@ spec:
         # second, image-less "dind", and the API rejected the whole Deployment (deploy of 082166f).
         - name: dind
           resources:
-            limits: {memory: 6Gi}  # the request (1Gi, cpu 500m) comes from overlays/aws/on-agents.yaml
+            # CPU 100m, not on-agents.yaml's 500m: measured 1-52m (self-checks spike above it). 500m per
+            # pod reserved 1.0-1.5 of a node's 2 vCPU for idle authoring, so executors couldn't be
+            # placed by CPU (L2's rollout, "Insufficient cpu"). The memory request (1Gi) stays from there.
+            requests: {cpu: 100m}
+            limits: {memory: 6Gi}
       volumes:
         - name: images
           hostPath: {path: /opt/sde/images, type: Directory}

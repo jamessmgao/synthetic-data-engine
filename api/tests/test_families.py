@@ -78,13 +78,16 @@ def test_v2_specs_are_valid_and_carry_the_one_shot_view():
         existing.append(spec)
 
 
-def test_v2_sampler_balances_families_and_covers_each_familys_combinations():
+def test_v2_sampler_balances_families_and_covers_each_familys_combinations(monkeypatch):
+    for f in FAMILIES:  # equal weights for the balance check (performance_resources is weighted up)
+        monkeypatch.setitem(FAMILY_WEIGHTS, f, 1.0)
     existing = []
-    for i in range(72):
+    per_family = max(len(f.mechanisms) * len(f.environments) for f in FAMILIES.values())
+    for i in range(per_family * len(FAMILIES)):
         existing.append(sample_spec_v2(existing, rng=random.Random(i)))
         counts = Counter(s["family"] for s in existing)
         assert max(counts.values()) - min(counts.get(f, 0) for f in FAMILIES) <= 1  # balanced at every step
-    for f, fam in FAMILIES.items():  # 12 picks each: every combination before any repeats
+    for f, fam in FAMILIES.items():  # every combination before any repeats
         picks = [(s["mechanism"], s["environment"]) for s in existing if s["family"] == f]
         n_combos = len(fam.mechanisms) * len(fam.environments)
         assert len(set(picks[:n_combos])) == n_combos
@@ -101,7 +104,10 @@ def test_every_environment_maps_to_a_pinned_base_image():
 
 
 def test_family_weights_steer_the_spread(monkeypatch):
-    assert set(FAMILY_WEIGHTS) == set(FAMILIES) and set(FAMILY_WEIGHTS.values()) == {1.0}
+    # performance_resources is weighted up (the user's priority, 2026-11-18); the rest are equal.
+    assert set(FAMILY_WEIGHTS) == set(FAMILIES) and FAMILY_WEIGHTS["performance_resources"] == 1.5
+    assert {w for f, w in FAMILY_WEIGHTS.items() if f != "performance_resources"} == {1.0}
+    monkeypatch.setitem(FAMILY_WEIGHTS, "performance_resources", 1.0)
     monkeypatch.setitem(FAMILY_WEIGHTS, "compilers_parsers", 3.0)
     existing = []
     for i in range(80):
@@ -164,7 +170,9 @@ def test_families_lists_every_area_and_its_mechanisms(client):
     db = body["database_consistency"]
     assert db["mechanisms"] == list(FAMILIES["database_consistency"].mechanisms)
     assert db["environments"] == ["Python service (SQLite)", "PostgreSQL database"]
-    assert body["algorithmic_constraints"]["shapes"] == ["fix", "implement"]
+    # optimality_required (the "implement" mechanism) is retired; every performance one is "optimize".
+    assert body["algorithmic_constraints"]["shapes"] == ["fix"]
+    assert body["performance_resources"]["shapes"] == ["optimize"]
     assert client.get("/v1/families").status_code == 401
 
 
@@ -177,8 +185,10 @@ def test_batch_within_one_area_spreads_its_combinations(client, backend):
     assert {s["family"] for s in specs} == {"database_consistency"}
     for s in specs:
         assert_valid_v2(s)
-    # 4 mechanisms x 2 environments = 8 combinations: all used before any repeats.
-    assert len({(s["mechanism"], s["environment"]) for s in specs}) == 8
+    # 8 mechanisms x 2 environments = 16 combinations: 10 picks, no repeats; 10 distinct domains.
+    assert len({(s["mechanism"], s["environment"]) for s in specs}) == 10
+    assert len({s["domain"] for s in specs}) == 10 and all(s["domain_label"] for s in specs)
+    assert all(s["taxonomy"]["domain"] == s["domain"] for s in specs)
     assert {s["dial"] for s in specs} == {DEFAULT_DIAL}  # the dial stays at its default unless asked
 
 
@@ -258,7 +268,7 @@ def test_explicit_v2_spec_is_validated_and_filled(client, backend):
     s = backend.store.task(t)["slot"]
     assert (s["family"], s["mechanism"], s["shape"]) == ("compilers_parsers", "fragmented_frames", "fix")
     assert s["design"] == ["the parser is incremental"] and s["environment"] in ("Python service", "Go service")
-    t2 = post_task(client, spec={"family": "algorithmic_constraints", "mechanism": "greedy_counterexample",
+    t2 = post_task(client, spec={"family": "algorithmic_constraints", "mechanism": "unsound_dominance_pruning",
                                  "shape": "implement"})
     s2 = backend.store.task(t2)["slot"]
     assert s2["shape"] == "implement" and s2["taxonomy"]["task_type"] == "Implementation"  # view follows

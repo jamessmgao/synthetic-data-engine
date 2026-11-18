@@ -20,6 +20,10 @@ Origins:
     mutation   {origin, parent_world_sha256, spec, mutation, mutations, analysis,
                target_fix}: make the passing strategy fail (prompts/world_mutation.md);
                lineage = {parent, mutations from the input}.
+    variant    {origin, parent_world_sha256, variant_of, spec, mutation, earlier_instructions}:
+               a reused world's new task: the same system, its defect replaced by one of
+               spec.mechanism (a reseeded spec; world_mutation.md in variant mode,
+               author_task.variant_template); lineage = {variant_of, no parent, no mutations}.
 
 Failure kinds: "infra" (Harbor or the agent run itself broke: no trial, an exception,
 no artifacts) vs "author" (the agent ran but left no usable world).
@@ -38,7 +42,7 @@ from typing import Any, Callable
 
 from shared.contracts import config
 from generator.author_task import render_world_mutation_instruction, run_create_job  # noqa: F401  (re-export)
-from generator.families import brief_for
+from generator.families import brief_for, domain_line, mechanism_line
 from shared.taskformat.schema import BASE_IMAGES
 from generator.self_check import ensure_world_checked
 
@@ -92,7 +96,8 @@ def solver_run_files(job_input: dict) -> dict[str, bytes]:
 
 # Spec keys the pipeline keeps for itself (api/submit.py): how the task was submitted, never
 # what to build, so the authoring model doesn't see them.
-PIPELINE_SPEC_KEYS = ("reused_world", "reused_from", "reuse_tier", "reuse_reason")
+PIPELINE_SPEC_KEYS = ("reused_world", "reused_from", "reuse_tier", "reuse_reason", "reseeded_from",
+                      "reused_lineage", "domain_label", "mechanism_note")
 
 
 def render_world_instruction(spec: dict, origin: str = "initial", feedback: str = "") -> str:
@@ -102,6 +107,8 @@ def render_world_instruction(spec: dict, origin: str = "initial", feedback: str 
     return Template((PROMPTS / "world.md").read_text()).safe_substitute(
         origin_section=section,
         spec_json=json.dumps(shown, indent=1, sort_keys=True),
+        domain_line=domain_line(spec),
+        mechanism_line=mechanism_line(spec),
         family_brief=brief_for(spec.get("family")),
         base_images=", ".join(f"`{i}`" for i in sorted(BASE_IMAGES)),
     ).rstrip() + "\n"
@@ -158,7 +165,7 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
     origin = job_input.get("origin") or "initial"
     spec = dict(job_input.get("spec") or {})
 
-    if origin == "mutation":
+    if origin in ("mutation", "variant"):
         parent_dir, parent = _load_world(work, job_input.get("parent_world_sha256"))
         if parent_dir is None or not parent:
             return _failed("infra", "the parent world is not available locally", None)
@@ -167,11 +174,16 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
             instruction = render_world_mutation_instruction(job_input, parent, "/input/parent",
                                                             f"/logs/artifacts/{WORLD_OUT}")
         except ValueError as e:  # missing or unknown operators: a bad input, not worth retrying
-            return _failed("infra", f"bad mutation input: {e}", None)
+            return _failed("infra", f"bad {origin} input: {e}", None)
         files = _files_under("parent", parent_dir)
         files.update(solver_run_files(job_input))
-        lineage = {"parent_world_sha256": job_input["parent_world_sha256"],
-                   "mutations": list(job_input.get("mutations") or [])}
+        if origin == "variant":
+            # A variant starts its own line: no parent to keep mutating, but where it came from.
+            lineage = {"parent_world_sha256": None, "variant_of": job_input["parent_world_sha256"],
+                       "mutations": []}
+        else:
+            lineage = {"parent_world_sha256": job_input["parent_world_sha256"],
+                       "mutations": list(job_input.get("mutations") or [])}
     elif origin == "repair":
         world_dir, world = _load_world(work, job_input.get("world_sha256"))
         if world_dir is None or not world:

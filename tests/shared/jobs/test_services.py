@@ -524,6 +524,26 @@ def test_specific_rules_come_before_the_guard_and_self_check_rules():
     assert "add_persistent_state" not in store["operators"]
 
 
+def test_a_too_easy_performance_world_spans_modules_first():
+    """Performance worlds: extend_cross_component_dependency first, ahead of the reviewer's first
+    suggestion and the keyword rules (2 of 2 such mutations ended in band, 0 of 5 without it)."""
+    from evaluation.calibration import choose_mutations
+
+    runs = [{"slot": i, "outcome": "VALID_PASS",
+             "trace_metrics": {"files_modified": ["a.go", "b.go"], "llm_calls": 20, "tool_calls": []}} for i in range(1, 6)]
+    review = {"trusted": True, "fix_applied": "a per-account index built once",
+              "suggestions": [{"technique": "interacting_requirements", "change": "c"}]}
+    perf = choose_mutations(5, runs, review, [], "performance_resources")
+    assert perf["operators"] == ["extend_cross_component_dependency", "introduce_global_invariant"]
+    assert perf["rules"][0] == {"operator": "extend_cross_component_dependency", "rule": "family_cross_first",
+                                "evidence": "family performance_resources"}
+    # Other families keep the reviewer's suggestion first; an operator already used still goes last.
+    assert choose_mutations(5, runs, review, [], "database_consistency")["operators"][0] == "introduce_global_invariant"
+    again = choose_mutations(5, runs, review, [{"operators": ["extend_cross_component_dependency"]}],
+                             "performance_resources")
+    assert again["operators"][0] == "introduce_global_invariant"
+
+
 def test_choose_mutations_reads_the_passing_strategy():
     from evaluation.calibration import MUTATION_OPERATORS, choose_mutations
 

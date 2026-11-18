@@ -6,7 +6,7 @@ short: decide, act, check.
 
 # Checklist (write to `/logs/artifacts/world/`)
 
-1. `environment/`: the system, about 200-500 lines in 2-3 modules, with its `Dockerfile` (`FROM` one of: $base_images; system at `/app`). Build the image first: write the Dockerfile and the first module, then `docker build -t sde-world-dev environment/` and fix build errors before going further; build again after every module. Write it one module per step (≤ ~150 lines per response) and build and run it before writing the next; never write the whole system, or more than one module, in one response. The line count is guidance, not a gate: never rewrite a working world to hit it; trim only if trivial.
+1. `environment/`: the system, about 200-500 lines in 2-3 modules, with its `Dockerfile` (`FROM` one of: $base_images; system at `/app`). Build the image first: write the Dockerfile and the first module, then `docker build -t sde-world-dev environment/` and fix build errors before going further; build again after every module. Write it one module per step (≤ ~150 lines per response) and build and run it before writing the next; never write the whole system, or more than one module, in one response. The line count is guidance: never rewrite a working world to hit it.
 2. Run it, then find the counterexample by EXECUTING it (a fixed schedule, an injected fault or a crafted input) and record the exact sequence.
 3. `repro/repro.sh`: replays it deterministically; exit 1 = an invariant is violated, 0 = it holds.
 4. `world_fix/fix.sh`: the real fix (edits the world in place); afterwards repro.sh exits 0.
@@ -16,6 +16,9 @@ short: decide, act, check.
 $origin_section
 
 # The spec
+
+$domain_line
+$mechanism_line
 
 ```json
 $spec_json

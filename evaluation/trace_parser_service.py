@@ -170,7 +170,9 @@ class TraceParserService:
         solver_runs = (self._solver_runs(enriched) if action == "revise" and direction == "harder"
                        and author_mode() == "agent" and _world_sha256(jobs, n) else None)
         if action == "revise":
-            chosen = (calibration.choose_mutations(passes, enriched, analysis, history) if not blamed_task
+            chosen = (calibration.choose_mutations(passes, enriched, analysis, history,
+                                                     (task.get("slot") or {}).get("family"))
+                      if not blamed_task
                       else {"operators": [], "why": [], "rules": [], "target_fix": None})
             mutation = {"version": n + 1, "from_version": n, "pass_count": passes, "direction": direction,
                         **chosen}

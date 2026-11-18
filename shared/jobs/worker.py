@@ -437,9 +437,11 @@ def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
             backend.artifacts.fetch_file(f"drafts/{parent}.json")
         if world := inp.get("world_sha256"):
             backend.artifacts.world_path(world)
-        if agent and inp.get("reused") and inp.get("origin") == "initial":
+        if agent and (inp.get("reused") or inp.get("variant_of")) and inp.get("origin") == "initial":
+            # A variant's create: the tasks already written on the world it is a variant of.
             task_id = job.get("task_id") or job["id"].rsplit("-v", 1)[0]
-            inp = {**inp, "earlier_instructions": earlier_instructions(backend, inp["world_sha256"], task_id)}
+            source = inp.get("variant_of") or inp["world_sha256"]
+            inp = {**inp, "earlier_instructions": earlier_instructions(backend, source, task_id)}
         if agent:
             backend.artifacts.fetch_trace(job["id"])
         trace_uri = None
@@ -473,6 +475,10 @@ def world_fn(backend: Backend) -> JobFn:
         for key in ("world_sha256", "parent_world_sha256"):
             if inp.get(key):
                 backend.artifacts.world_path(inp[key])  # downloads it in S3 mode
+        if inp.get("origin") == "variant" and inp.get("parent_world_sha256"):
+            # The variant must not lead back to the tasks already written on its source world.
+            task_id = job.get("task_id") or job["id"].rsplit("-v", 1)[0]
+            inp = {**inp, "earlier_instructions": earlier_instructions(backend, inp["parent_world_sha256"], task_id)}
         backend.artifacts.fetch_trace(job["id"])
         try:
             out = run_world_job(job["id"], inp, backend.work_dir)

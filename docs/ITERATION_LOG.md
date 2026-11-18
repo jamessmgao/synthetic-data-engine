@@ -328,3 +328,50 @@ Infrastructure in this period: 17 nodes (8 Spot, after the Paid-plan upgrade lif
 DenySpotMarket); RDS db.t4g.medium (400 connections); generation 11 x 3 sessions; executor KEDA 2-10 x 3;
 validate 4. Generation deploys drain (no lost sessions); executor drain is built (executor-drain) and
 waits on the user's OK. Model spend ~$35-40/h, ~$40 per accepted task so far.
+
+## Windows 5-6 (2026-11-18, 22:35-23:15 UTC): speedup wording, clean test state, reuse findings
+
+| Window | Release (where) | Live (UTC) | Changes (lane: lever; evidence → expected) |
+|---|---|---|---|
+| 5 | c56d307 (generation, drained) | ~22:35 | task_author Instruction: for a speedup, "the same output as now", never the tie-breaks or edge cases to keep (L3; aws-w1-l3-t04 v1 5/5 listed the routing and reversal rules, aws-w2-l3-t02 REJECTED after 3 leak failures on stated ordering rules → harder perf tasks, fewer leaks); world mutations finish once `sde-world check` passes, hardness warnings aren't gates (L4, 3bb9f33) |
+| 6 | 656a9b2 (generation + executors, drained) | ~23:00 | executor drain on deploy and KEDA scale-in: running agent runs finish, up to 3700 s (688012f); task_author Tests: each test starts from clean state it creates (L3, cf59fcf; aws-w2-l1-t01 v1 slot 3, a correct fix failed on rows the agent's own testing left → fewer task-blamed failures at 1-3/5) |
+| 6, API side | ONLY=api deploys | from ~22:40 | never reuse a world whose own task is live, bank/account names count as ledger (L1, 5539cec); blind-only-leaked and greedy-defect worlds go last (L1, 469c1b6); a per-window domain cap, no exclusion-blind fallback (L1, 4505796); then loosened: a world may be shared with its live task, up to 2 tasks (ed108aa, the user's reuse-only rule); early stopping: a version is decided once its verdict is certain (af4cdb8); timeout review: an agent run at the time limit waits for the Trace Parser's ruling (856db8c) |
+
+**Decided 22:35-23:15** (all authored under earlier windows):
+
+| Task | Family / mechanism | Versions (passes) | Outcome | Cost |
+|---|---|---|---|---|
+| aws-agent-b1-t09 bounded-ledger-reconciliation | perf / memory_bound | v1 5/5 → v2 4/5 → v3 0/5 → v4 3/5 | ACCEPTED v4 | $14.10 |
+| aws-iter1-t04 sqlite-duty-leave-write-skew | database / write_skew | v1 0/5 → v2 5/5 → v3 5/5 → v4 1/5 | ACCEPTED v4 | $20.83 |
+| aws-w1-l1-t05 bank-write-skew | database / write_skew | v1 3/5 | ACCEPTED v1 | $3.54 |
+| aws-w1-l4-t05 stateful-template-snapshot-edit | compilers / stateful_incremental_parse | v1 4/5 → v2 3/5 | ACCEPTED v2 | $5.07 |
+| aws-w1-l1-t04 provisioning-cancel-commit-conflict | cross-component / multi_step_causal_failure | v1 5/5 → v2 not scored | REJECTED (v2 blind leak x3) | $4.70 |
+| aws-w1-l4-t01 slot-scheduler-greedy-miss | algorithms / greedy_counterexample | v1 5/5 → v2 not scored | REJECTED (v2 blind leak x3) | $6.52 |
+| aws-w3-l2-t01 (reuse) | algorithms / greedy_counterexample | v1 not scored | REJECTED (blind leak x3) | $1.22 |
+| aws-w1-l5-t04 | cross-component / compensation_after_irreversible_effect | v1 not scored | REJECTED (blind leak x3) | $5.58 |
+| aws-w3-l2-t02 (reuse) | compilers / aliasing_side_effects | v1 not scored | REJECTED (blind leak x3) | $2.40 |
+| aws-w3-l1-t01, aws-w3-l1-b-t01 (reuse) | database, cross-component | v1 not scored | CANCELLED by L1 in create | $0 |
+
+4 accepted, 5 rejected, 2 cancelled. Every rejection is the blind check failing three drafts; none
+is a gate or infrastructure failure. Spend on the books: $422.65 at 23:17 (from $202.73 at 20:47).
+
+**L3's two measurements:**
+- *reuse-distinct (window 3) produces rewordings, not new tasks.* aws-w3-l3-t01 was reused on world
+  7d8725b8 from aws-iter2-t09. Its create saw iter2-t09's instruction, and its own instruction still
+  has the same symptom (over the 256 MB / 15 s budget), the same guarantees and the same entry point.
+  The cause is structural: the world has 2 invariants, and task_author requires one dedicated test per
+  invariant, so there is no other guarantee to ask for. Earlier near-duplicates: aws-w2-l3-t01 and
+  aws-w2-l3-t03 (both `durable-quorum-ledger`, both v1 5/5) were picked at the same second from two
+  worlds in aws-agent-b1-t04's lineage, before reuse-distinct and live-skip.
+- *same-output (window 5) makes perf tasks harder.* The same task's instruction dropped the
+  tie-break and sort rules for "the same tab-separated audit report the command produces today", so
+  the agent must find the semantics in the code. Its leak review was clean after 2 repairs (blind:
+  generic).
+
+**Decision (the user's call): reuse → variant.** A reuse no longer authors straight onto the picked
+world: the world is first mutated into a variant (a new defect, entry point or counterexample;
+"replace + reseed"), then the create runs with the earlier tasks' instructions. L1 and L4 are building
+it. The one-test-per-invariant rule stays.
+
+Also seen: the "ledger" domain dominates (13 of 46 CALIBRATING tasks at 22:41; every named L3 task).
+Under reuse-only, selection is the only lever (L1's domain cap, 4505796).

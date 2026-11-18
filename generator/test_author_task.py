@@ -140,7 +140,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
                    "where a crash fires relative to the effects", "GOOD (a real Terminal-Bench task)",
                    "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish", "is REQUIRED wherever it is described", "may emit `result_ready`",
-                   "a short request in a user's voice", "discovers the tools itself", "never the checks it applies or the criteria an answer meets", "today's output is the requirement", "Each test starts from clean state it creates", "Make the suite comprehensive", "# Before you finish", "you are not done until both commands exit 0", "Never finish with a failing check"):
+                   "a short request in a user's voice", "discovers the tools itself", "never the checks it applies or the criteria an answer meets", "today's output is the requirement", "Each test starts from clean state it creates", "Every blocking read of a child process has a timeout", "unless the instruction states the overlap", "Make the suite comprehensive", "# Before you finish", "you are not done until both commands exit 0", "Never finish with a failing check"):
         assert needle in text, needle
     # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
     assert text.index("# Checklist") < text.index("# The draft")
@@ -220,6 +220,18 @@ def test_every_family_brief_names_its_lever_counterexample_and_dependent():
         for line in ("Strongest lever: ", "The counterexample: ", "Why a local patch may fail here: "):
             assert line in brief, (family, line)
         assert "Scaffolds" not in brief and "300-800" not in brief
+
+
+def test_the_performance_brief_states_outcomes_and_steers_off_ledgers():
+    """Performance tasks leaked when the bound named the fix ("index it", "stream it") and the
+    worlds crowded into ledgers (the domain cap): the brief asks for outcomes only, other domains."""
+    from generator.families import brief_for
+
+    brief = brief_for("performance_resources")
+    assert "stated as an outcome only" in brief and "never the structure, the tie-break or the edge case" in brief
+    assert "not a ledger or payments system" in brief
+    assert "the plausible wrong fix is that fast version" in brief
+    assert "no name or comment that describes the cost" in brief  # aws-w1-l3-t04's find_pending scans
 
 
 def test_every_shape_and_dial_renders(work):
@@ -678,3 +690,45 @@ def test_the_hardness_section_reads_world_checks_record():
     assert "`get_replay_target` names its own limit" in text and "passed every hardness check" not in text
     assert at.hardness_section({"failed": [], "warnings": [], "details": {}}).startswith("The parent world passed")
     assert at.hardness_section(None) == "(not recorded for the parent world)"
+
+
+# --- prompt size over every spec the sampler can produce ---------------------------------
+# The single-spec caps above (3500 / 2200 tokens) measure one fixture each. These measure the
+# worst case over what production renders: every family x mechanism x shape (x dial), each
+# with the domain whose label and note are longest. The caps sit a few percent above the
+# worst case measured on 2026-11-18 (task author 3536, world 2688 tokens), so they catch
+# growth; trimming below them is a separate decision.
+TASK_AUTHOR_CAP_TOKENS = 3650
+WORLD_CAP_TOKENS = 2800
+
+
+def _taxonomy():
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from shared.taxonomy import taxonomy
+    return taxonomy
+
+
+def test_the_task_author_prompt_stays_under_its_cap_for_every_shape_and_dial():
+    sizes = {(shape, dial): len(at.render_task_author_instruction(WORLD, {"origin": "initial"}, shape, dial)) / 4
+             for shape in at.SHAPES for dial in (1, 2, 3)}
+    worst = max(sizes, key=sizes.get)
+    assert sizes[worst] < TASK_AUTHOR_CAP_TOKENS, (worst, sizes[worst])
+
+
+def test_the_world_prompt_stays_under_its_cap_for_every_family_mechanism_and_shape():
+    import random
+
+    from generator import author
+    tx = _taxonomy()
+    worst = (0.0, None)
+    for family, fam in tx.FAMILIES.items():
+        domains = tx.COMPILER_DOMAINS if family == "compilers_parsers" else tx.APP_DOMAINS
+        longest = max(domains, key=lambda d: len(domains[d]))
+        for mechanism in fam.mechanisms:
+            spec = tx.sample_spec_v2([], area=family, mechanism=mechanism, rng=random.Random(0), domain=longest)
+            for shape in tx.SHAPES:
+                n = len(author.render_world_instruction(dict(spec, shape=shape))) / 4
+                worst = max(worst, (n, (family, mechanism, shape)), key=lambda w: w[0])
+    assert worst[0] < WORLD_CAP_TOKENS, worst

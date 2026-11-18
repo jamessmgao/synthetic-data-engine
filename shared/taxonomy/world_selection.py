@@ -11,17 +11,17 @@ Excluded:
   - a world whose task was rejected by the leak review (create and both repairs) under the new
     prompts: the honest guarantee of that world names its fix, whatever the wording;
   - a world whose world job or world check failed;
-  - a world already reused `max_reuses` times.
+  - a world already reused `max_reuses` times;
+  - a world a task on which was rejected for a leak only the blind predictor found (any prompts),
+    or whose defect is greedy / first-fit / a heuristic where an exact answer is needed (from
+    world.json's plausible_wrong_fix and counterexample): any honest instruction for it names
+    the textbook remedy (L2's finding: aws-w1-l2-t02, aws-w1-l5-t03, aws-iter2-t05, aws-w3-l2-t01).
 Preferred, in this order (a lower tier first):
   1. near   its best task scored 4/5: one pass from the band; a new instruction or tests may land it
   2. hard   its best task scored 0/5: too hard; a clearer instruction may lift it into 1-3
   3. unscored  no task was ever scored, for a reason other than a leak (cancelled, killed, infra)
   4. old_leak  its task leaked only under the old prompts: the new symptom and textbook rules may clear it
   5. easy   every scored task passed 5/5: the world itself is easy (a mutation is its better path)
-  6. last   a task on it was rejected for a leak only the blind predictor found (any prompts), or
-            its defect is greedy / first-fit / a heuristic where an exact answer is needed (from
-            world.json's plausible_wrong_fix and counterexample): any honest instruction for it
-            names the textbook remedy (L2's finding: aws-w1-l2-t02, aws-w1-l5-t03, aws-iter2-t05)
 Sharing (the user's rule: no new worlds, novelty from what each task asks; L3's reuse-distinct
 makes the author ask for a different guarantee): a world with a live task of its own may still
 serve while it has fewer than MAX_TASKS_SHARED tasks (so at most that many after the pick), never
@@ -43,7 +43,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-TIERS = ("near", "hard", "unscored", "old_leak", "easy", "last")
+TIERS = ("near", "hard", "unscored", "old_leak", "easy")
 GREEDY_WORDS = ("greedy", "first-fit", "first fit", "firstfit", "heuristic")
 MAX_REUSES = 2
 # A world whose own task is live serves only while it has fewer tasks than this (manager, 22:50).
@@ -107,6 +107,8 @@ class World:
     failed: bool = False            # its world job or world check failed
     name: str = ""                  # world.json's name (the world job's result)
     greedy: bool = False            # its defect is greedy / first-fit / heuristic (greedy_defect)
+    lineage: str = ""               # the first world of its mutation / repair / variant chain
+    free_mechanisms: int = 1        # its family's usable mechanisms no world or variant of its lineage has had
 
     @property
     def domain(self) -> str:
@@ -128,19 +130,21 @@ class Pick:
 
 
 def tier(world: World, max_reuses: int = MAX_REUSES) -> tuple[str | None, str]:
-    """(tier, reason), or (None, why it is excluded)."""
+    """(tier, reason), or (None, why it is excluded). A reuse is a variant (a new mechanism, the
+    old defect removed), so an accepted or live task on the world no longer excludes it; what
+    caps a world is its free mechanisms (one variant per mechanism per lineage)."""
     if world.failed:
         return None, "its world job or world check failed"
-    if any(u.accepted for u in world.uses):
-        return None, "it already has an accepted task (a new one would repeat the scenario)"
     if any(u.leak_rejected and u.new_prompts for u in world.uses):
         return None, "its task was rejected by the leak review under the current prompts"
-    if world.reuses >= max_reuses:
-        return None, f"already reused {world.reuses} times (cap {max_reuses})"
+    if world.free_mechanisms <= 0:
+        return None, "every usable mechanism of its family already has a variant in its lineage"
+    # Excluded since aws-w3-l2-t01 (a greedy world the policy put last, picked anyway, leaked ×3:
+    # the 4th greedy-world leak on 2026-11-18): an honest task for either names the remedy.
     if any(u.blind_leak for u in world.uses):
-        return "last", "a task on it was rejected for a leak only the blind predictor found"
+        return None, "a task on it was rejected for a leak only the blind predictor found"
     if world.greedy:
-        return "last", "its defect is greedy / first-fit / a heuristic (the remedy is the textbook one)"
+        return None, "its defect is greedy / first-fit / a heuristic (the remedy is the textbook one)"
     counts = [u.pass_count for u in world.uses if u.pass_count is not None]
     if counts:
         if 4 in counts:
@@ -186,7 +190,8 @@ def select_worlds(worlds: list[World], families: list[str], count: int,
         return own_live(w) or (w.domain != OTHER and (w.domain, w.mechanism) in scenario_live)
 
     def eligible(w: World) -> bool:
-        if own_live(w) and w.tasks >= MAX_TASKS_SHARED:
+        # One variant per free mechanism of the lineage, counting this call's picks.
+        if taken.get(w.lineage or w.sha, 0) >= w.free_mechanisms:
             return False
         if w.domain == OTHER:
             return True
@@ -195,25 +200,27 @@ def select_worlds(worlds: list[World], families: list[str], count: int,
         return not (total >= CAP_MIN_LIVE and (domain_live.get(w.domain, 0) + 1) / (total + 1) > domain_cap)
 
     picks: list[Pick] = []
-    taken: set[str] = set()
+    taken: dict[str, int] = {}  # lineage -> picks in this call
     while len(picks) < count:
         progressed = False
         for family in families:
             if len(picks) >= count:
                 break
-            pool = [c for c in by_family[family] if c[2].sha not in taken and eligible(c[2])]
+            pool = [c for c in by_family[family] if eligible(c[2])]
             if not pool:
                 continue
-            # Non-repeats first; then the least-represented domain, across tiers; then the best tier.
-            pool.sort(key=lambda c: (repeats(c[2]), domain_live.get(c[2].domain, 0), rank[c[0]],
+            # A lineage not picked yet in this call first, then non-repeats; then the least-
+            # represented domain, across tiers; then the best tier.
+            pool.sort(key=lambda c: (taken.get(c[2].lineage or c[2].sha, 0), repeats(c[2]),
+                                     domain_live.get(c[2].domain, 0), rank[c[0]],
                                      mechanism_uses[(family, c[2].mechanism)], c[2].reuses, c[2].sha))
             t, why, w = pool[0]
             if own_live(w):
-                why = f"{why}; shares the world with a live task ({w.tasks} so far)"
+                why = f"{why}; its own task is live (the variant takes another mechanism)"
             elif repeats(w):
                 why = f"{why}; repeats a live {w.domain} + {w.mechanism} scenario"
             picks.append(Pick(w.sha, w.family, w.mechanism, t, f"{why}; domain {w.domain}"))
-            taken.add(w.sha)
+            taken[w.lineage or w.sha] = taken.get(w.lineage or w.sha, 0) + 1
             mechanism_uses[(family, w.mechanism)] += 1
             domain_live[w.domain] = domain_live.get(w.domain, 0) + 1
             scenario_live.add((w.domain, w.mechanism))

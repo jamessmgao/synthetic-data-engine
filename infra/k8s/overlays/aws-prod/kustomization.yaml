@@ -135,6 +135,10 @@ patches:
       - {op: replace, path: /spec/template/spec/terminationGracePeriodSeconds, value: 3800}
       - {op: add, path: /spec/strategy, value: {type: RollingUpdate, rollingUpdate: {maxSurge: 2, maxUnavailable: 0}}}
       - {op: add, path: /spec/template/spec/containers/0/resources, value: {requests: {cpu: 500m, memory: 1Gi}}}
+      # dind's request 400m, not on-agents.yaml's 500m: app 500m + dind 500m = 1000m was 10m more than
+      # any node had free (the emptiest had 1010m requested), so the executor roll stalled with 2 surge
+      # pods Pending (2026-11-18 23:22-23:33, "0/17 nodes: Insufficient cpu"). 900m fits.
+      - {op: replace, path: /spec/template/spec/initContainers/0/resources/requests/cpu, value: 400m}
   - target: {kind: ScaledObject, name: executor}
     patch: |-
       - {op: replace, path: /spec/maxReplicaCount, value: 16}  # 2 agent runs a pod: up to 32 runs on the 17 nodes

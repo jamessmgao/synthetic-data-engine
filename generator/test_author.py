@@ -1,6 +1,7 @@
 """author.run_world_job against a fake authoring trial: origins, lineage, storage, failures."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,37 @@ def test_mutation_sets_lineage_from_the_input(tmp_path):
     assert "parent/world.json" in trial.calls[0]["files"] and "/input/parent" in trial.calls[0]["instruction"]
     meta = json.loads((Path(out["result"]["world_path"]) / "world.json").read_text())
     assert meta["lineage"] == {"parent_world_sha256": psha, "mutations": mutations}
+
+
+def test_a_variant_replaces_the_defect_with_a_reseeded_one_and_records_variant_of(tmp_path):
+    work = tmp_path / "work"
+    parent = write_world(tmp_path / "p")
+    psha = author.tree_sha256(parent)
+    (work / "worlds").mkdir(parents=True)
+    parent.rename(work / "worlds" / psha)
+    job = {"origin": "variant", "parent_world_sha256": psha, "variant_of": psha,
+           "spec": {**SPEC, "mechanism": "write_skew"},
+           "mutation": {"operators": ["generate_counterexample", "compose_failure_modes"],
+                        "why": "a variant of a reused world"},
+           "mutations": [], "earlier_instructions": ["Reservations sometimes oversell.\nFix it."]}
+    trial = FakeTrial(tmp_path)
+    out = author.run_world_job("t9-v1-world", job, work, run_trial=trial)
+    assert out["outcome"] == "OK"
+    text = trial.calls[0]["instruction"]
+    # The variant opening and section replace the mutation's "too easy" framing.
+    assert "too easy" not in text and "# Why it was too easy" not in text
+    assert "mechanism **write_skew**" in text and "/input/parent/world_fix/fix.sh" in text
+    assert "Reservations sometimes oversell. Fix it." in text
+    assert "**generate_counterexample**" in text and "# The mutation to make" in text
+    # Every slot is filled (only the shell's own variable is left), and where the shared sections
+    # speak of a passing strategy, the variant says it means the parent's fix.
+    assert re.findall(r"\$\w+", text) == ["$SDE_DOCKER_LABEL"], re.findall(r"\$\w+", text)
+    assert "Remove the existing defect" in text and "read: the parent's fix" in text
+    assert "**Mechanism: write_skew.**" in text  # the reseeded mechanism's own line
+    assert "parent/world.json" in trial.calls[0]["files"]
+    meta = json.loads((Path(out["result"]["world_path"]) / "world.json").read_text())
+    assert meta["lineage"] == {"parent_world_sha256": None, "variant_of": psha, "mutations": []}
+    assert meta["spec"]["mechanism"] == "write_skew"
 
 
 def test_a_mutation_gets_the_passing_runs_traces_in_input_solver_runs(tmp_path):
