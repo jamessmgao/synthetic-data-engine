@@ -102,10 +102,13 @@ def _authoring(trial: dict | None) -> dict | None:
     return {k: trial.get(k) for k in keys}
 
 
-def _failed(kind: str, error: str, trial: dict | None, feedback: str | None = None) -> dict:
+def _failed(kind: str, error: str, trial: dict | None, feedback: str | None = None,
+            failed_check: str | None = None) -> dict:
     result: dict[str, Any] = {"failure_kind": kind, "world_sha256": None, "authoring": _authoring(trial)}
     if feedback:
         result["feedback"] = feedback
+    if failed_check:
+        result["failed_check"] = failed_check
     return {"outcome": "FAILED", "error": error, "cost_usd": (trial or {}).get("cost_usd") or 0.0,
             "result": result}
 
@@ -188,9 +191,16 @@ def run_world_job(job_id: str, job_input: dict, work_dir: str | Path | None = No
     ok, _, feedback = _check_structure(out)
     if not ok:
         return _failed("author", feedback, trial, feedback)
+    # The world's own check (saved by `sde-world check`, else run here) must pass before the
+    # world goes anywhere: a failing world fails now, as the author's, with the exact check
+    # that failed, so the retry/repair is told what to fix (not a later world_check job).
     guard = ensure_world_checked(out, Path(trial["artifacts_dir"]), work / "traces" / job_id)
     if not guard["ok"]:
-        return _failed("author", guard["feedback"], trial, guard["feedback"])
+        failed_check = guard["result"].get("failed_check")
+        feedback = guard["feedback"]
+        if failed_check:
+            feedback = f"Failed check: {failed_check}.\n{feedback}"
+        return _failed("author", feedback, trial, feedback, failed_check=failed_check)
 
     meta = json.loads((out / "world.json").read_text())
     meta["spec"] = spec

@@ -9,12 +9,13 @@ PLAUSIBLE = "take the middle element without averaging"
 WRONG = f"# plausible_wrong_fix: {PLAUSIBLE}\ncat > /app/stats.py <<'EOF'\ndef median(xs):\n    return 0\nEOF\n"
 
 
-def setup(tmp_path, draft, saved=None):
+def setup(tmp_path, draft, saved=None, roles=("oracle", "nop", "wrong")):
     arts = tmp_path / "artifacts"
     (arts / "sde_task").mkdir(parents=True)
     if saved is not None:
         (arts / "sde_task" / "check.json").write_text(json.dumps(saved))
-    (arts / "sde_task" / "run-nop.json").write_text(json.dumps({"ok": True}))
+    for role in roles:
+        (arts / "sde_task" / f"run-{role}.json").write_text(json.dumps({"as": role, "ok": True}))
     d = tmp_path / "draft.json"
     d.write_text(json.dumps(draft))
     w = tmp_path / "world"
@@ -26,7 +27,21 @@ def setup(tmp_path, draft, saved=None):
 def test_the_authors_passing_check_is_used(tmp_path):
     d, w, arts = setup(tmp_path, draft_with(wrong_fix_script=WRONG), saved={"ok": True, "errors": []})
     out = ensure_task_checked(d, w, arts)
-    assert out["ok"] and out["by"] == "author" and out["result"]["runs"] == {"nop": True}
+    assert out["ok"] and out["by"] == "author"
+    assert out["result"]["runs"] == {"oracle": True, "nop": True, "wrong": True}
+
+
+def test_with_only_some_saved_runs_every_role_is_run_here(tmp_path):
+    d, w, arts = setup(tmp_path, draft_with(wrong_fix_script=WRONG), saved={"ok": True, "errors": []},
+                       roles=("nop",))
+    calls = []
+
+    def run_roles(bundle, roles, repeat_oracle=False):
+        calls.append(list(roles))
+        return [{"as": r, "ok": True} for r in roles]
+
+    out = ensure_task_checked(d, w, arts, run_roles=run_roles)
+    assert out["ok"] and out["by"] == "pipeline" and calls == [["oracle", "nop", "wrong"]]
 
 
 def test_a_missing_check_is_run_here_and_catches_a_broken_draft(tmp_path):

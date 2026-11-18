@@ -165,6 +165,24 @@ def test_a_judge_that_parses_on_its_retry_counts(tmp_path, monkeypatch):
     assert not gate.passed and gate.detail["blind_leak"] and gate.detail["inconclusive"] == []
 
 
+PLACEHOLDER = {"predicted_fix": "...", "predicted_failure": "..."}
+
+
+def test_a_placeholder_prediction_is_retried_then_inconclusive_not_judged(tmp_path, monkeypatch):
+    # aws-agent-b1: "..." predictions were judged "none" and passed the gate.
+    model = Scripted({"leak-review": [CLEAN], "leak-blind": [PLACEHOLDER, PLACEHOLDER], "leak-judge": [NO_MATCH]})
+    gate = run(tmp_path, monkeypatch, model)
+    assert model.keys.count("leak-blind-retry1") == 1 and "leak-judge" not in model.keys
+    assert gate.detail["inconclusive"] == ["blind"] and not gate.detail["blind_leak"]
+
+
+def test_a_placeholder_then_a_real_prediction_is_judged(tmp_path, monkeypatch):
+    model = Scripted({"leak-review": [CLEAN], "leak-blind": [PLACEHOLDER, PREDICTION],
+                      "leak-judge": [{"match": "specific", "why": "names it"}]})
+    gate = run(tmp_path, monkeypatch, model)
+    assert not gate.passed and gate.detail["blind_leak"] and gate.detail["inconclusive"] == []
+
+
 def test_an_unparseable_review_is_inconclusive(tmp_path, monkeypatch):
     model = Scripted({"leak-review": ["garbage"], "leak-blind": [PREDICTION], "leak-judge": [NO_MATCH]})
     gate = run(tmp_path, monkeypatch, model)

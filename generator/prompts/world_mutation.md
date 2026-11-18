@@ -103,3 +103,6 @@ Write the new world to `$output_dir/`, in the same layout as the parent:
 
 Also run your check that `target_fix` fails on the new world, and keep its output in
 your notes. Finish only when `sde-world check` exits 0 and the old strategy fails.
+
+`sde-world check $output_dir` must exit 0. You are not done until it does; if it fails, fix
+the one failing check it names and re-run. Never finish with a failing or skipped check.

@@ -51,6 +51,11 @@ trigger), where a crash fires relative to the effects, crash hooks or stage name
 that workers can be killed at any moment and restarted), the cause, the files to change, or
 the shape of the fix, in any words. The leak review rejects all of these.
 
+Every event, field, file or output the tests rely on is stated as REQUIRED ("the worker emits
+`result_ready` before it commits"), never as optional: an agent may ignore a "may". BAD: "the
+worker may emit `result_ready`" (when a test waits for it). GOOD: "the worker emits
+`result_ready` on stdout when the reservation is cached, before the order is stored".
+
 BAD (a real draft): "The fault-injection hook `STOP_AFTER=inventory` makes a worker exit after
 the inventory update is durable and before its completion work. Use `tick --milliseconds
 30001` to expire a lease. Later deliveries of a request ID must reuse that exact durable result."
@@ -77,3 +82,13 @@ with one heredoc each or a Python script in `/tmp`; never nest heredocs sharing 
 Never weaken or delete a test to make a check pass.
 
 $request
+
+# Before you finish
+
+1. `sde-task check /logs/artifacts/draft.json` exits 0.
+2. `sde-task run /logs/artifacts/draft.json --as all` exits 0: oracle reward 1 (both runs), nop
+   reward 0, wrong reward 0.
+
+You are not done until both exit 0, on the final draft. If one fails, fix that one thing and
+re-run both. Never finish with a failing check: the pipeline re-checks the saved results and
+sends a draft with any failing role back to you.

@@ -163,6 +163,43 @@ def test_a_failing_self_check_fails_fast_without_rerunning(tmp_path, monkeypatch
     assert out["outcome"] == "FAILED" and "finished anyway" in out["result"]["feedback"]
 
 
+def test_a_failed_world_check_names_the_check_for_the_retry(tmp_path, monkeypatch):
+    """The retry/repair is told exactly which check failed: from the author's saved check,
+    or from the one run here when the author skipped it."""
+    from shared.taskformat import world_check
+
+    class SavedFail(FakeTrial):
+        def __call__(self, job_id, *a, **kw):
+            out = super().__call__(job_id, *a, **kw)
+            (Path(out["artifacts_dir"]) / "world_check.json").write_text(json.dumps(
+                {"outcome": "FAILED", "failed_check": "build", "feedback": "COPY with more than one source file"}))
+            return out
+
+    saved = author.run_world_job("j1", {"spec": SPEC}, tmp_path / "w1", run_trial=SavedFail(tmp_path))
+    assert saved["outcome"] == "FAILED" and saved["result"]["failure_kind"] == "author"
+    assert saved["result"]["failed_check"] == "build"
+    assert saved["result"]["feedback"].startswith("Failed check: build.") and "COPY" in saved["result"]["feedback"]
+
+    monkeypatch.setattr(world_check, "run_world_check_job",
+                        lambda w, t: {"outcome": "FAILED", "failed_check": "repro_fails", "feedback": "exited [0, 0]"})
+    ours = author.run_world_job("j2", {"spec": SPEC}, tmp_path / "w2", run_trial=FakeTrial(tmp_path, self_check=None))
+    assert ours["result"]["failed_check"] == "repro_fails" and ours["error"].startswith("Failed check: repro_fails.")
+
+    passing = author.run_world_job("j3", {"spec": SPEC}, tmp_path / "w3", run_trial=FakeTrial(tmp_path))
+    assert passing["outcome"] == "OK" and "failed_check" not in passing["result"]
+
+
+def test_world_prompts_say_build_first_and_never_finish_on_a_failing_check():
+    def text(name):  # the prompts wrap lines; compare on single spaces
+        return " ".join((author.PROMPTS / name).read_text().split())
+
+    world = text("world.md")
+    assert "docker build -t sde-world-dev environment/" in world and "build again after every module" in world
+    assert "`COPY a b c dest` needs `dest/`" in world
+    for name in ("world.md", "world_mutation.md"):
+        assert "Never finish with a failing or skipped check" in text(name), name
+
+
 def test_a_mutation_keeps_what_the_author_says_it_defeats(tmp_path):
     work = tmp_path / "work"
     parent = write_world(tmp_path / "p")

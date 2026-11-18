@@ -6,7 +6,7 @@ short: decide, act, check.
 
 # Checklist (write to `/logs/artifacts/world/`)
 
-1. `environment/`: the system, about 200-500 lines in 2-3 modules, with its `Dockerfile` (`FROM` one of: $base_images; system at `/app`). Write it one module per step (≤ ~150 lines per response) and build and run it before writing the next; never write the whole system, or more than one module, in one response. The line count is guidance, not a gate: never rewrite a working world to hit it; trim only if trivial.
+1. `environment/`: the system, about 200-500 lines in 2-3 modules, with its `Dockerfile` (`FROM` one of: $base_images; system at `/app`). Build the image first: write the Dockerfile and the first module, then `docker build -t sde-world-dev environment/` and fix build errors before going further; build again after every module. Write it one module per step (≤ ~150 lines per response) and build and run it before writing the next; never write the whole system, or more than one module, in one response. The line count is guidance, not a gate: never rewrite a working world to hit it; trim only if trivial.
 2. Run it, then find the counterexample by EXECUTING it (a fixed schedule, an injected fault or a crafted input) and record the exact sequence.
 3. `repro/repro.sh`: replays it deterministically; exit 1 = an invariant is violated, 0 = it holds.
 4. `world_fix/fix.sh`: the real fix (edits the world in place); afterwards repro.sh exits 0.
@@ -54,7 +54,8 @@ containers you didn't start (the daemon is shared). If the terminal is stuck, pr
 wait; never kill all containers. The world
 later runs as a non-root `agent` user with 1 CPU / 2 GB; install packages only in the
 Dockerfile. Any timing bound in tests needs a 5x margin (1 CPU). Pitfalls: every `COPY`
-source must exist in `environment/`; when you replace or rename a module, delete the old file
+source must exist in `environment/`; `COPY a b c dest` needs `dest/` (a trailing slash);
+build again after every module; when you replace or rename a module, delete the old file
 (Go / C / Java: stale files break the build); Go fails on unused imports; gcc 14 rejects implicit
 declarations; `strtok_r` needs `_POSIX_C_SOURCE`; Java lambdas need effectively final variables.
 
@@ -71,3 +72,9 @@ Scaffolds in `/opt/sde/scaffold/` (`README.md`; stdlib Python: `sde_sched.py` de
 interleavings, `sde_fault.py` planned crashes / dropped messages, `sde_repro.py` the repro
 harness): use them only if they save you time, and don't read sources you won't use. Go or C
 worlds: the README's last section has the inline patterns.
+
+# Before you finish
+
+`sde-world check /logs/artifacts/world` must exit 0. You are not done until it does; if it
+fails, fix the one failing check it names and re-run. Never finish with a failing or skipped
+check.

@@ -493,7 +493,13 @@ def gate_leak(bundle_dir: Path, trace_dir: Path) -> Gate:
     return Gate("leak", False, detail, feedback)
 
 
-LEAK_RECORD_VERSION = 2
+LEAK_RECORD_VERSION = 3  # 3: a placeholder blind prediction ("...") is retried, then inconclusive
+
+
+def _placeholder(text) -> bool:
+    """A model answer with no content: "", "...", "…" (aws-agent-b1: three blind predictions came back
+    as the format's "..." and were judged "none", passing the gate)."""
+    return not isinstance(text, str) or len("".join(ch for ch in text if ch.isalnum())) < 4
 
 
 def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:
@@ -527,10 +533,11 @@ def _leak_calls(review_dir: Path, hidden: str, instruction: str) -> dict:
             return None
 
     def call(system: str, user: str, fmt: dict, key: str, required: str) -> dict | None:
-        """The answer, retried once (a new cache key) when unparseable or missing `required`."""
+        """The answer, retried once (a new cache key) when unparseable, missing `required`, or
+        a placeholder ("...") in place of `required`'s text."""
         for attempt in (key, f"{key}-retry1"):
             answer = once(system, user, fmt, attempt)
-            if answer is not None and required in answer:
+            if answer is not None and required in answer and not _placeholder(answer[required]):
                 return answer
         return None
 

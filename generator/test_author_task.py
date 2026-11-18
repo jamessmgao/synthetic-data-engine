@@ -138,7 +138,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    "## How Harbor runs your task", "## Rules the pipeline checks",
                    # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
                    "where a crash fires relative to the effects", "BAD (a real draft)", "GOOD:",
-                   "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish"):
+                   "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish", "is stated as REQUIRED", "may emit `result_ready`", "# Before you finish", "You are not done until both exit 0", "Never finish with a failing check"):
         assert needle in text, needle
     # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
     assert text.index("# Checklist") < text.index("# The draft")
@@ -455,10 +455,47 @@ def test_world_mutation_rejects_unknown_operators(operators):
 TAGGED = "# plausible_wrong_fix: check-then-insert inside one transaction at READ COMMITTED\n" + WRONG_FIX
 
 
-def _real_guard(draft_path, world_dir, artifacts_dir):
+def _run(role, ok=True, failing=(), reward=None):
+    expected = 1.0 if role == "oracle" else 0.0
+    tests = [{"name": n, "status": "failed", "message": "assert x"} for n in failing] + [
+        {"name": "test_other", "status": "passed", "message": ""}]
+    return {"as": role, "ok": ok, "expected": expected, "reward": expected if reward is None else reward,
+            "tests": tests, "setup_errors": [], "output_tail": f"{role} output line"}
+
+
+class FakeRoles:
+    """sde_task.run_roles stand-in for the guard: records calls, returns scripted runs."""
+
+    def __init__(self, **bad):
+        self.calls, self.bad = [], bad
+
+    def __call__(self, bundle, roles, repeat_oracle=False):
+        self.calls.append({"bundle": bundle, "roles": list(roles), "repeat_oracle": repeat_oracle})
+        return [_run(r, ok=r not in self.bad, failing=self.bad.get(r, ())) for r in roles]
+
+
+def _real_guard(draft_path, world_dir, artifacts_dir, roles=None):
     from generator.self_check import ensure_task_checked
 
-    return ensure_task_checked(draft_path, world_dir, artifacts_dir)
+    return ensure_task_checked(draft_path, world_dir, artifacts_dir, run_roles=roles or FakeRoles())
+
+
+class Saved(FakeHarness):
+    """A trial whose author saved its sde-task results (check.json + run-<role>.json)."""
+
+    def __init__(self, *a, check_ok=True, runs=None, **kw):
+        super().__init__(*a, **kw)
+        self.check_ok, self.runs = check_ok, runs
+
+    def __call__(self, job_id, *a, **kw):
+        out = super().__call__(job_id, *a, **kw)
+        evidence = Path(out["artifacts_dir"]) / "sde_task"
+        evidence.mkdir()
+        (evidence / "check.json").write_text(json.dumps({"ok": self.check_ok, "errors": [] if self.check_ok
+                                                         else ["tests: no `# invariant: 1` marker"]}))
+        for run in self.runs or [_run(r) for r in ("oracle", "nop", "wrong")]:
+            (evidence / f"run-{run['as']}.json").write_text(json.dumps(run))
+        return out
 
 
 def test_a_draft_that_fails_sde_task_check_is_sent_back_with_its_bundle(work):
@@ -474,27 +511,58 @@ def test_a_draft_that_fails_sde_task_check_is_sent_back_with_its_bundle(work):
     assert reviews == []
 
 
-def test_a_draft_that_passes_the_check_goes_on(work):
-    # The world fixture has two invariants: each needs a marked test.
-    tests = draft_with()["test_outputs"] + "\n\n# invariant: 1\n# invariant: 2\n"
-    out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED, test_outputs=tests)),
-                    self_check=_real_guard)
+MARKED = draft_with()["test_outputs"] + "\n\n# invariant: 1\n# invariant: 2\n"  # the fixture world has 2
+
+
+def test_without_saved_runs_the_guard_runs_every_role_once(work):
+    roles = FakeRoles()
+    out, _ = create(work, FakeHarness(draft=draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)),
+                    self_check=lambda d, w, a: _real_guard(d, w, a, roles))
     assert out["outcome"] == "OK", out["error"]
-    assert out["result"]["self_check"] == {"by": "pipeline", "runs": {}}
+    assert out["result"]["self_check"] == {"by": "pipeline", "runs": {"oracle": True, "nop": True, "wrong": True}}
+    assert len(roles.calls) == 1 and roles.calls[0]["roles"] == ["oracle", "nop", "wrong"]
+    assert roles.calls[0]["repeat_oracle"] is True  # the flake check, as `--as all` does
 
 
 def test_the_authors_saved_check_and_runs_are_used_not_repeated(work):
-    class Saved(FakeHarness):
-        def __call__(self, job_id, *a, **kw):
-            out = super().__call__(job_id, *a, **kw)
-            evidence = Path(out["artifacts_dir"]) / "sde_task"
-            evidence.mkdir()
-            (evidence / "check.json").write_text('{"ok": true, "errors": []}')
-            (evidence / "run-nop.json").write_text('{"as": "nop", "ok": true}')
-            return out
+    roles = FakeRoles()
+    out, _ = create(work, Saved(), self_check=lambda d, w, a: _real_guard(d, w, a, roles))
+    assert out["outcome"] == "OK" and out["result"]["self_check"]["by"] == "author"
+    assert out["result"]["self_check"]["runs"] == {"oracle": True, "nop": True, "wrong": True}
+    assert roles.calls == []  # nothing re-run
 
-    out, _ = create(work, Saved(), self_check=_real_guard)  # the untagged draft: the saved check is trusted
-    assert out["outcome"] == "OK" and out["result"]["self_check"] == {"by": "author", "runs": {"nop": True}}
+
+def test_a_saved_failing_oracle_fails_the_create_with_its_tests(work):
+    """local-agent-b2-t01: the author finished with its own oracle failing; it must go to a
+    repair with that evidence, not on to validate."""
+    reviews = []
+    runs = [_run("oracle", ok=False, failing=("test_invariant_1_materialized_rendering", "test_regression_edge"),
+                 reward=0.0), _run("nop"), _run("wrong")]
+    out, _ = create(work, Saved(runs=runs), self_check=_real_guard,
+                    leak_review=lambda b, t: reviews.append(b) or FakeGate())
+    r = out["result"]
+    assert (out["outcome"], r["failure_kind"]) == ("FAILED", "author") and r["bundle_sha256"]  # → repair<k+1>
+    assert "finished with failing `sde-task run` roles" in r["feedback"]
+    assert "oracle: reward 0.0 (expected 1.0)" in r["feedback"]
+    assert "test_invariant_1_materialized_rendering, test_regression_edge" in r["feedback"]
+    assert "oracle output line" in r["feedback"] and reviews == []  # no leak review paid for
+
+
+@pytest.mark.parametrize("missing", ["nop", "wrong"])
+def test_a_missing_role_means_the_guard_runs_them_and_a_failure_counts(work, missing):
+    runs = [_run(r) for r in ("oracle", "nop", "wrong") if r != missing]
+    roles = FakeRoles(wrong=("test_invariant_1_each_order_reserves_at_most_one",))
+    valid = draft_with(wrong_fix_script=TAGGED, test_outputs=MARKED)  # the guard re-checks it before running
+    out, _ = create(work, Saved(draft=valid, runs=runs), self_check=lambda d, w, a: _real_guard(d, w, a, roles))
+    assert len(roles.calls) == 1 and out["outcome"] == "FAILED"
+    assert "run here, it fails" in out["result"]["feedback"]
+    assert "wrong: reward 0.0" in out["result"]["feedback"]
+
+
+def test_a_saved_failing_check_fails_the_create(work):
+    out, _ = create(work, Saved(check_ok=False), self_check=_real_guard)
+    assert out["outcome"] == "FAILED" and "failed `sde-task check` and finished anyway" in out["result"]["feedback"]
+    assert "no `# invariant: 1` marker" in out["result"]["feedback"]
 
 
 # --- time boxes --------------------------------------------------------------------------
