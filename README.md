@@ -17,16 +17,16 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 ## How we got here
 
 I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the **learnable band
-at a high yield**. This is the method for all three. A seeded taxonomy spreads the tasks
+at a high yield**. This is the method for all three. A taxonomy seeds the bug generation: it spreads the tasks
 out and draws inspiration from frontier complexity in software. Then feedback loops raise the
 yield, and their mutations keep pushing tasks with random variations and issues.
 
-### 1. A seeded taxonomy, mixed with world generation
+### 1. A taxonomy that seeds bug generation, mixed with world generation
 
 I started with distributed systems, the problems I knew. The worlds were small, with too few
-components, and every idea came from the same place. So I seeded the taxonomy with an external model
-(ChatGPT), so the ideas didn't all come from the model that authors the tasks, with the same data
-and the same blind spots.
+components, and every idea came from the same place. So I built a taxonomy of bug
+mechanisms with an external model (ChatGPT) and used it to seed bug generation, so the ideas didn't
+all come from the model that authors the tasks, with the same data and the same blind spots.
 
 Diversity then comes from three things:
 - **An expanded taxonomy:** 22 → 62 bug mechanisms across six families
@@ -49,25 +49,26 @@ hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
   **novel tasks** come from: each one changes the world itself, so the task that comes out is one
   nobody wrote down in advance.
 - **Loop 2, around the pipeline:** an agentic coding feedback loop, run with `/goal` (the goal text
-  is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). It used a sliding window with a draining
-  window to test iterative refinements. Coding agents read the trajectories and proposed one subtle,
+  is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). Sliding-window deployments with rolling restarts
+  meant I could patch single task-builder pods at a time to test refinements. Coding agents read the trajectories and proposed one subtle,
   targeted change per finding, each on its own branch per mini-batch "lane"
   ([38 lane branches](https://github.com/jamessmgao/synthetic-data-engine/branches/all?query=lane-)). I checked their changes, and each one was
   judged on the tasks authored after it ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
 
-Each lane worked in its own git worktree, on its own branch, so every targeted refinement can be
-inspected on its own: `git fetch && git branch -r | grep lane-`, then `git log -p origin/<branch>`.
-
 This was the inflection point for the yield rate. The prompts became good enough to one-shot a
 significant share of tasks: 18 of the 43 accepted tasks were accepted at their first version.
 
-The refinements themselves were small. Instructions became short user-voiced requests that don't
-name the fix (342 → 92 words, [`b9e1d01`](https://github.com/jamessmgao/synthetic-data-engine/commit/b9e1d01)). When a guarantee had one textbook
-remedy, the remedy went into the system already, subtly wrong ([`4916619`](https://github.com/jamessmgao/synthetic-data-engine/commit/4916619)).
-Greedy-algorithm tasks, where "be optimal" names the fix, were replaced by subtle defects inside
-exact algorithms ([`lane-l2-alg-exact`](https://github.com/jamessmgao/synthetic-data-engine/tree/lane-l2-alg-exact)). Mutations that add persistent
-state became a last resort after 0 of 7 reached the band ([`9af8ab7`](https://github.com/jamessmgao/synthetic-data-engine/commit/9af8ab7)), and
-tests started their own service on a free port ([`00f44fd`](https://github.com/jamessmgao/synthetic-data-engine/commit/00f44fd)).
+The double feedback loop drove many refinements for specific tasks, but it surfaced these four
+optimizations as the highest leverage:
+- **Prompt engineering:** instructions state outcomes, with no solution cues or semantic leaks. They
+  went from 342 to 92 words ([`b9e1d01`](https://github.com/jamessmgao/synthetic-data-engine/commit/b9e1d01), [`4916619`](https://github.com/jamessmgao/synthetic-data-engine/commit/4916619)).
+- **Taxonomy seeding:** 22 → 62 bug mechanisms, spread across 40+ application domains
+  ([`lane-l1-taxonomy-domains`](https://github.com/jamessmgao/synthetic-data-engine/tree/lane-l1-taxonomy-domains)).
+- **Trace-driven mutations:** the passing agent runs decide what to add: concurrency, cross-component
+  paths, interacting invariants ([`evaluation/calibration.py`](evaluation/calibration.py),
+  [`9af8ab7`](https://github.com/jamessmgao/synthetic-data-engine/commit/9af8ab7)).
+- **Generation control:** bounded prompt length, authoring scope and unproductive reasoning, so
+  sessions finish instead of stalling ([`d1ad21c`](https://github.com/jamessmgao/synthetic-data-engine/commit/d1ad21c)).
 
 **Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
 77). Why the accepted tasks are hard:
