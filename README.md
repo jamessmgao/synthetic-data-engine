@@ -16,18 +16,44 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 ## How we got here
 
-### 1. Targeted prompt and rule refinement, with a double feedback loop
+I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the **learnable band
+at a high yield**. This is the method for all three. A seeded taxonomy spreads the tasks
+out and draws inspiration from frontier complexity in software. Then feedback loops raise the
+yield, and their mutations keep pushing tasks with random variations and issues.
+
+### 1. A seeded taxonomy, mixed with world generation
+
+I started with distributed systems, the problems I knew. The worlds were small, with too few
+components, and every idea came from the same place. So I seeded the taxonomy with an external model
+(ChatGPT), so the ideas didn't all come from the model that authors the tasks, with the same data
+and the same blind spots.
+
+Diversity then comes from three things:
+- **An expanded taxonomy:** 22 → 62 bug mechanisms across six families
+  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py), [docs/DIFFICULTY.md](docs/DIFFICULTY.md)).
+- **Mixing it with world generation:** each task samples a family, a mechanism, an environment and
+  one of 40+ application domains, least-used first, so the same bug pattern lands in different
+  systems ([`generator/families.py`](generator/families.py)).
+- **Separate steps:** choosing the idea, building the world and writing the task are separate jobs
+  ([docs/AUTHORING.md](docs/AUTHORING.md)). One world can carry several tasks, and one mechanism can
+  be planted in several worlds.
+
+### 2. A double feedback loop
 
 At the start it was impossible to one-shot a task in the band: the first 16 tasks produced 0. So I
 hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
 
-- **Loop 1, per task:** the pipeline revises its own tasks. A too-easy task gets a world mutation,
-  a too-hard one an easier revision ([docs/EVALUATION.md](docs/EVALUATION.md)).
-- **Loop 2, across tasks:** a sliding window with a draining window to test iterative refinements.
-  Coding agents read the trajectories and proposed one subtle, targeted change per finding, each on
-  its own branch per mini-batch "lane" ([38 lane branches](https://github.com/jamessmgao/synthetic-data-engine/branches/all?query=lane-)). I checked
-  their changes, and each one was judged on the tasks authored after it
-  ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
+- **Loop 1, inside the pipeline:** the Trace Parser reads each task's five agent runs and revises
+  the task until it lands in the band. A too-easy task gets a world mutation, a too-hard one an
+  easier revision ([docs/EVALUATION.md](docs/EVALUATION.md)). The mutations are also where the
+  **novel tasks** come from: each one changes the world itself, so the task that comes out is one
+  nobody wrote down in advance.
+- **Loop 2, around the pipeline:** an agentic coding feedback loop, run with `/goal` (the goal text
+  is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). It used a sliding window with a draining
+  window to test iterative refinements. Coding agents read the trajectories and proposed one subtle,
+  targeted change per finding, each on its own branch per mini-batch "lane"
+  ([38 lane branches](https://github.com/jamessmgao/synthetic-data-engine/branches/all?query=lane-)). I checked their changes, and each one was
+  judged on the tasks authored after it ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
 
 Each lane worked in its own git worktree, on its own branch, so every targeted refinement can be
 inspected on its own: `git fetch && git branch -r | grep lane-`, then `git log -p origin/<branch>`.
@@ -43,18 +69,8 @@ exact algorithms ([`lane-l2-alg-exact`](https://github.com/jamessmgao/synthetic-
 state became a last resort after 0 of 7 reached the band ([`9af8ab7`](https://github.com/jamessmgao/synthetic-data-engine/commit/9af8ab7)), and
 tests started their own service on a free port ([`00f44fd`](https://github.com/jamessmgao/synthetic-data-engine/commit/00f44fd)).
 
-### 2. The synthetic taxonomy
-
-I started with distributed systems, the problems I knew. The worlds were small, with too few
-components. To target harder problems I used an external model (ChatGPT) to seed ideas, so they
-didn't all come from the model that authors the tasks, which avoids collapsing onto one model's
-training distribution. The taxonomy grew from 22 to 62 bug mechanisms across six families and 40+
-application domains ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py),
-[docs/DIFFICULTY.md](docs/DIFFICULTY.md)). The synthetic taxonomy gave the diversity, and the
-iterative mutations made the tasks novel.
-
-**Result:** 0 of the first 16 tasks in band; about 58% of decided tasks now (43 accepted of 74, as
-of 2026-11-19 06:45 UTC). Why the accepted tasks are hard:
+**Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
+77). Why the accepted tasks are hard:
 [docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). Example tasks with links to the runs:
 [docs/DEMO_EXAMPLES.md](docs/DEMO_EXAMPLES.md).
 
