@@ -1,4 +1,4 @@
-"""Chaos test against the local K3s cluster (docs/K8S_PLAN.md, docs/DEPLOY.md §8). Run: `make k8s-test`.
+"""Chaos test against the local K3s cluster (docs/KUBERNETES.md, docs/DEPLOY.md §8). Run: `make k8s-test`.
 
     python scripts/k8s_test.py [--tasks 2] [--timeout S] [--context C] [--kubeconfig F] [--dry-run]
 

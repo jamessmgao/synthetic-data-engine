@@ -1,5 +1,5 @@
 """
-The `world_check` job (docs/AGENTIC_AUTHORING_PLAN.md §3.5): is a world's
+The `world_check` job (docs/AUTHORING.md §3.5): is a world's
 counterexample real, reproducible and fixable? Deterministic, no model call.
 
 A world (§3.3) is a directory:
@@ -21,6 +21,10 @@ Checks, in order, stopping at the first failure:
     repro_fails             repro.sh exits 1 on the world, twice (the bug is real and stable)
     repro_passes_with_fix   after world_fix/fix.sh, repro.sh exits 0, twice (it is fixable)
 
+Every script has REPRO_TIMEOUT_SEC (SDE_WORLD_SCRIPT_TIMEOUT_S, 300 s): the first one past it
+has its container removed and fails the world at that check (hardness checks too, in any
+mode), with a "did not finish" verdict instead of a silent hang.
+
 The hardness checks then all run (SDE_WORLD_HARDNESS: enforce = the first failing one
 fails the world; warn, the default = recorded in result.hardness {symptom_ok,
 spans_or_dependent, wrong_fix_ok, failed, details, mode}, the world passes; off =
@@ -31,7 +35,7 @@ skipped). symptom_check.sh and wrong_fix.sh are required files only when enforce
     fix_not_local           the fix can't be one local patch: fix.sh changes 2+ files, or
                             dependent_check.sh exits 0 on the world and after fix.sh but 1
                             after wrong_fix.sh (a one-file patch breaks a dependent: the f1
-                            pattern, docs/ANALYSIS.md)
+                            pattern, docs/archive/ANALYSIS.md)
     wrong_fix_survives      after wrong_fix.sh, symptom_check.sh exits 0 (it passes the
                             agent's own check) and repro.sh still exits 1 (deeper schedules
                             break it)
@@ -61,7 +65,11 @@ from shared.taskformat.materialize import _pin_base_images  # noqa: E402
 from shared.taskformat.schema import _check_dockerfile  # noqa: E402
 
 RUNS = 2  # each repro check runs twice: a flaky counterexample is not a counterexample
-REPRO_TIMEOUT_SEC = 600
+# Per script. A check runs ~10 scripts, so a repro that never returns (a lock, a retry loop, a
+# wait) used to hang it silently for up to ~90 min at 600 s each; now the first timeout ends
+# the check with that verdict. 300 s leaves room for perf repros (the slow path at 5x+ the
+# bound) and multi-node schedules.
+REPRO_TIMEOUT_SEC = int(os.environ.get("SDE_WORLD_SCRIPT_TIMEOUT_S", "300"))
 OUTPUT_CHARS = 2000
 REQUIRED = ("environment/Dockerfile", "repro/repro.sh", "world_fix/fix.sh", "world.json")
 HARDNESS_FILES = ("repro/symptom_check.sh", "world_fix/wrong_fix.sh")  # required only when enforced
@@ -117,6 +125,23 @@ def _docker(args: list[str], timeout: float, full: bool = False) -> tuple[int, s
         return -1, f"timed out after {timeout}s\n{str(out)[-OUTPUT_CHARS:]}"
 
 
+class ScriptTimeout(Exception):
+    """A world script ran past REPRO_TIMEOUT_SEC; its container was removed. `check` is the
+    check it ran for, set by the caller."""
+
+    def __init__(self, script: str, output: str):
+        super().__init__(script)
+        self.script, self.output, self.check = script, output, ""
+
+    def feedback(self) -> str:
+        return (f"`{self.script}` did not finish in {REPRO_TIMEOUT_SEC} s (check {self.check}), so its "
+                "container was killed and the check stopped there. A repro must be deterministic and "
+                "bounded: a lock, retry loop, wait or server call that never returns hangs it. Put a "
+                "timeout on every wait (lock and statement timeouts, a retry limit, socket and "
+                f"subprocess timeouts), make it finish in seconds, then rerun.\nOutput before the kill:\n"
+                f"{self.output}")
+
+
 def _check_structure(world: Path) -> tuple[bool, dict, str]:
     missing = [p for p in required_files() if not (world / p).exists()]
     if missing:
@@ -167,9 +192,16 @@ REPRO, SYMPTOM, DEPENDENT = ("bash /world/repro/repro.sh", "bash /world/repro/sy
 
 
 def _run(check_image: str, script: str) -> tuple[int, str]:
-    """One fresh container from the world's check image: run `script` from its WORKDIR."""
-    return _docker(["run", "--rm", *RUN_LIMITS, *docker_label(), check_image, "bash", "-c", script],
-                   REPRO_TIMEOUT_SEC)
+    """One fresh container from the world's check image: run `script` from its WORKDIR.
+    Named, so a timeout can remove it: killing the CLI on a timeout leaves the container
+    running. Raises ScriptTimeout."""
+    name = f"sde-wc-{uuid.uuid4().hex[:12]}"
+    code, out = _docker(["run", "--rm", *RUN_LIMITS, *docker_label(), "--name", name, check_image,
+                         "bash", "-c", script], REPRO_TIMEOUT_SEC)
+    if code == -1:
+        _docker(["rm", "-f", name], 120)
+        raise ScriptTimeout(script, out)
+    return code, out
 
 
 def _repro(check_image: str, with_fix: bool) -> tuple[int, str]:
@@ -187,6 +219,8 @@ def _changed_files(check_image: str, script: str) -> tuple[list[str] | None, str
     cid = out.strip().splitlines()[-1]
     try:
         code, out = _docker(["exec", cid, "bash", "-c", script], REPRO_TIMEOUT_SEC)
+        if code == -1:
+            raise ScriptTimeout(script, out)  # the finally removes the container
         if code != 0:
             return None, out, {}
         code, diff = _docker(["diff", cid], 120)
@@ -346,7 +380,11 @@ def _hardness(world: Path, check_image: str, expect) -> tuple[dict, list[tuple[s
     ])
 
     # The fix must not be one local patch (lever 3): 2+ files, or a dependent the local patch breaks.
-    files, out, texts = _changed_files(check_image, FIX)
+    try:
+        files, out, texts = _changed_files(check_image, FIX)
+    except ScriptTimeout as e:
+        e.check = "fix_not_local"
+        raise
     details["fix_files"] = files
     named = [hit for path, text in texts.items() if (orig := _original(world, path)) is not None
              for hit in _limit_named(path, orig, text)][:10]
@@ -468,7 +506,13 @@ def run_world_check_job(world_dir: str | Path, trace_dir: str | Path) -> dict:
             return finish("build", f"The world's check image does not build (exit {code}):\n{out}")
         def expect(name: str, script: str, want: int, msg: str, runs: int = 1) -> str | None:
             """Run `script` `runs` times; it must exit `want` each time. The feedback if not, else None."""
-            got = [_run(check_image, script) for _ in range(runs)]
+            try:
+                got = [_run(check_image, script) for _ in range(runs)]
+            except ScriptTimeout as e:
+                e.check = name
+                checks[name] = {"passed": False, "timed_out": True, "timeout_s": REPRO_TIMEOUT_SEC,
+                                "output": e.output}
+                raise
             passed = all(c == want for c, _ in got)
             checks[name] = {"passed": passed, "exit_codes": [c for c, _ in got], "output": "" if passed else got[-1][1]}
             if passed:
@@ -495,5 +539,7 @@ def run_world_check_job(world_dir: str | Path, trace_dir: str | Path) -> dict:
             more = f"\n\n(Also failing: {', '.join(n for n, _ in failures[1:])}.)" if failures[1:] else ""
             return finish(name, feedback + more, hardness)
         return finish(None, "", hardness)
+    except ScriptTimeout as e:
+        return finish(e.check, e.feedback())
     finally:
         _docker(["rmi", "-f", check_image, image], 120)

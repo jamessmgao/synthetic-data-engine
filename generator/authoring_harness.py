@@ -1,6 +1,6 @@
 """
 One agent authoring run: a Harbor trial of terminus-2 + GLM-5.1 in the authoring
-image (docs/AGENTIC_AUTHORING_PLAN.md §3.4). Shared by the world job
+image (docs/AUTHORING.md §3.4). Shared by the world job
 (author.run_world_job) and the create job (author_task.run_create_job).
 
     run_authoring_trial(job_id, instruction, files, work_dir) -> {

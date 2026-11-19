@@ -1,5 +1,5 @@
 """
-P1 (docs/AGENTIC_AUTHORING_PLAN.md §2): the agent-mode chain for a few tasks, run
+P1 (docs/AUTHORING.md §2): the agent-mode chain for a few tasks, run
 locally and in order, without the queue, to see whether world-first authoring
 produces tasks in the band and what it costs.
 

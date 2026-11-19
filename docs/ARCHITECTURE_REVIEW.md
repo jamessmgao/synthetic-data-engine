@@ -3,7 +3,7 @@
 A manager's review of the migration, started on `main` at 135b82b (INF1, EX1, TB1, API1
 merged) and kept up to date through the end of 2026-11-17. Each finding has an owner, the
 fix, and its status. Fixes were assigned to the session that owns the file
-(docs/AGENTIC_AUTHORING_PLAN.md §4). The sessions: -18 infrastructure (also took TB1-TB2),
+(docs/AUTHORING.md §4). The sessions: -18 infrastructure (also took TB1-TB2),
 -75 api-service (also took TB3 and the tuning), -c0 executor-worker (the integrator).
 
 Severity: **bug** = wrong behavior in a reachable path; **cost** = wastes paid model time or

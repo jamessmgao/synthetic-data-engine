@@ -17,7 +17,7 @@ The user message carries only what varies per task: the idea or taxonomy, a
 concrete task FORM, and a difficulty DIAL inside that form. Every rule lives
 in the system prompt (prompts/system.md). The pilots showed the generic
 difficulty counts (files, constraints, subgoals) do not move glm-5.3-flash's
-pass rate; the task's form does (docs/TASK_DIFFICULTY.md). Older difficulty
+pass rate; the task's form does (docs/DIFFICULTY.md). Older difficulty
 keys (level, relevant_files, constraints, subgoals, failure_scenarios) are
 ignored. A spec without a form gets DEFAULT_FORM, including seed-only specs.
 
@@ -43,7 +43,7 @@ TAXONOMY_LABELS = [
 ]
 
 # Task forms: what kind of task to build, chosen because of how glm-5.3-flash
-# fails (docs/TASK_DIFFICULTY.md §6). Each has a dial from 1 (easier) to 3.
+# fails (docs/DIFFICULTY.md §6). Each has a dial from 1 (easier) to 3.
 FORMS = {
     # The only form that produced a genuine model failure in the pilots (f1:
     # the fix broke a module that silently relied on the old behavior).

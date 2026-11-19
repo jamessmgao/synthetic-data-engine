@@ -124,6 +124,14 @@ Why the new mechanisms are harder, by family:
 | Windows 1-2 (six lanes) | ~19 | 10 | **~50%** | **~$4-7** | 5 at v1, 5 via mutation; every rejection a leak, none a gate or infra failure (measured) |
 | New taxonomy (from 23:55) | 0 so far | — | **55-65% (estimate)** | **~$5 (estimate)** | 32 new worlds building; first verdicts ~01:00-01:30 UTC |
 
+First new-taxonomy performance verdicts (L4, 00:59-01:35 UTC; measured): the 3 scored v1s were all
+too easy (lock_convoy 5/5, lsm_compaction 4/4 and coarse_invalidation 4/4, both early-stopped), and
+group_commit_durability was rejected for a leak. The too-easy ones escaped the planted trap by deferring
+the work (compaction only on demand, a lazy rebuild on read, the fetch moved out of the lock), which the
+workloads didn't time. Two fixes went to the manager: the perf brief's bound now covers the reads
+(lane-l4-perf-brief-escape), and the group-commit note describes a durable-but-slow baseline
+(lane-l1-group-commit-note).
+
 Basis for the estimate: leaks caused every windows 1-2 rejection; if retiring the leak-prone
 mechanisms and outcome-only requirements remove 40-50% of them, the in-band rate rises from ~50% to
 the 55-65% range. The 80% goal is not met yet.

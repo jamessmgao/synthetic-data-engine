@@ -28,7 +28,7 @@ param() {
 # An optional parameter, with a default when it isn't set.
 param_or() { param "$1" 2>/dev/null || echo "$2"; }
 
-# Author mode (docs/AGENTIC_AUTHORING_PLAN.md), set with `aws_ops.py author-mode`.
+# Author mode (docs/AUTHORING.md), set with `aws_ops.py author-mode`.
 author_mode=$(param_or /sde/author_mode oneshot)
 
 # The authoring image, when this release has one: built into each runner's Docker

@@ -1,9 +1,17 @@
-# Validation phases: every gate that can stop a task
+# Validation: every check a task passes
 
-As of 2026-11-19, from the code on main and the records of all 150 tasks on the production
-cluster. Related: [VALIDATION_GATES.md](VALIDATION_GATES.md) (the gates' design) and
-[VALIDATION_AND_FAILURE_MODES.md](VALIDATION_AND_FAILURE_MODES.md) (six accepted tasks and
-why agents fail them).
+How synthetic-data-engine decides whether authored work may go on, from the world to the
+accepted task. Written from the code on main and the records of all 150 production tasks
+(2026-11-19).
+
+The deterministic parts are `shared/taskformat/world_check.py` (worlds) and `validator/gates.py`
+(task bundles). The leak review and the Trace Parser's reviews are model calls. Every gate
+records its result, so a retry adopts it. On failure, a gate returns `feedback`: the exact
+evidence a repair sends back to the author.
+
+Related: [EVALUATION.md](EVALUATION.md) (the Executor, the Trace Parser and the mutation
+rules) and [AGENT_FAILURE_ANALYSIS.md](AGENT_FAILURE_ANALYSIS.md) (how agents fail the
+accepted tasks).
 
 ## Overview
 
@@ -57,7 +65,7 @@ easier version when too hard.
 Every gate before the agent runs exits to a repair; the runs exit to a retry; the decision
 exits to a revision.
 
-## World phase: is the bug real, stable and fixable?
+## 1. World phase: is the bug real, stable and fixable?
 
 No world has failed `world_check` in production across 150 tasks. The world author must run
 the same check (`sde-world check`) before it may finish, and the gate adopts that stamped
@@ -87,6 +95,41 @@ mutations, but never failing it.
   `findTopLevelAssignments` or a docstring saying "only committed entries". An agent reads
   the name and has the bug.
 
+**The hardness checks in detail** (`world_check._hardness`; mode `SDE_WORLD_HARDNESS`):
+- In `warn` (the default, the user's choice: measure before enforcing), every check runs, is
+  recorded in `result.hardness`, and the world passes.
+- In `enforce`, the first failing check fails the world, and `repro/symptom_check.sh` and
+  `world_fix/wrong_fix.sh` become required files.
+- In `off`, they're skipped.
+
+| Check | Passes when |
+|---|---|
+| `symptom_visible` | `symptom_check.sh` exits 1 on the world |
+| `symptom_gone_with_fix` | `fix.sh && symptom_check.sh` exits 0 |
+| `fix_not_local` | `docker diff` after `fix.sh` shows 2+ system files (scratch, caches and the check's own files ignored), **or** a `repro/dependent_check.sh` passes the three dependent checks below |
+| `dependent_holds` / `dependent_holds_with_fix` | `dependent_check.sh` exits 0 on the world, and after `fix.sh` |
+| `dependent_breaks_with_wrong_fix` | `wrong_fix.sh && dependent_check.sh` exits 1 |
+| `wrong_fix_passes_symptom` | `wrong_fix.sh && symptom_check.sh` exits 0: the wrong fix is tempting |
+| `wrong_fix_fails_repro` | `wrong_fix.sh && repro.sh` exits 1: and still wrong on the deep schedule |
+| `limit_named` (warning only) | no function or docstring the fix changes names its own limit |
+
+Every script runs in a fresh container of the check image at the evaluation's limits (1 CPU /
+2 GB), from its `WORKDIR`; an exit code other than 0 or 1 means the script itself failed.
+`result.hardness = {mode, symptom_ok, spans_or_dependent, wrong_fix_ok, failed: [...],
+details}`.
+
+Where the results go:
+- **To the author:** `sde-world check` (`authoring/sde_world.py:hardness_warnings`) prints one
+  `WARNING:` per failed check, with what to change.
+- **To the next mutation:** the parent's result goes into the mutation input
+  (`evaluation/trace_parser_service.py`), and `world_mutation.md` renders it.
+- **Not used:** `choose_mutations` doesn't use it as a tiebreak (that was parked on
+  `park/hardness-tiebreak`).
+
+A finding from the world trajectories (2026-11-19): authors who pass the check and then see
+the `fix_not_local` warning sometimes pad the fix into a second module just to clear it. That's
+one reason the check stays in `warn`.
+
 **What a failure does:** the feedback goes to a world repair job (at most 2 per version),
 then the task is rejected `invalid`. The only world-phase failure on record is
 aws-agent-b1-t04 v1: the world was missing `world_fix/fix.sh` and `repro/repro.sh`, and
@@ -96,7 +139,7 @@ failed again on its retry.
 cancelled at 23:52 on 2026-11-18 for that reason (heredoc wedges on pre-fix pods), not
 because a gate failed.
 
-## Task phase: is the task correct, and does it give the answer away?
+## 2. Task phase: is the task correct, and does it give the answer away?
 
 The leak review is the strictest gate in the pipeline: it failed 157 drafts and rejected 20
 of the 26 rejected tasks. The functional gates failed only 6 drafts, all in the early dev
@@ -128,6 +171,33 @@ aws-b1-t01 (reward 0, then no reward at all).
    mechanism in the right module) is a leak. A textbook remedy without the location is
    `generic` and passes.
 
+**What the semantic reviewer sees** (call 1, `LEAK_SYSTEM`):
+- the bundle's hidden notes: root cause, subgoals, correctness constraints;
+- the world the task came from (`_world_context`): invariants, the counterexample and what it
+  showed, the plausible wrong fix, `world_fix/fix.sh`. It's found through `task.toml`'s
+  `generation.world_sha256`;
+- the reference solution (`_solution_context`, without `wrong_fix.sh`);
+- the instruction.
+
+**How it's graded:**
+- Each finding has a `quote`, what it `reveals`, and a `severity` (`direct` or `strong_hint`).
+- A quote counts only if it appears verbatim in the instruction (whitespace and markdown
+  normalized), so a reviewer can't fail a task on its own words. Unverified quotes are listed
+  separately.
+- One `direct`, or two `strong_hint`s, is a leak. An ungraded finding counts as `direct`.
+
+**The blind check** (calls 2 and 3; on unless `SDE_LEAK_BLIND=0`):
+- `BLIND_SYSTEM` sees only the instruction and predicts the fix and the failing sequence.
+- `JUDGE_SYSTEM` compares the prediction with the hidden fix and counterexample.
+
+**The record:**
+- Stored at `<work>/leak_reviews/<bundle_sha>/review.json`: `{review, blind: {prediction,
+  judge}, calls, cost_usd}`.
+- Bundles are content-addressed, so every later job on the same bundle adopts it at cost 0.
+  The create job runs the review first, and validate adopts it.
+- The feedback lists the verified sentences and, for a blind leak, the prediction, and asks
+  for an interface-level rewrite.
+
 Guards on the judge: a placeholder prediction is retried, then marked inconclusive; in a
 mutated world, predicting only the parent's already-solved fix doesn't count.
 
@@ -147,7 +217,7 @@ Examples of what it caught:
 - **aws-w1-l4-t01 v2** (algorithmic): a mutated greedy world, predicted blind three times as
   "replace the greedy first-fit selection in the scheduler's core planner".
 
-## Evaluation phase: did the run measure the model?
+## 3. Evaluation phase: did the run measure the model?
 
 Of 700 settled agent runs, 664 were scored (490 passes, 174 fails), 25 were `INVALID` and
 retried, and 11 were skipped by early stopping. The Trace Parser then reviews every failure.
@@ -215,7 +285,7 @@ back this way; 2 of them were in band:
 | aws-w1-l3-t02 v2 | 0/5 | tests required an exact error payload for a declined retry; the instruction never specified one | v3 in progress |
 | aws-w2-l5-t03 v1 | 4/5 | a test expected HTTP 409 on cancelling an uncharged order; the instruction never mentioned cancellation rules | v2 repaired, 5/5 (too easy); v3 being mutated |
 
-## Decision and revision: accept, revise or reject
+## 4. Decision and revision: accept, revise or reject
 
 The Trace Parser decides each version once, when all 5 slots are scored or the verdict is
 already certain. It applies the decision as a compare-and-set on the task's stage, so two
@@ -251,7 +321,18 @@ were skipped this way.
 **Cancellation** is not a verdict: a cancelled task counts toward neither the yield nor the
 rejections. 51 were cancelled on 2026-11-18, mostly to restart world builds on fixed pods.
 
-## Edge cases the gates caught
+## 5. The repair loop
+
+| Failure | Next job | Limit |
+|---|---|---|
+| `world_check` FAILED | `world-repair<k+1>` (type `world`, origin `repair`, with the feedback) | `MAX_REPAIRS_PER_VERSION` = 2, then REJECTED `invalid` (`shared/jobs/handoffs.py:after_world_check`); a FAILED `world` job is REJECTED `invalid` (`after_world`) |
+| `validate` FAILED | `repair<k+1>` (type `revise`, origin `repair`, the failed gate's evidence; the world kept) | 2, then `invalid` (`after_validate`) |
+| create/revise FAILED with `failure_kind: author` and a bundle (the leak review or the self-check at create time) | the same `repair<k+1>` (`after_generation`) | 2; other create failures are `invalid` |
+
+A repair may not drop tests or constraints (`generator/worker.py:_repair_guard`). So a version
+gets at most 3 drafts of its world and 3 drafts of its task.
+
+## 6. Edge cases the gates caught
 
 The best catches are failures that looked like a model failure or a valid task and weren't:
 - a test harness racing its own SIGKILL;
@@ -279,7 +360,7 @@ Real cases from 2026-11-18, in pipeline order:
 | aws-iter1-t01 v1 | failure review | tests inserted raw SQL into a table the instruction never named | repaired; the explanation was cut at 303 characters by an unescaped quote |
 | aws-w2-l1-t02 v1 | classify | the verifier timed out at 900 s on 3 runs | `INVALID`, retried |
 
-## Gaps and recommendations
+## 7. Gaps and recommendations
 
 The biggest gap: test defects reach the agent runs. A test that asserts something the
 instruction never asked is caught only after 5 paid runs, by the failure review, and only if
@@ -295,3 +376,9 @@ a run trips it. Each row is a case no gate caught early, with a proposed check.
 | The blind leak check causes 19 of 20 `invalid` rejections, and nobody has measured whether the drafts it rejects would have been too easy | 131 blind failures vs 26 semantic | a decision for the user, who cancelled a shadow run of this on 2026-11-18: record the blind verdict without enforcing it on a small batch, and compare pass counts |
 | A timeout that ends at reward 1 stays `INVALID` and is re-paid | 3 of the 10 historical timeouts | count it as a pass when the timeout review finds no wedge, or keep retrying (a decision for the user) |
 | The hardness checks never block a world (`warn` mode), so a world with a one-file fix still reaches task authoring | all 150 tasks | enforce `fix_not_local` and `wrong_fix_survives` for performance and algorithmic worlds, where too easy is the common failure |
+
+## 8. Tests
+
+- **Gates:** `tests/shared/taskformat/test_world_check.py` and `tests/shared/taskformat/test_leak_review.py`. The leak review
+  is tested on P1's real instruction, world and fix (`tests/shared/taskformat/fixtures/p1`).
+- **Classification and the Trace Parser:** see [EVALUATION.md](EVALUATION.md) §5.

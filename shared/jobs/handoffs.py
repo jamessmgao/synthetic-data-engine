@@ -15,7 +15,7 @@ functions plugged in front of them.
      else REJECTED invalid
 
 In agent mode a version starts one step earlier, with its world
-(docs/AGENTIC_AUTHORING_PLAN.md §1):
+(docs/AUTHORING.md §1):
 
     world / world-repair<k> ─OK─► world-check-r<k> ─OK─► create (from the world) ─► …as above
           │FAILED                        │FAILED

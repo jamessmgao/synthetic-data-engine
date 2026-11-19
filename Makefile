@@ -108,7 +108,7 @@ aws-up: aws-bootstrap aws-apply aws-secrets aws-deploy aws-smoke  ## all of the 
 k8s-test:        ## chaos test on the k3d cluster (mock mode): kill an executor mid-rollout, restart Postgres
 	$(PYTHON) scripts/k8s_test.py $(ARGS)
 
-# K3s across the runners instead of compose (scripts/k8s_aws.py; docs/K8S_PLAN.md).
+# K3s across the runners instead of compose (scripts/k8s_aws.py; docs/KUBERNETES.md).
 K8S_AWS := $(PYTHON) scripts/k8s_aws.py
 
 .PHONY: aws-k8s-up aws-k8s-deploy aws-k8s-deploy-ui aws-k8s-status aws-k8s-logs aws-k8s-test aws-k8s-test-log aws-k8s-down

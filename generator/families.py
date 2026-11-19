@@ -1,6 +1,6 @@
 """Per-family world briefs for the world authoring instruction (plan §3.2).
 
-One brief per taxonomy-v2 family, from docs/HARD_TASK_GENERATION_GUIDE.md §2-4 (the
+One brief per taxonomy-v2 family, from docs/DIFFICULTY.md §2-4 (the
 difficulty mechanisms and each family's strongest lever) and
 docs/WORLD_CONSTRUCTION.md §4 (the domain worlds and their adversarial executions).
 """

@@ -1,6 +1,6 @@
 # Iteration log (overnight tuning on AWS production)
 
-The method: [HILLCLIMBING_ALGORITHM.md](HILLCLIMBING_ALGORITHM.md) and [ITERATION_RUNBOOK.md](ITERATION_RUNBOOK.md).
+The method: [HILLCLIMBING.md](HILLCLIMBING.md) and [HILLCLIMBING.md](HILLCLIMBING.md).
 **The metric:** the in-band rate (1–3/5 passes for terminus-2 + glm-5.3-flash), per family and
 in total. **Done when:** at least 80% of a batch of 10+ is accepted in band.
 

@@ -2,7 +2,7 @@
 
 ## 2026-11-18: agent-mode, world-first authoring (plan v2), end to end
 
-The plan is docs/AGENTIC_AUTHORING_PLAN.md; the method is docs/WORLD_CONSTRUCTION.md.
+The plan is docs/AUTHORING.md; the method is docs/WORLD_CONSTRUCTION.md.
 The review findings (R*, N*, L*) and their resolutions are in docs/ARCHITECTURE_REVIEW.md.
 Each item lists its main commits.
 
@@ -69,8 +69,8 @@ Each item lists its main commits.
   - Agent-mode e2e scenarios.
   - A real-adapter test across two machines on S3.
   - The cancel and authoring suites (docs/TESTING.md).
-- **Docs.** README "The pipeline as built"; docs/EVALUATION.md; docs/ANALYSIS.md §11–12;
-  docs/TESTING.md agent mode; docs/AGENT_MODE_DEPLOY.md.
+- **Docs.** README "The pipeline as built"; docs/EVALUATION.md; docs/archive/ANALYSIS.md §11–12;
+  docs/TESTING.md agent mode; docs/DEPLOY.md.
 
 **Fixes found by review or by the live runs**
 
@@ -96,7 +96,7 @@ in d0130b4, pending the tiebreak version: the user chose tiebreak-only. It's kep
 
 **Why**
 - One-shot drafts were too easy: 58 of 62 scored live runs passed, with none failing
-  (docs/ANALYSIS.md §11). The first world-first task (P1) produced a genuine model
+  (docs/archive/ANALYSIS.md §11). The first world-first task (P1) produced a genuine model
   failure (§12.2).
 
 **Tradeoffs**

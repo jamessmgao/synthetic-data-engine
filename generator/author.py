@@ -1,5 +1,5 @@
 """
-The agent authoring jobs (docs/AGENTIC_AUTHORING_PLAN.md §3.3-3.4, §3.6):
+The agent authoring jobs (docs/AUTHORING.md §3.3-3.4, §3.6):
 
     run_world_job(job_id, job_input, work_dir=None, *, run_trial=None) -> {
         outcome: "OK" | "FAILED", error, cost_usd,

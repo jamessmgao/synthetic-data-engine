@@ -1,4 +1,4 @@
-"""INF1: agent-mode authoring in the pipeline (docs/AGENTIC_AUTHORING_PLAN.md v2).
+"""INF1: agent-mode authoring in the pipeline (docs/AUTHORING.md v2).
 
 - In agent mode world / create / revise jobs hold a Docker slot, shared per machine
   with the gates (validate, world_check) and rollouts.

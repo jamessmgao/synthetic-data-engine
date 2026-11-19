@@ -12,7 +12,7 @@ default `./work`); in production the artifact store mirrors it to S3.
 - `oneshot` (the default): `create` / `revise` are one GLM-5.1 call per draft
   (`generator/worker.py:run_generate_job`);
 - `agent`: each version starts from a **world** (docs/WORLD_CONSTRUCTION.md):
-  `world` → `world_check` → `create` → `validate` → rollouts. `world`, `create` and
+  `world` → `world_check` → `create` → `validate` → agent runs (`rollout` jobs). `world`, `create` and
   `revise` are each a Harbor authoring trial, terminus-2 + GLM-5.1 in the authoring
   image (`generator/authoring_harness.py:run_authoring_trial`), holding a Docker slot.
 
@@ -26,7 +26,7 @@ agent mode only:
    REJECTED invalid          world-repair<k+1> (k < MAX_REPAIRS_PER_VERSION = 2), else REJECTED invalid
 
 both modes:
-  create / revise / repair<k> ─OK─► validate-r<k> ─OK─► 5 rollouts ─► analyze (per settled run)
+  create / revise / repair<k> ─OK─► validate-r<k> ─OK─► 5 agent runs ─► analyze (per settled run)
         │FAILED                        │FAILED                         │
         ▼                              ▼                               ▼ all 5 slots scored
    repair<k+1> if failure_kind is   repair<k+1> (≤ 2), else       1-3 passes: ACCEPTED
@@ -39,7 +39,7 @@ both modes:
 
 Every task change is a compare-and-set on `(current_version, stage)` (`shared/jobs/tasks.py:cas`):
 if the task moved on (decided, cancelled, or another copy got there first), nothing is
-enqueued. See docs/VALIDATION_GATES.md for what each gate checks.
+enqueued. See docs/VALIDATION.md for what each gate checks.
 
 ## Job ids
 
@@ -85,7 +85,7 @@ size limits (`MAX_WORLD_FILES`, `MAX_WORLD_BYTES`), and that the author self-che
 (`generator/self_check.py:ensure_world_checked`: the saved `/logs/artifacts/world_check.json`
 is used, or the check is run once here; a failing one is FAILED / author).
 
-The time box is `AUTHOR_TIMEOUT_SEC` = `SDE_WORLD_TIMEOUT_S` (default 1800 s).
+The time box is `AUTHOR_TIMEOUT_SEC` = `SDE_WORLD_TIMEOUT_S`: a 2-hour safety net (default 7200 s, `66f3046`); the prompt suggests about 12 minutes.
 
 ## `world_check`: `shared/taskformat/world_check.py:run_world_check_job` (agent mode)
 
@@ -106,7 +106,7 @@ checks run unless `SDE_WORLD_HARDNESS=off` and are recorded in `result.hardness`
 Under `warn` (the default) they never fail the world; under `enforce` the first failing
 one does. Every check that ran is in `result.checks[name] = {passed, exit_codes, output}`.
 The record is written to `<trace_dir>/world_check.json` and adopted on retry.
-Details: docs/VALIDATION_GATES.md.
+Details: docs/VALIDATION.md.
 
 ## `create` / `revise`
 
@@ -139,7 +139,7 @@ run_create_job(job_id, job_input, work_dir=None, *, run_trial=None, leak_review=
 `easier` / `repair_ambiguity`. Without `world_sha256` a revision uses the world its parent
 draft was built from.) The author reads the world at `/input/world/`, a revision's
 previous draft at `/input/previous/draft.json`, and writes `/logs/artifacts/draft.json`
-(docs/TASK_GENERATION_RULES.md). The time box is `SDE_CREATE_TIMEOUT_S` (default 1200 s).
+(docs/TASK_GENERATION_RULES.md). The time box is `SDE_CREATE_TIMEOUT_S`: a 2-hour safety net (default 7200 s); the prompt suggests about 10 minutes.
 
 After the trial, in order:
 
@@ -213,12 +213,12 @@ run_validate_job(bundle_dir, trace_dir) -> dict   # trace_dir = work/traces/<job
  "cost_usd": 0.0}
 ```
 
-Gates run cheapest first and stop at the first failure (docs/VALIDATION_GATES.md). Each
+Gates run cheapest first and stop at the first failure (docs/VALIDATION.md). Each
 Harbor step runs as `--job-name <step> -o <trace_dir>`: a finished step is adopted on
 re-run, a half-finished one renamed `<step>.abandoned-<n>`. In agent mode the leak gate
 adopts the create job's review, so validate makes no model call.
 
-## `rollout`: `evaluation/executor.py`
+## `rollout` (an agent run): `evaluation/executor.py`
 
 Input: `{task_dir}`; the row carries `slot`, `retry`, `bundle_sha256`, `config_hash`. One
 Harbor trial of the pinned agent (terminus-2 + `openrouter/z-ai/glm-5.3-flash`,
@@ -226,6 +226,9 @@ Harbor trial of the pinned agent (terminus-2 + `openrouter/z-ai/glm-5.3-flash`,
 `evaluation/classify.py:classify`:
 
 - `VALID_PASS` / `VALID_FAIL`: a real verdict (reward 1 / 0);
+- `TIMEOUT`: the agent hit its 1-hour limit with reward 0; it waits for the Trace Parser's
+  timeout review, which makes it `VALID_FAIL` (the model's fault) or `INVALID`;
+- `SKIPPED`: closed by early stopping, because the version's verdict was already certain;
 - `INVALID`: an exception, no verifier result, a non-binary reward, or an agent config that
   doesn't match the pinned one. Never scored: the same slot is retried (`-r<retry+1>`) with
   backoff, up to `MAX_ROLLOUT_RETRIES` (3).
@@ -238,7 +241,7 @@ finished trial instead of rerunning it.
 
 Settles with `{outcome: "OK", result: {action, summary, …}}`, where `action` is `stale`
 (the task moved on), `wait` (slots still open), or the decision once all five slots are
-scored: accept, a revision (with the operators chosen by
+scored, or earlier when early stopping finds the verdict certain: accept, a revision (with the operators chosen by
 `evaluation/calibration.py:choose_mutations` and the rule + evidence for each), or a
 reject. In the same transaction it writes `trace_metrics` and `failure` (the GLM-5.1
 review of each failed run: `explanation`, `attribution` model | task | unexplained,

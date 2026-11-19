@@ -83,7 +83,7 @@ class BatchRequest(Filters):
     # The most the batch's jobs may spend; past it none of its paid jobs is claimed.
     budget_usd: float | None = Field(None, ge=0, le=10_000)
     # Start every task at create on a checked world from the pool (GET /v1/worlds), within
-    # `area`, instead of building a world (docs/HILLCLIMBING_ALGORITHM.md "reuse worlds").
+    # `area`, instead of building a world (docs/HILLCLIMBING.md "reuse worlds").
     reuse_worlds: bool = False
 
     @model_validator(mode="after")

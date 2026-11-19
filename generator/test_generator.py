@@ -797,3 +797,51 @@ def test_validate_job_reports_leak_gate_and_cost(tmp_path, monkeypatch):
     res = gates.run_validate_job(bundle, tmp_path / "trace")
     assert res["outcome"] == "FAILED" and res["failed_gate"] == "leak"
     assert res["result"]["gates"]["leak"]["passed"] is False and res["cost_usd"] == pytest.approx(0.03)
+
+
+class HangingDocker(FakeDocker):
+    """A good world whose `hang` script never returns: _docker reports -1 (timed out)."""
+
+    def __init__(self, hang):
+        super().__init__()
+        self.hang = hang
+
+    def __call__(self, args, timeout, full=False):
+        if args[0] in ("run", "exec") and args[-1] == self.hang:
+            self.calls.append(args[0])
+            self.argv.append(list(args))
+            return -1, f"timed out after {timeout}s\nwaiting for lock..."
+        return super().__call__(args, timeout, full)
+
+
+@pytest.mark.parametrize("hang, failed", [
+    ("REPRO", "repro_fails"),
+    ("FIX && REPRO", "repro_passes_with_fix"),
+    ("SYMPTOM", "symptom_visible"),  # a hardness check fails the world on a timeout, even in warn mode
+    ("FIX", "fix_not_local"),        # fix.sh in the docker-diff container
+])
+def test_a_script_that_never_finishes_fails_the_check_at_once_and_is_killed(tmp_path, monkeypatch, hang, failed):
+    from shared.taskformat import world_check as wc
+    script = {"REPRO": wc.REPRO, "FIX && REPRO": f"{wc.FIX} && {wc.REPRO}", "SYMPTOM": wc.SYMPTOM, "FIX": wc.FIX}[hang]
+    fake = HangingDocker(script)
+    monkeypatch.setattr(wc, "_docker", fake)
+    res = wc.run_world_check_job(make_world(tmp_path), tmp_path / "trace")
+    assert res["outcome"] == "FAILED" and res["failed_check"] == failed
+    assert f"did not finish in {wc.REPRO_TIMEOUT_SEC} s" in res["feedback"] and "waiting for lock" in res["feedback"]
+    hung = [a for a in fake.argv if a[-1] == script][0]
+    # The hung container is removed (by name for `run`; the diff container by its finally),
+    # nothing runs after the first timeout, and the images are still cleaned up.
+    if hung[0] == "run":
+        name = hung[hung.index("--name") + 1]
+        assert ["rm", "-f", name] in fake.argv
+        assert fake.argv.index(hung) == max(i for i, a in enumerate(fake.argv) if a[0] == "run")
+    else:
+        assert ["rm", "-f", "cid"] in fake.argv
+    assert fake.calls[-1] == "rmi"
+    if failed in res["result"]["checks"]:
+        assert res["result"]["checks"][failed]["timed_out"]
+
+
+def test_the_script_timeout_defaults_to_300_s():
+    from shared.taskformat import world_check as wc
+    assert wc.REPRO_TIMEOUT_SEC == 300

@@ -3,7 +3,7 @@ Diversity: what each candidate is drafted from.
 
 - v1 (`sample_spec`): a taxonomy slot and difficulty profile (docs/PRD.md §6.2, §6.9;
   docs/TASK_GENERATION_RULES.md), the `spec` one-shot `render_initial_prompt` reads.
-- v2 (`sample_spec_v2`, docs/AGENTIC_AUTHORING_PLAN.md §3.1-3.2): a problem family,
+- v2 (`sample_spec_v2`, docs/AUTHORING.md §3.1-3.2): a problem family,
   mechanism, shape, environment, verification method and dial, optionally limited to
   an `area` (one or more families) and finer filters. A v2 spec also carries the v1
   {taxonomy, difficulty} view, so it works in either author mode.
@@ -42,7 +42,7 @@ UNIQUE_DIMENSIONS = ("domain", "task_type", "environment")
 # generic counts: task-builder's pilots found easy/medium/hard labels and file or
 # constraint counts didn't move the pass rate, while the coupled behavior-preserving
 # change (a local fix that silently breaks a dependent module) gave the only genuine
-# model failure (docs/ANALYSIS.md §9). Dial 1-3 turns its difficulty.
+# model failure (docs/archive/ANALYSIS.md §9). Dial 1-3 turns its difficulty.
 DEFAULT_DIFFICULTY = {"form": "behavior_preserving", "dial": 2}
 
 
@@ -73,11 +73,11 @@ def sample_spec(existing: list[dict], rng: random.Random | None = None) -> dict:
     return {"taxonomy": taxonomy, "difficulty": DEFAULT_DIFFICULTY}
 
 
-# --- taxonomy v2: problem families (docs/AGENTIC_AUTHORING_PLAN.md §3.1-3.2) ------------
+# --- taxonomy v2: problem families (docs/AUTHORING.md §3.1-3.2) ------------
 #
 # A task is a family (the kind of system), a mechanism (what makes it hard), a
 # shape (fix / implement / optimize / migrate), an environment and a verification
-# method, plus a dial 1-3. Families come from docs/HARD_TASK_GENERATION_GUIDE.md.
+# method, plus a dial 1-3. Families come from docs/DIFFICULTY.md.
 
 
 @dataclass(frozen=True)
@@ -305,8 +305,11 @@ MECHANISM_NOTES: dict[str, str] = {
     "unbounded_queue_collapse": "a producer outruns its consumer with no backpressure; a bounded queue drops or deadlocks "
                                 "in a cyclic stage that also produces; guarantee: every accepted message processed exactly "
                                 "once within M MB",
-    "group_commit_durability": "an fsync per record is too slow; batching acks before the batch's fsync loses acknowledged "
-                               "writes on a kill mid-batch; guarantee: an acked write survives SIGKILL, W writes in N s",
+    # L4, 2026-11-19: aws-w7-l4-perf-c-t01 planted a durability bug (ack before any fsync), so "an acked
+    # write survives SIGKILL" named the fix (blind leak x3). The baseline is durable; the trap is the speedup.
+    "group_commit_durability": "the baseline fsyncs every record before its ack (durable, too slow); the obvious speedup "
+                               "batches records and acks a batch before its fsync, so a kill mid-batch loses acked writes; "
+                               "guarantee: W writes in N s, and an acked write survives SIGKILL, as today",
     "adversarial_hash_degradation": "a custom hash table degrades with resize storms on the production key shape; the "
                                     "standard map changes iteration order the report depends on; guarantee: same report "
                                     "for production-shaped input in N s",

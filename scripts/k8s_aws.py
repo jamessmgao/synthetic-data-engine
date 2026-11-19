@@ -1,4 +1,4 @@
-"""The pipeline on K3s across the AWS runners (wrapped by `make aws-k8s-*`; docs/K8S_PLAN.md).
+"""The pipeline on K3s across the AWS runners (wrapped by `make aws-k8s-*`; docs/KUBERNETES.md).
 
     up        stop compose on every runner; K3s server on runners()[0], agents on the rest;
               build + import sde-pipeline:local on every node (crictl-checked); install KEDA
@@ -53,6 +53,7 @@ NS = "sde"
 KUBECTL = "k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
 K = f"{KUBECTL} -n {NS}"
 CURRENT = "/opt/sde/k8s-current"  # the release last shipped to the cluster (compose keeps /opt/sde/current)
+PREVIOUS = "/opt/sde/k8s-previous"  # the release CURRENT pointed at before (a file holding its path)
 TEST_UNIT = "sde-k8s-test"
 
 # Read on the node, never passed in: the token stays out of SSM command text and output.
@@ -111,6 +112,9 @@ def ship(ref: str, server_only: bool = False, targets: list[str] | None = None) 
         remote(runners()[0], unpack, timeout_s=600)
         print(f"shipped {sha[:12]} to the server")
         return release
+    # The release it replaces is kept by the image prune (build_and_import) for a rollback.
+    unpack.append(f"old=$(readlink {CURRENT} || true); [ -n \"$old\" ] && [ \"$old\" != {release} ]"
+                  f" && echo \"$old\" > {PREVIOUS} || true")
     unpack.append(f"ln -sfn {release} {CURRENT}")
     on_all(lambda i: remote(i, unpack, timeout_s=600), targets or cluster_runners())
     print(f"shipped {sha[:12]} to {f'{len(targets)} runners' if targets else 'every runner'}")
@@ -122,8 +126,14 @@ def build_and_import(release: str, targets: list[str] | None = None) -> None:
 
     Tagged both :local (the test overlays) and :<release sha> (aws-prod pins that: see
     pin_tags). `ctr import` can report success without the image landing, so crictl checks.
+    Then the node's old release images are pruned (deploy/prune_release_images.py: this
+    release, the previous one and anything a container uses stay), so the disk stays under
+    the kubelet's 85% GC threshold, which would otherwise delete this release before a pod
+    starts on it. A failed prune never fails the deploy.
     """
-    sha_image = f"sde-pipeline:{release_tag(release)}"
+    tag = release_tag(release)
+    sha_image = f"sde-pipeline:{tag}"
+    previous = f"$(basename \"$(cat {PREVIOUS} 2>/dev/null)\" | cut -c1-12)"
     cmds = [
         f"cd {release} && docker build -q --provenance=false --sbom=false"
         f" -f deploy/Dockerfile --target runner -t {IMAGE} -t {sha_image} . >/dev/null",
@@ -131,6 +141,7 @@ def build_and_import(release: str, targets: list[str] | None = None) -> None:
         f"k3s crictl images -q docker.io/library/{sha_image} | grep -q ."
         f" || {{ echo \"image {sha_image} missing on $(hostname) after import\" >&2; exit 1; }}",
         f"echo \"$(hostname): {sha_image} imported\"",
+        f"python3 {release}/deploy/prune_release_images.py {tag} {previous} || true",
     ]
     for log in on_all(lambda i: remote(i, cmds, timeout_s=1800), targets or cluster_runners()):
         print(log.strip())

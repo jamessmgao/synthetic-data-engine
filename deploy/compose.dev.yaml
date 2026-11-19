@@ -15,7 +15,7 @@
 #   SDE_RUNNER_GENERATION_CMD  Generation Service on worker-runner (agent mode only)
 # Set one to "" to leave that process out.
 #
-# Author mode (docs/AGENTIC_AUTHORING_PLAN.md): SDE_AUTHOR_MODE=oneshot (default)
+# Author mode (docs/AUTHORING.md): SDE_AUTHOR_MODE=oneshot (default)
 # drafts with one GLM-5.1 call on worker-control. With SDE_AUTHOR_MODE=agent every
 # world / create / revise job is a Harbor authoring trial that needs Docker and holds
 # a slot, so the Generation Service moves to worker-runner: `make up-agent` sets that up and

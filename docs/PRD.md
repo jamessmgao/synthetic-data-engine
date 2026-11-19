@@ -1,9 +1,9 @@
 # PRD: Calibrated Task Generation Pipeline
 
-Status: draft, 2026-11-17. Written in a system-design format: requirements, core entities,
-API, high-level design, deep dives. Source material:
+Status: written 2026-11-17, status block updated 2026-11-19. Written in a system-design format:
+requirements, core entities, API, high-level design, deep dives. Source material:
 [`TASK_GENERATION_RULES.md`](TASK_GENERATION_RULES.md) (difficulty levers and taxonomy, folded
-into §6.2 and §6.9), [`agent-evaluation-system_calibration_v3.excalidraw`](../agent-evaluation-system_calibration_v3.excalidraw)
+into §6.2 and §6.9), [`docs/diagrams/agent-evaluation-system_calibration_v3.excalidraw`](diagrams/agent-evaluation-system_calibration_v3.excalidraw)
 (the target architecture), and [`shared/taskformat/schema.py`](../shared/taskformat/schema.py) (the authoring
 contract). Items marked **(open)** still need a decision; see §7.
 
@@ -15,14 +15,29 @@ can check each verdict without reading code, and the pipeline survives being kil
 
 ---
 
+## Status (2026-11-19)
+
+On top of the design below, the system as built has:
+- world-first agent authoring, with world mutations and variants, and the reuse of checked worlds
+  ([AUTHORING.md](AUTHORING.md));
+- the Trace Parser deciding accept, revise or reject, with early stopping once the verdict is
+  certain, and a TIMEOUT outcome that the Trace Parser rules on ([EVALUATION.md](EVALUATION.md));
+- every gate, including the leak review ([VALIDATION.md](VALIDATION.md));
+- K3s on 17 EC2 instances with KEDA-scaled executors and drained deploys ([KUBERNETES.md](KUBERNETES.md),
+  [DEPLOY.md](DEPLOY.md));
+- a web dashboard with an Analytics page ([web/README.md](../web/README.md)).
+
+How it was tuned is in [HILLCLIMBING.md](HILLCLIMBING.md), and the results are in
+[ITERATION_LOG.md](ITERATION_LOG.md).
+
 ## As built (2026-11-17): agent mode
 
 The requirements and design below are unchanged. This section records what was built on
 top of them, with the code that implements each part; where a later section describes only
 one-shot generation, this is the current behavior. Contracts and details:
-[`AGENTIC_AUTHORING_PLAN.md`](AGENTIC_AUTHORING_PLAN.md) (job types, inputs, status),
+[`AUTHORING.md`](AUTHORING.md) (job types, inputs, status),
 [`WORKER_INTERFACE.md`](WORKER_INTERFACE.md) (every job function's inputs and results),
-[`VALIDATION_GATES.md`](VALIDATION_GATES.md) (validate and world_check gates). Method:
+[`VALIDATION.md`](VALIDATION.md) (validate and world_check gates). Method:
 [`WORLD_CONSTRUCTION.md`](WORLD_CONSTRUCTION.md); review findings:
 [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md).
 
@@ -65,7 +80,7 @@ Task stages gain `WORLD_BUILDING` and `WORLD_CHECKING` (`shared/contracts/models
 - Its **hardness** checks (the symptom is visible; the fix isn't one local patch, i.e. 2+
   files or a dependent the wrong fix breaks; the wrong fix clears the symptom and fails
   the repro) follow `SDE_WORLD_HARDNESS` = `off` | `warn` (default: recorded in
-  `result.hardness`, not failing) | `enforce` | `strict`. Details: docs/VALIDATION_GATES.md.
+  `result.hardness`, not failing) | `enforce` | `strict`. Details: docs/VALIDATION.md.
 
 **Trace Parser outcomes** (`evaluation/trace_parser_service.py:TraceParserService.analyze`,
 `next_job`; docs/EVALUATION.md):
@@ -122,10 +137,10 @@ fenced but keeps its cost, and the queue drops the task's jobs (`TERMINAL_TASK_S
 - Shapes: [`API.md`](API.md).
 
 **Limits.** `MAX_VERSIONS` = 8 (`SDE_MAX_VERSIONS`), 2 repairs per version, 3 retries per
-rollout slot, 3 claims per job before DEAD.
+agent run slot, 3 claims per job before DEAD.
 
 **Settings** are listed with their defaults in README "Quick start" and
-`deploy/local.env.example`. Deployment: docs/AGENT_MODE_DEPLOY.md.
+`deploy/local.env.example`. Deployment: docs/DEPLOY.md.
 
 ---
 
@@ -151,8 +166,8 @@ rollout slot, 3 claims per job before DEAD.
 7. The system rejects or repairs drafts that fail the gates: schema checks, structural
    validator, `harbor lint`, Docker build, oracle = 1 (twice), nop = 0.
 8. The system evaluates each valid version with 5 valid `terminus-2` / `glm-5.3-flash` /
-   `reasoning_effort=high` rollouts. Timeouts and infrastructure errors are retried, never scored.
-9. For each failed rollout, the Trace Parser records why the model failed, with evidence
+   `reasoning_effort=high` agent runs. Timeouts and infrastructure errors are retried, never scored.
+9. For each failed agent run, the Trace Parser records why the model failed, with evidence
    (failing tests, last commands). If a failure shows a task defect, the version goes back for a
    repair; it is not counted as hard.
 10. The Trace Parser accepts 1–3/5; otherwise it sends the task back to the generation
@@ -162,7 +177,7 @@ rollout slot, 3 claims per job before DEAD.
 
 **Reviewer (the reviewer)**
 12. A reviewer can open one task and see, without reading code: its spec, every version, every
-    gate result, all five rollouts with reward and evidence, the failure explanations, its cost and
+    gate result, all five agent runs with reward and evidence, the failure explanations, its cost and
     the decision.
 
 ### Below the line
@@ -176,8 +191,7 @@ Difficulty tuning is **in core**: it is the main lever on yield.
 ### Out of scope
 
 The three deferred items from the spec: our own inference gateway, advanced deterministic
-task-mutation engines, and embedding-based novelty. Also out: K8s/Terraform manifests (the target topology is documented in §5.4), a web
-dashboard, any model other than `glm-5.1` (authoring) and `glm-5.3-flash` (evaluation), and
+task-mutation engines, and embedding-based novelty. Also out: any model other than `glm-5.1` (authoring) and `glm-5.3-flash` (evaluation), and
 reusing or adapting public tasks.
 
 ---
@@ -192,7 +206,7 @@ reusing or adapting public tasks.
 | N4 | **Processing latency** | With a free slot, claimable work starts within 5 s (poll ≤ 2 s), including the next stage's job a worker just handed off. An expired lease is reclaimed within its TTL (10 min) + one poll. Pipeline overhead (everything except LLM and Harbor time) is < 5% of wall time. | Time, not money, is the constraint (§ back-of-the-envelope); the pipeline itself must not be the bottleneck. |
 | N5 | **Throughput scales with slots** | Roughly linear from 1 → 2 → 4 Docker slots on one run of tasks; drafting overlaps evaluation so slots never sit idle while work exists. Measured in M5. | A 10-candidate batch is ~140 Harbor runs; slot use decides wall time. |
 | N6 | **Large artifacts stay out of the database** | Bundles (≤ 2 MB, enforced by `schema.py`), Harbor job dirs (trajectories, possibly tens of MB) and transcripts are files referenced by path + sha256. DB rows stay in the KB range. | Keeps SQLite fast and the DB small enough to inspect by hand. |
-| N7 | **Trustworthy verdicts** | A verdict counts only 5 *valid* rollouts of one bundle sha under one config hash; timeouts and infra errors never count as 0. Every `VALID_FAIL` cites evidence excerpts from the logs and an attribution; an explanation that cites nothing is kept and shown as `unexplained`, never hidden. Invalid rollouts are shown with their exception type. | README criterion 1: "a failing run should mean the model failed, not the task", and "know why it fails". |
+| N7 | **Trustworthy verdicts** | A verdict counts only 5 *valid* agent runs of one bundle sha under one config hash; timeouts and infra errors never count as 0. Every `VALID_FAIL` cites evidence excerpts from the logs and an attribution; an explanation that cites nothing is kept and shown as `unexplained`, never hidden. Invalid agent runs are shown with their exception type. | README criterion 1: "a failing run should mean the model failed, not the task", and "know why it fails". |
 | N8 | **Isolation and secrets** | No API key, tests or solution in the agent-visible image. Generated code runs only inside Harbor's containers. The key is never logged. | Reward hacking; untrusted generated Dockerfiles. |
 | N9 | **Yield and diversity** | At least 40% of initial candidates accepted within the version cap and at least 80% functionally valid (working goals, reported as measured). A new task takes an unused (domain, task type, environment) combination while any is left; lexical similarity < 0.3 to any batch task or example. | Primary metric; diverse sets are worth more for training. |
 | N10 | **Simplicity and cost** | Nothing beyond Docker, Python 3.12+, Harbor and `.env`: one SQLite file with two tables. Under $10 per accepted task including spend on rejected ones; hard stop at a configurable spend cap (default $100). | Anyone can run it on a laptop, and the cost per task stays far below $200. |
@@ -202,7 +216,7 @@ transaction (compare-and-set). Reports and `status` can be a few seconds stale.
 
 ### Back-of-the-envelope (illustrative; replaced by measurements after M2)
 
-- Harbor runs per candidate version: oracle × 2 + nop × 1 + rollouts × 5 = **8**. Expected versions per
+- Harbor runs per candidate version: oracle × 2 + nop × 1 + agent runs × 5 = **8**. Expected versions per
   candidate ≈ 1.7 (assuming about 50% need a v2 and 20% a v3; the cap of 8 versions
   raises the worst case to ≈ 64 runs per candidate), so ≈ **14 Harbor runs per candidate**.
 - Docker capacity: 8 CPU / ~10 GB VM, task containers 1 CPU / 2 GB → **4 trial slots**.
@@ -276,10 +290,10 @@ output/reports/<batch_id>/   summary.json (written by scripts/run_tasks.py)
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | text PK | Deterministic: `t03-v1-create`, `t03-v2-revise` (a revision), `t03-v2-repair1` (a repair, also type `revise`), `t03-v2-validate-r0`, `t03-v2-rollout3-r1`, `t03-v2-rollout3-r1-analyze` (the ping a rollout's settle enqueues). Also the Harbor `--job-name` and the `traces/<id>/` prefix. Creating a job twice is `INSERT OR IGNORE`, a no-op. |
+| `id` | text PK | Deterministic: `t03-v1-create`, `t03-v2-revise` (a revision), `t03-v2-repair1` (a repair, also type `revise`), `t03-v2-validate-r0`, `t03-v2-rollout3-r1`, `t03-v2-rollout3-r1-analyze` (the ping an agent run's settle enqueues). Also the Harbor `--job-name` and the `traces/<id>/` prefix. Creating a job twice is `INSERT OR IGNORE`, a no-op. |
 | `task_id`, `version` | | The version this job works on. |
-| `type` | text | `create` (new task from a spec) \| `revise` (repair after failed gates, or revision after the Trace Parser) \| `validate` (build, gates, oracle × 2, nop) \| `rollout` (one terminus-2 run) \| `analyze` (a rollout finished: check the version, decide when it has 5 valid rollouts). Each type is one queue: one Redis sorted set in production. |
-| `slot`, `retry` | int | Rollouts: slot 1–5. An `INVALID` rollout is settled and a new row with `retry + 1` is created. |
+| `type` | text | `create` (new task from a spec) \| `revise` (repair after failed gates, or revision after the Trace Parser) \| `validate` (build, gates, oracle × 2, nop) \| `rollout` (one terminus-2 run) \| `analyze` (an agent run finished: check the version, decide when it has 5 valid agent runs). Each type is one queue: one Redis sorted set in production. |
+| `slot`, `retry` | int | Rollouts: slot 1–5. An `INVALID` agent run is settled and a new row with `retry + 1` is created. |
 | `input` | json | What the job was asked to do. Generate: `{origin: initial\|repair\|revision, operator?, spec, errors?}`. Rollout: the pinned agent/model/kwargs. |
 | `status` | text | `READY → LEASED → DONE \| DEAD`. |
 | `due_at` | text | Claimable from; also the retry backoff. The sorted-set score. |
@@ -289,12 +303,12 @@ output/reports/<batch_id>/   summary.json (written by scripts/run_tasks.py)
 | `bundle_sha256`, `config_hash` | text | Exactly what was run (for generate: what was produced). |
 | `outcome` | text, nullable | Rollout: `VALID_PASS \| VALID_FAIL \| INVALID` (§6.4). Generate/validate: `OK \| FAILED`. |
 | `result` | json, nullable | Generate: `{name, bundle_sha256, llm_calls: [{phase, request_sha256, usage}]}`. Validate: `{gates: {schema, structural, lint, oracle: [1, 1], nop: 0}}` with log keys. Rollout: `{adopted, trial, raw_reward, task_checksum, tokens, duration_sec}` (`adopted`: a reclaimed job reused a finished Harbor result instead of rerunning). Analyze: `{action: wait \| accept \| revise \| repair \| reject, pass_count, operator?, summary}`. |
-| `reward` | real, nullable | Rollout only; null when invalid. |
+| `reward` | real, nullable | Agent run only; null when invalid. |
 | `error` | text, nullable | Harbor exception type (`AgentTimeoutError`, …) or the gate/parse error summary. |
 | `trace_uri` | text, nullable | `traces/<id>/`. The diagram's `traces_s3_uri`. |
-| `trace_metrics` | json, nullable | Rollouts. Written by the Trace Parser's trace parser (§6.5): `{llm_calls, input_tokens, output_tokens, tool_calls: [{tool, input, output, exit_code}], files_modified, duration_seconds}` (last N tool calls). |
-| `failure` | json, nullable | `VALID_FAIL` rollouts only, written by the Trace Parser: `{failing_tests, evidence: [...], explanation, attribution: model\|task\|unexplained, pitfall_matched, cited_evidence}` (§6.5). |
-| `cost_usd` | real, nullable | All spend this job caused: GLM-5.1 `usage.cost` for generate and analyze (the review), Harbor `agent_result.cost_usd` for rollouts. The diagram's `inference_cost`. Batch cost = `SUM(cost_usd)`. |
+| `trace_metrics` | json, nullable | Agent runs. Written by the Trace Parser's trace parser (§6.5): `{llm_calls, input_tokens, output_tokens, tool_calls: [{tool, input, output, exit_code}], files_modified, duration_seconds}` (last N tool calls). |
+| `failure` | json, nullable | `VALID_FAIL` agent runs only, written by the Trace Parser: `{failing_tests, evidence: [...], explanation, attribution: model\|task\|unexplained, pitfall_matched, cited_evidence}` (§6.5). |
+| `cost_usd` | real, nullable | All spend this job caused: GLM-5.1 `usage.cost` for generate and analyze (the review), Harbor `agent_result.cost_usd` for agent runs. The diagram's `inference_cost`. Batch cost = `SUM(cost_usd)`. |
 | `published_at` | text, nullable | Production only: when the outbox publisher added the id to Redis. |
 | `created_at`, `started_at`, `finished_at` | text | |
 
@@ -337,7 +351,7 @@ transition has one owning service (§5.1).
 | Grouping tasks for reports | A nullable `tasks.label` set by `POST /v1/tasks` and a report filter on it; no lifecycle. |
 | Fine-grained timeline (every lease change, every state transition) | Add an append-only `events` table; nothing else changes. |
 | Querying past versions often | Add a `task_versions` view (or table) over `jobs` grouped by `(task_id, version)`. |
-| Rechecks for band stability | Rollout slots 6–10; no new table. |
+| Rechecks for band stability | Agent run slots 6–10; no new table. |
 | Per-requirement test tracking | Promote `coverage` from the bundle into a table. |
 
 ---
@@ -418,7 +432,7 @@ python -m evaluation.trace_parser_service                Trace Parser (the analy
 ```
 
 Developer tools: `scripts/generate.sh "<topic>"` (one draft + gates, no evaluation),
-`scripts/evaluate.sh <task_dir>` (five rollouts of an existing task directory).
+`scripts/evaluate.sh <task_dir>` (five agent runs of an existing task directory).
 
 `summary.json` (all counts over **initial candidates**, not versions; `null` = not measured):
 
@@ -453,7 +467,7 @@ transaction**. Nothing orchestrates the stages from the middle. Two services own
 the **Generation Service** makes tasks (new ones and revisions) and the **Trace Parser** judges
 them from their agent traces. FastAPI, PostgreSQL, Redis sorted sets, independent services,
 containerized execution and S3. The diagram is
-[`agent-evaluation-system_calibration_v3.excalidraw`](../agent-evaluation-system_calibration_v3.excalidraw).
+[`docs/diagrams/agent-evaluation-system_calibration_v3.excalidraw`](diagrams/agent-evaluation-system_calibration_v3.excalidraw).
 
 ```
  Client ──► API service (FastAPI)   POST /v1/tasks · GET /v1/tasks · GET /v1/report
@@ -560,7 +574,7 @@ Generation Service
   fencing tokens stop stale workers committing; each task stage has one owner (§5.1).
 - **Execution isolation:** generated code and agent commands run only in restricted containers,
   never in trusted application processes.
-- **Backpressure:** claims are capped by Docker slots per machine (validate + rollout) and the
+- **Backpressure:** claims are capped by Docker slots per machine (validate + agent run) and the
   budget; queue priority is `analyze` > `rollout` > `validate` > `revise` > `create`, so started
   tasks finish before new ones are drafted.
 - **Observability:** structured logs, job metrics, traces and the never-overwritten `jobs` history
@@ -693,7 +707,7 @@ system prompt carries every rule plus BAD/GOOD examples of the mistakes earlier 
 
 > As built: `wrong_fix` runs after nop, `leak` is a semantic review plus a blind fix
 > prediction that also runs inside `create`, and agent mode adds `world_check`
-> ([`VALIDATION_GATES.md`](VALIDATION_GATES.md)).
+> ([`VALIDATION.md`](VALIDATION.md)).
 
 | # | Gate | Pass condition | On failure |
 |---|---|---|---|
@@ -706,7 +720,7 @@ system prompt carries every rule plus BAD/GOOD examples of the mistakes earlier 
 
 A verifier crash or missing reward is **not** nop = 0. Docker build failures show up in gates 4–5
 as Harbor environment exceptions and are repaired with the build log. The leak review runs last,
-so it is paid only for tasks that already work, and before any rollout is spent on a task whose
+so it is paid only for tasks that already work, and before any agent run is spent on a task whose
 instruction hands over the fix; its verdict is `result.gates.leak` and its cost the job's
 `cost_usd` (`SDE_LEAK_REVIEW=0` disables it; bundles with no hidden spec skip it). Gates 2–5 run inside one
 `validate` job, which holds one Docker slot; its Harbor dirs go under `traces/<job_id>/oracle1`,
@@ -728,7 +742,7 @@ converge, as when a test can't pass in the environment at all.
 ### 6.4 Evaluation and trial classification
 
 One `harbor run -p <bundle> -a terminus-2 -m openrouter/z-ai/glm-5.3-flash --ak
-reasoning_effort=high --n-attempts 1 --job-name <job_id> -o work/traces/<job_id>` per `rollout`
+reasoning_effort=high --n-attempts 1 --job-name <job_id> -o work/traces/<job_id>` per `agent run`
 job. The classifier reads the trial's `result.json` (Harbor 0.26.0 `TrialResult`):
 
 | Result | Rule |
@@ -737,16 +751,16 @@ job. The classifier reads the trial's `result.json` (Harbor 0.26.0 `TrialResult`
 | `VALID_PASS` | No exception, reward = 1. |
 | `VALID_FAIL` | No exception, reward = 0. |
 
-Every settled rollout enqueues an `analyze` ping in the same transaction. An `INVALID` rollout
+Every settled agent run enqueues an `analyze` ping in the same transaction. An `INVALID` agent run
 also enqueues a new `rollout` job (same slot, retry + 1), at most 3 retries per slot. When a
 slot has used its retries without a valid result, the Trace Parser sets the version
-`UNRESOLVED` and the task `REJECTED (infra_unresolved)`, never scored as hard. If invalid rollouts pile up
+`UNRESOLVED` and the task `REJECTED (infra_unresolved)`, never scored as hard. If invalid agent runs pile up
 across tasks (e.g. gateway outage: more than 5 in 10 minutes), the Executor pauses.
 
 ### 6.5 Why each failure is the model's fault (Trace Parser)
 
-The Trace Parser runs this once per version, when its five valid rollouts are in, reading
-the traces the executors uploaded to S3. For every rollout it extracts `trace_metrics` with code
+The Trace Parser runs this once per version, when its five valid agent runs are in, reading
+the traces the executors uploaded to S3. For every agent run it extracts `trace_metrics` with code
 (LLM calls, tokens, last tool calls, files the agent wrote, duration). For every `VALID_FAIL` it
 builds an **evidence record** with code first:
 
@@ -788,7 +802,7 @@ pass_count 0 or 4..5, n = MAX      → OUT_OF_BAND, task REJECTED (exhausted)   
 
 Moving to v(n+1) is one compare-and-set, `UPDATE tasks SET current_version=n+1, stage='QUEUED'
 WHERE id=? AND current_version=n AND stage='EVALUATING'`, in the same transaction as inserting the
-`revise` job with its deterministic id, so two analyze jobs that both see five valid rollouts
+`revise` job with its deterministic id, so two analyze jobs that both see five valid agent runs
 can't both create it: one wins, the other finds the stage already moved and finishes.
 
 **Version cap: `MAX_VERSIONS` = 8** (`SDE_MAX_VERSIONS`), raised from 3 on 2026-11-18 (briefly 10, then 8). Each extra
@@ -809,7 +823,7 @@ Operators (fixed rules, chosen from the evidence):
 | 0/5, agents never find the right subsystem | `localize_diagnosis` | point at the subsystem, not the bug |
 
 A revision returns a full new `TaskDraft` plus a change summary. It goes through all gates and
-5 new rollouts. Earlier bundles are never modified.
+5 new agent runs. Earlier bundles are never modified.
 
 ### 6.7 Claims, leases, resume and two copies
 
@@ -849,7 +863,7 @@ RETURNING id, lease_token;
 - **Publishing** to `output/accepted/` happens inside the Trace Parser's `ACCEPTED`
   transition: copy to temp, rename. A second analyze job sees `ACCEPTED` and skips.
 
-Tests (§8, M3): kill `-9` at random points over 20 runs, check no rollout ran twice (Harbor
+Tests (§8, M3): kill `-9` at random points over 20 runs, check no agent run ran twice (Harbor
 dirs = rollout job rows) and the final counts are unchanged; run two copies of every service on the same tasks
 and check the uniqueness invariants.
 
@@ -857,21 +871,21 @@ and check the uniqueness invariants.
 
 Per task, `GET /v1/tasks/{id}` and `verdict.md` (also written into the accepted bundle) show:
 
-1. **Decision** with its rule: "ACCEPTED: v2 passed 2/5 valid rollouts (band 1–3)".
+1. **Decision** with its rule: "ACCEPTED: v2 passed 2/5 valid agent runs (band 1–3)".
 2. **Spec**: taxonomy slot, difficulty profile, hidden `TaskSpec` (root cause, constraints,
    intended pitfalls).
 3. **Versions**: per version, origin/operator, bundle sha, gate table with log paths, pass
    pattern.
-4. **Rollouts**: table of slot, retry, outcome, reward, duration, cost, trace; invalid retries
+4. **Agent runs**: table of slot, retry, outcome, reward, duration, cost, trace; invalid retries
    shown with their exception type.
-5. **Failures**: per failed rollout, the evidence excerpts, explanation and attribution, as
+5. **Failures**: per failed agent run, the evidence excerpts, explanation and attribution, as
    written by the Trace Parser; plus the analyze job's summary of why the version was
    accepted, revised or rejected.
 6. **Cost and time**: LLM vs. eval, wall time per stage.
 
 Everything links to raw files (`work/llm/…`, `work/traces/…`), so a reviewer can check any claim
 against the source. The task's job rows, ordered by time, are the full timeline
-(`GET /v1/tasks/{id}` lists every rollout; the `jobs` rows hold the rest).
+(`GET /v1/tasks/{id}` lists every agent run; the `jobs` rows hold the rest).
 
 ### 6.9 Diversity and novelty
 
@@ -918,7 +932,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
   in the create / revise job's `result.llm_calls`). Missing values are recorded as
   null, not estimated.
 - A budget check runs before every paid action: stop claiming new work at the spend cap.
-- Scheduling favors finishing what's started: analyze before rollouts, rollouts before new
+- Scheduling favors finishing what's started: analyze before agent runs, agent runs before new
   validations, validations before revisions, and revisions before new drafts (`priority`:
   the revise queue drains before the create queue). A new candidate is only drafted when fewer
   than 2 versions are waiting for Docker slots.
@@ -937,7 +951,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 
 | # | Decision | Proposal |
 |---|---|---|
-| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the rollout record, the audit history and the outbox; versions are `(task_id, version)` on jobs; tasks are created one per request or N per batch, a batch being a `tasks.batch_id` label (2026-11-18). **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
+| D1 | Simplify the spec's data model (10 tables, Redis outbox) | **Adopt this PRD's 2 tables** (`tasks`, `jobs`): the job row is the queue entry, the agent run record, the audit history and the outbox; versions are `(task_id, version)` on jobs; tasks are created one per request or N per batch, a batch being a `tasks.batch_id` label (2026-11-18). **Decided 2026-11-17:** workers on queues hand off directly (§5); no central orchestrator; the Trace Parser owns accept / revise / reject. Same guarantees (leases, fencing, never-overwritten history, idempotent ids). Update the spec's §4–5 to point here. |
 | D2 | How `tests/test.sh` gets pytest | Install pinned `uv` + pytest at verify time into a fresh interpreter (agent can't tamper). Accept the `verifier-runtime-install` / `verifier-network-download` lint warnings and document why. Alternative: pytest baked into the image, lint-clean but tamperable. |
 | D3 | Wrong-solution gate | Add `wrong_solution_script` to `TaskDraft` (the pitfall the spec predicts, as code); must score 0. Cheap and the strongest test-sensitivity evidence. |
 | D4 | Diagnosis prompt | Use GLM-5.1 to explain failures, bound to code-extracted evidence (§6.5). The alternative, code-only evidence with no prose, is weaker for "know why it fails". |

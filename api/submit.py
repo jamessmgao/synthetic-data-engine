@@ -22,7 +22,7 @@ The spec comes from one of these requests:
   still apply, so every rule the gates check is unchanged. The task's slot records
   it as `{"raw_prompt": ...}`: it bypasses the sampler and its diversity spread.
 
-Spec v2 (docs/AGENTIC_AUTHORING_PLAN.md §3.1). A request may narrow sampling to an
+Spec v2 (docs/AUTHORING.md §3.1). A request may narrow sampling to an
 `area` (a family, or a list of them) and filters (`mechanism`, `environment`,
 `dial`). Any of those, a spec naming a `family`, or SDE_AUTHOR_MODE=agent makes the
 sampler emit spec v2 (`shared.taxonomy.taxonomy.sample_spec_v2`), which also carries the v1
@@ -169,7 +169,7 @@ def _slots(conn: Any) -> list[dict]:
     return [_slot(r) for r in conn.execute("SELECT slot FROM tasks").fetchall()]
 
 
-# --- reusing checked worlds (docs/HILLCLIMBING_ALGORITHM.md "reuse worlds") ---------------
+# --- reusing checked worlds (docs/HILLCLIMBING.md "reuse worlds") ---------------
 
 def _input(row: Any) -> dict[str, Any]:
     v = row["input"]

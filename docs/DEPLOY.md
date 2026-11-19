@@ -299,7 +299,7 @@ means deploying an older sha.
 ## 8. Local Kubernetes (k3d)
 
 The pipeline also runs on a local K3s cluster: k3d cluster `sde`, kube context `k3d-sde`,
-namespace `sde`. The plan, and the reasons for each choice, are in [K8S_PLAN.md](K8S_PLAN.md).
+namespace `sde`. The plan, and the reasons for each choice, are in [KUBERNETES.md](KUBERNETES.md).
 It is a local deployment only; AWS stays on compose (§8.5).
 
 ### 8.1 What runs where

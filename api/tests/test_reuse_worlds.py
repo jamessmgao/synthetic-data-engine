@@ -1,4 +1,4 @@
-"""reuse_worlds (docs/HILLCLIMBING_ALGORITHM.md "reuse worlds"): new tasks start at create on a
+"""reuse_worlds (docs/HILLCLIMBING.md "reuse worlds"): new tasks start at create on a
 checked world from the pool instead of building one."""
 import json
 

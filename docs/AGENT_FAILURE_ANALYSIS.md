@@ -8,6 +8,8 @@ the trajectory and verifier output of at least one passing and every failing age
 accepted version.
 - L2 (this session) read 11 tasks.
 - L3 and L4 each read 4 (§4.12–4.19).
+- §4.20–4.21 are two earlier accepted tasks, moved here from the retired
+  VALIDATION.md (§5.1, §5.2).
 
 Failure attributions are the Trace Parser's, quoted as given. All of them are "model".
 
@@ -18,9 +20,8 @@ Failure attributions are the Trace Parser's, quoted as given. All of them are "m
   hold `<trial>/agent/trajectory.json` and `<trial>/verifier/test-stdout.txt`.
 
 Companion docs:
-- [VALIDATION_AND_FAILURE_MODES.md](VALIDATION_AND_FAILURE_MODES.md) (L3): the checks, and six
-  accepted tasks.
-- [HOW_TO_CREATE_A_DIFFICULT_TASK.md](HOW_TO_CREATE_A_DIFFICULT_TASK.md) (L5): the recipe.
+- [VALIDATION.md](VALIDATION.md): every check a task passes.
+- [DIFFICULTY.md](DIFFICULTY.md) (L5): the recipe.
 
 ---
 
@@ -468,6 +469,42 @@ The format for each task:
 
 ---
 
+### 4.20 aws-iter1-t04: sqlite-duty-leave-write-skew (Python + SQLite), v1 0/5 → v2 5/5 → v3 5/5 → v4 ✗✗✓✗✗. Read by L3.
+- **System / bug:** a duty-leave service accepts plans whose coverage later drops below the
+  policy minimum. For every covered day, available staff must be the true remaining on-duty
+  staffing and ≥ the minimum, under concurrent use and across kills.
+- **Why hard:** the revision pipeline's longest path. v1 was too hard; v2, eased, 5/5; v3, a
+  mutation, still 5/5 because a local lock passed. v4 (`add_concurrent_execution`,
+  `compose_failure_modes`) made a roster unassignment and concurrent approvals interact. The
+  planted wrong fix checks per-day leave overlap at submit and approve, and ignores duty
+  assignments.
+- **Failing runs 1, 2, 4, 5:** "planned coverage 1 < minimum", "concurrent operations
+  over-committed assigned coverage", and "infeasible roster unassignment was allowed". Trace
+  Parser on run 5: "the agent's own validation runs crashed with unhandled AssertionErrors,
+  yet the agent declared the task complete anyway".
+- **Mode:** C (fixed the approval path it reproduced, missed the second writer: roster
+  changes) and E (run 5).
+- **Traces:** fail `traces/aws-iter1-t04-v4-rollout1-r0/`, `-rollout5-r0/`.
+
+### 4.21 aws-agent-b1-t09: bounded-ledger-reconciliation (Java), v1 5/5 → v2 4/5 → v3 0/5 → v4 ✓✗✓✓✗. Read by L3.
+- **System / bug:** a 6M-event ledger must reconcile within 75 s under a 128 MiB heap, with
+  output that matches an independent reference exactly. That includes per-account checksums in
+  timestamp order and zero-padded account ids treated as one account.
+- **Why hard:** v2's `introduce_global_invariant` defined the checksum in timestamp order, not
+  stream order, so plain streaming is wrong. v3's cross-component move overshot (0/5), and v4
+  eased it. The planted wrong fix: an external-sort `Reconciler.java` with `Main.java`
+  untouched, which splits equivalent account ids.
+- **Failing runs 2, 5:**
+  - Run 2 (205 steps): `OutOfMemoryError` in `ArrayList.grow` in the agent's own new code. It
+    kept the semantics and broke the 128 MiB bound.
+  - Run 5 (9 steps): "the automated string replacement did not match the actual method, so
+    compilation still fails and the runtime remains the stale old implementation". It finished
+    anyway.
+- **Pass vs fail:** run 4 wrote its own `reference.py` and `fuzz.py` and compared outputs before
+  finishing.
+- **Modes:** F (run 2), E (run 5).
+- **Traces:** fail `traces/aws-agent-b1-t09-v4-rollout2-r0/`, `-rollout5-r0/`.
+
 ## 4b. Notes across tasks
 
 - **Terminal friction.** Literal tabs inside heredocs triggered shell tab completion and silently
@@ -502,3 +539,32 @@ The format for each task:
   - w2-l5-t01's verifier shares the agent's sandbox and port :8080, so a server the agent left
     running fails some runs and not others. The task harness should own its port (stop leftovers,
     or use a fresh one) so the failure always comes from the solution.
+
+---
+
+## 6. Reusing worlds: near-duplicate tasks
+
+From 2026-11-18 21:20 to 23:55 UTC, new tasks reused checked worlds (`reuse_worlds`) instead
+of building new ones. Three findings, all fixed or retired:
+
+1. **The picker handed out a world whose own task was still running.**
+   - aws-w3-l3-t01 got world `7d8725b8` while its source, aws-iter2-t09, was still in agent
+     runs.
+   - aws-w2-l3-t01 and aws-w2-l3-t03 were submitted at the same second, got two worlds from
+     aws-agent-b1-t04's lineage, and both became `durable-quorum-ledger` at v1 5/5.
+   - Fixed by `5539cec`, never reuse a world whose own task is live. `ed108aa` later relaxed it
+     to up to 2 tasks per world.
+2. **The same world gives the same task, reworded.**
+   - `task_author.md` requires one test per world invariant, and most worlds have only 2–3. So
+     on aws-w3-l3-t01, even though its author saw iter2-t09's instruction (the `reuse-distinct`
+     change), the new instruction had the same symptom, guarantees and entry point.
+   - Fixed by **reseed + replace**, the user's call:
+     - each reuse samples a new spec: same family and environment, an unused mechanism, never
+       `greedy_counterexample`;
+     - a variant mutation then fixes the source world's bug and plants one defect of the new
+       mechanism, keeping the codebase and domain.
+   - Since 23:55 UTC new tasks build new worlds.
+3. **One domain everywhere.**
+   - 13 of 46 tasks in calibration had "ledger" in the name.
+   - Fixed by L1's domain dimension and per-window domain cap (`4505796`), and the briefs'
+     "not a ledger or wallet".

@@ -12,6 +12,8 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 *The presentation in 9 slides* (the deck: [docs/slides/synthetic-data-engine-presentation-v5.pptx](docs/slides/synthetic-data-engine-presentation-v5.pptx)).
 
+**All documentation is indexed in [Docs](#docs) at the end of this README.**
+
 ## What it does
 
 ### 1. Builds worlds
@@ -23,14 +25,14 @@ fails, the fix passes, the symptom is visible, the fix isn't local, and the wron
 symptom (hardness checks set by `SDE_WORLD_HARDNESS`). A failing world goes to world-repair
 (≤2). When a task is too easy, the **world** is mutated, not the wording. See
 [docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md) and
-[docs/AGENTIC_AUTHORING_PLAN.md](docs/AGENTIC_AUTHORING_PLAN.md).
+[docs/AUTHORING.md](docs/AUTHORING.md).
 
 ### 2. Creates tasks
 
 A second agent session writes a **task** from the world: the instruction, Dockerfile, tests
 and reference solution. The validate gates check it: structural, lint, oracle ×2, nop,
 wrong_fix, and a blind leak review. A failing task goes to repair (≤2). See
-[docs/VALIDATION_GATES.md](docs/VALIDATION_GATES.md).
+[docs/VALIDATION.md](docs/VALIDATION.md).
 
 A one-shot mode (`SDE_AUTHOR_MODE=oneshot`, the default) drafts the whole bundle in one
 strict-JSON glm-5.1 call instead. It's the baseline, and the fallback for raw prompts and v1
@@ -98,8 +100,8 @@ POST /v1/tasks | /v1/batches
         └─ out of band at MAX_VERSIONS (8) ──► REJECTED exhausted
 ```
 
-The architecture diagram is [`synthetic-data-engine.excalidraw`](synthetic-data-engine.excalidraw);
-the original design spec is [`synthetic_data_engine_spec.md`](synthetic_data_engine_spec.md).
+The architecture diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw);
+the original design spec is [`docs/SPEC.md`](docs/SPEC.md).
 
 ## Services
 
@@ -146,7 +148,7 @@ Unset means the code's default:
 | `SDE_MAX_VERSIONS` | 8 | revisions per task before REJECTED exhausted |
 | `SDE_WORLD_HARDNESS` | `warn` | world_check's hardness checks: `off` / `warn` (recorded, not failing) / `enforce` / `strict` |
 | `SDE_LEAK_REVIEW` / `SDE_LEAK_BLIND` | 1 / 1 | the leak review in create and validate / its blind fix prediction |
-| `SDE_CREATE_TIMEOUT_S` / `SDE_WORLD_TIMEOUT_S` | 1200 / 1800 | agent session time boxes |
+| `SDE_CREATE_TIMEOUT_S` / `SDE_WORLD_TIMEOUT_S` | 7200 / 7200 | agent session safety nets (the prompts aim for ~10–12 min); per-call caps `SDE_AUTHORING_LLM_TIMEOUT_S` / `SDE_WORLD_LLM_TIMEOUT_S` are set on AWS |
 | `SDE_DB_POOL_MAX` | 4 | Postgres connections per process (bounded pool) |
 | `SDE_CANCEL_GRACE_SEC` | 30 | how long a cancelled running job may take to stop |
 | `SDE_MOCK_LLM` | unset | load tests only: fake model calls. **Never set for a real batch.** |
@@ -184,33 +186,49 @@ Single tasks: `POST /v1/tasks` takes an empty body (sampled spec), a `prompt`, a
   mode: `make aws-author-mode MODE=agent`.
 
 See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment and every runtime setting,
-[docs/AGENT_MODE_DEPLOY.md](docs/AGENT_MODE_DEPLOY.md) for agent mode,
+[docs/DEPLOY.md](docs/DEPLOY.md) for agent mode,
 [docs/CAPACITY.md](docs/CAPACITY.md) for the cluster's size, concurrency limits and cost, and
 [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for the load test with mocked models. CPU is the
 bottleneck; there were 0 INVALID in 230 agent runs.
 
 ## Docs
 
-| Doc | What it holds |
-|---|---|
-| [`docs/PRD.md`](docs/PRD.md) | requirements, data model, API, the services-on-queues design, deep dives |
-| [`docs/AGENTIC_AUTHORING_PLAN.md`](docs/AGENTIC_AUTHORING_PLAN.md) | the world-first plan: job types, contracts (spec v2, worlds, gates, mutation inputs), status |
-| [`docs/WORLD_CONSTRUCTION.md`](docs/WORLD_CONSTRUCTION.md) | the method: worlds, invariants, counterexamples, mutation operators |
-| [`docs/HILLCLIMBING_ALGORITHM.md`](docs/HILLCLIMBING_ALGORITHM.md) | the sliding-window tuning loop on the production cluster |
-| [`docs/ANALYSIS.md`](docs/ANALYSIS.md) | every pilot and live run: outcomes, cost, time, bugs found (§11: the deployed runs, §12: P1, the aws-b1 diagnosis, the nop flake) |
-| [`docs/API.md`](docs/API.md) | every route with its request and response shapes |
-| [`web/README.md`](web/README.md) | the dashboard: status and results of every batch, task and job (`make ui`, `make ui-aws`) |
-| [`docs/VALIDATION_GATES.md`](docs/VALIDATION_GATES.md) | the validate gates (wrong_fix, leak) and world_check, incl. the hardness checks |
-| [`docs/TASK_GENERATION_RULES.md`](docs/TASK_GENERATION_RULES.md) | what a good task is: the authoring rules the prompts enforce |
-| [`docs/EVALUATION.md`](docs/EVALUATION.md) | the Executor, the Trace Parser, the mutation rules and their names, the verdict format |
-| [`docs/ARCHITECTURE_REVIEW.md`](docs/ARCHITECTURE_REVIEW.md) | every R/N/L review finding, with its resolution and commit |
-| [`docs/TESTING.md`](docs/TESTING.md) | test suites, the e2e harness, the agent-mode (INT) scenarios |
-| [`docs/DEPLOY.md`](docs/DEPLOY.md) | deployment (Compose, k3d, K3s on AWS) and every runtime setting |
-| [`docs/CAPACITY.md`](docs/CAPACITY.md) | concurrency limits, throughput, utilization and cost |
-| [`docs/AGENT_MODE_DEPLOY.md`](docs/AGENT_MODE_DEPLOY.md) | running agent mode locally and on AWS |
-| [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md) | the AWS load test with mocked models |
-| [`docs/K8S_PLAN.md`](docs/K8S_PLAN.md), [`docs/K3S_PLAN.md`](docs/K3S_PLAN.md) | the move from Compose to K3s / KEDA |
-| [`docs/WORKER_INTERFACE.md`](docs/WORKER_INTERFACE.md) | the job-function contract between services and task-builder code |
-| [`docs/TODO.md`](docs/TODO.md), [`docs/LINKS.md`](docs/LINKS.md) | open work; references |
-| [`synthetic_data_engine_spec.md`](synthetic_data_engine_spec.md) | the original implementation spec |
-| [`CHANGELOG.md`](CHANGELOG.md) | every change, with commits |
+**Start here**
+- [docs/slides/](docs/slides/): the presentation (the 9-slide image above, and the deck).
+- [CHANGELOG.md](CHANGELOG.md): every change, with commits.
+
+**Design**
+- [docs/PRD.md](docs/PRD.md): requirements, data model, API, the services-on-queues design, deep dives.
+- [docs/SPEC.md](docs/SPEC.md): the original implementation spec (historical; the PRD is current).
+- [docs/DURABILITY.md](docs/DURABILITY.md): every durability and recovery guarantee, with its code, test and limits.
+- [docs/WORKER_INTERFACE.md](docs/WORKER_INTERFACE.md): the job-function contract between the services and the task-building code.
+- [docs/ARCHITECTURE_REVIEW.md](docs/ARCHITECTURE_REVIEW.md): every review finding, with its resolution and commit.
+- [docs/diagrams/](docs/diagrams/): the architecture sketch and the Excalidraw diagrams.
+
+**Generating tasks**
+- [docs/AUTHORING.md](docs/AUTHORING.md): world-first agent authoring as built: job types, contracts, mutations, variants, reused worlds.
+- [docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md): the method: worlds, invariants, counterexamples, mutation operators.
+- [docs/DIFFICULTY.md](docs/DIFFICULTY.md): what makes a task hard, and the recipe for creating one.
+- [docs/TASK_GENERATION_RULES.md](docs/TASK_GENERATION_RULES.md): what a good task is: the rules the authoring prompts enforce.
+- [docs/TASK_CREATION_OPTIMIZATION.md](docs/TASK_CREATION_OPTIMIZATION.md): how we optimized task creation: levers, taxonomy, revisions, throughput, results.
+
+**Validating and evaluating**
+- [docs/VALIDATION.md](docs/VALIDATION.md): every gate that can stop a task (world_check, validate, the leak review), with counts and edge cases.
+- [docs/EVALUATION.md](docs/EVALUATION.md): the Executor, the Trace Parser, the mutation rules, the verdict format.
+- [docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md): every accepted task's agent runs read: why the tasks are hard and how agents fail.
+
+**Tuning on the production cluster**
+- [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md): the goal, the sliding-window method, the lanes, the stopping rules and the limits.
+- [docs/ITERATION_LOG.md](docs/ITERATION_LOG.md): every iteration and window: changes, per-task outcomes, yield.
+
+**Running it**
+- [docs/DEPLOY.md](docs/DEPLOY.md): deployment (Compose, k3d, K3s on AWS), agent mode, and every runtime setting.
+- [docs/KUBERNETES.md](docs/KUBERNETES.md): the K3s / KEDA cluster as built.
+- [docs/CAPACITY.md](docs/CAPACITY.md): concurrency limits, throughput, utilization and cost.
+- [docs/LOAD_TEST.md](docs/LOAD_TEST.md): finding the bottleneck: mocked-model and real-load tests.
+- [docs/API.md](docs/API.md): every route, with request and response shapes.
+- [docs/TESTING.md](docs/TESTING.md): the test suites, the e2e harness and the agent-mode scenarios.
+- [web/README.md](web/README.md): the dashboard (Overview, Batches, Tasks, Analytics).
+- [docs/TODO.md](docs/TODO.md): deferred work.
+
+**Archive** ([docs/archive/](docs/archive/)): early analyses kept for the record (`ANALYSIS.md`, `PILOT_RESULTS.md`, `LINKS.md`).

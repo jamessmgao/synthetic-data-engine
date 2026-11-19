@@ -15,8 +15,8 @@ with the instruction from `generator/prompts/world.md` (initial, repair) or
 pipeline stores it content-addressed at `<work>/worlds/<sha>/` and sets world.json's `spec`
 and `lineage`.
 
-**Budget: 30 minutes** (`SDE_WORLD_TIMEOUT_S`, default 1800): the system running by about 10,
-the counterexample replaying by about 20, then the self-check. (P1's first real world took
+**Budget:** the prompt asks for about 12 minutes, self-check by about 10. The hard limit is a
+2-hour safety net (`SDE_WORLD_TIMEOUT_S`, default 7200 since `66f3046`). (P1's first real world took
 5.4 min and $0.51.) **Scope: about 300-800 lines of code in 2-4 modules.** Difficulty comes
 from components that interact and from hidden dependents, never from size.
 
@@ -87,7 +87,7 @@ WARNING: fix.sh changes 1 file(s) ['/app/store.py'] and there is no working depe
 ```
 
 The author is told to fix every WARNING before finishing if time allows. Details of every
-check: docs/VALIDATION_GATES.md.
+check: [VALIDATION.md](VALIDATION.md) §1.
 
 ### Mutations (stage 7 as built)
 
@@ -397,6 +397,11 @@ The generator should use a deterministic scheduler or model checker to find and 
 **Primary difficulty:** Global optimization, interacting constraints, invariants, and algorithms that work locally but fail globally.
 
 **Strongest mutation:** Construct a counterexample to a plausible greedy or heuristic solution.
+
+> **As built (2026-11-19):** greedy-vs-optimal worlds are retired (`greedy_counterexample`,
+> `optimality_required`: 0 accepted of 11 tasks), because "the result is optimal" names the fix.
+> The algorithmic lever now is an exact algorithm with a subtle defect inside it
+> ([DIFFICULTY.md](DIFFICULTY.md) §12; `generator/families.py`).
 
 Example world:
 

@@ -8,7 +8,7 @@ Functional gates for a task bundle: the `validate` job of PRD §6.3.
     wrong_fix   the author's plausible wrong fix, run as the oracle: reward exactly 0
     leak        glm-5.1: a semantic review against the hidden spec and the world, plus a
                 blind fix prediction from the instruction alone: the instruction must not
-                reveal the fix or the failing sequence (docs/VALIDATION_GATES.md)
+                reveal the fix or the failing sequence (docs/VALIDATION.md)
 
 Gates run cheapest first and stop at the first failure. Each failure carries
 ``feedback``: the exact evidence (failing tests and assertion messages, verifier

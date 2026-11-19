@@ -1,5 +1,5 @@
 """
-The task author (docs/AGENTIC_AUTHORING_PLAN.md §1, §3.4): from a checked world to a
+The task author (docs/AUTHORING.md §1, §3.4): from a checked world to a
 task bundle, by one agent authoring run (terminus-2 + GLM-5.1 in the authoring image,
 generator/authoring_harness.py). generator/author.py re-exports run_create_job; the
 Generation Service calls it for `create` and, in agent mode, `revise` jobs.
@@ -45,7 +45,7 @@ no trial), `author` when a clean trial left no valid draft.
 Then the self-check guard (generator/self_check.py:ensure_task_checked: the author's
 saved `sde-task check`, or the check run here, free) and the leak review (plan N6):
 validator/gates.py:gate_leak, the semantic review against the hidden spec and the
-world plus the blind fix prediction (docs/VALIDATION_GATES.md), runs here without a
+world plus the blind fix prediction (docs/VALIDATION.md), runs here without a
 Docker slot. A failing self-check or a leak is FAILED / author with the feedback (and
 the bundle, so after_generation sends it to a repair); the review's cost is added to
 the job's, and it is recorded by bundle sha, so validate's leak gate adopts it instead

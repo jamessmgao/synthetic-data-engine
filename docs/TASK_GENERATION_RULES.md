@@ -2,7 +2,7 @@
 
 How a task is authored from a world (agent mode, as built), what the author must and must
 not write, how the pipeline enforces it, and the difficulty and diversity levers behind it.
-The world itself is docs/WORLD_CONSTRUCTION.md; the gates are docs/VALIDATION_GATES.md.
+The world itself is docs/WORLD_CONSTRUCTION.md; the gates are docs/VALIDATION.md.
 
 ## The task author (agent mode)
 
@@ -15,8 +15,8 @@ rules (`_system_rules`: `generator/prompts/system.md` with the pinned base image
 one-shot "Return exactly one JSON object…" paragraph, since here the draft is a file), and
 the request (`revise_request`: initial, repair, easier, repair_ambiguity).
 
-**Time box: 20 minutes** (`SDE_CREATE_TIMEOUT_S`, default 1200): the draft written by about
-12, then the self-check. The task's repository is the world's `environment/` as it is: the
+**Budget:** the prompt asks for about 10 minutes. The hard limit is a 2-hour safety net
+(`SDE_CREATE_TIMEOUT_S`, default 7200 since `66f3046`). The task's repository is the world's `environment/` as it is: the
 author does not grow, rewrite or add modules.
 
 ### The instruction: guarantees and interface, nothing that solves it
@@ -29,7 +29,12 @@ path, command and format the tests rely on). It must **not** state:
 - where a crash or fault fires relative to the system's effects;
 - crash hooks or stage names: it says only that workers can be killed at any moment and are
   restarted; the tests kill them from outside;
-- the cause, the files to change, or the shape of the fix (in any words).
+- the cause, the files to change, or the shape of the fix (in any words);
+- the checks a command applies, or the criteria an answer meets: say what it must report;
+- the symptom with a when / if / because / for-example clause (BAD: "fails when one macro calls
+  another"): only what users saw;
+- for a speedup, the orderings, tie-breaks or edge cases to keep: say "the same output as
+  now".
 
 From P1 (`output/p1/p1-local-1`, quoted in the prompt):
 
@@ -46,14 +51,14 @@ From P1 (`output/p1/p1-local-1`, quoted in the prompt):
 > retries, crashes and lease expiries; stock never goes negative; and a request that fits the
 > stock is eventually fulfilled.
 
-The leak gate enforces this semantically, paraphrases included (docs/VALIDATION_GATES.md).
+The leak gate enforces this semantically, paraphrases included (docs/VALIDATION.md §2).
 
 ### The hidden tests: invariants as properties over many executions
 
 1. **One dedicated test per world invariant**, named after it, marked `# invariant: N`
    (N = its number in the world summary). Its checker reads only observable state (command
    output, inspect / report JSON, files the interface exposes) and asserts the invariant
-   **after every step** of **at least 20 fixed seeds** of randomized schedules: random
+   **after every step** of **at least 10 fixed seeds** of randomized schedules: random
    operations, the process killed (SIGKILL from the test) at a random step and restarted,
    retries, lease expiries, concurrent workers where the world allows them.
 2. **The exact counterexample** as one case among them, replayed as `repro.sh` does it (from
@@ -66,8 +71,12 @@ The leak gate enforces this semantically, paraphrases included (docs/VALIDATION_
 5. Together they reject the wrong fix for a real reason, and nothing passes on a stub.
 
 Tests drive the system only through its interface, never by importing internals, and keep
-the suite under 60 s on 1 CPU. Seeds are fixed: `rng = random.Random(seed)` for
-`seed in range(20)`, never the global `random.*` unseeded, `random.Random()`, or a clock seed.
+the suite under 60 s on 1 CPU. Each test starts from clean state it creates (a fresh data dir,
+DB and state files; a service on a free port it picks, or after stopping a leftover listener),
+because the agent's experiments leave files, rows and servers behind. Every blocking read of a
+child process has a timeout, and processes run one at a time unless the instruction states the
+overlap. Seeds are fixed: `rng = random.Random(seed)` for
+`seed in range(10)`, never the global `random.*` unseeded, `random.Random()`, or a clock seed.
 
 ### The other draft fields
 
@@ -111,10 +120,15 @@ sde-task run /logs/artifacts/draft.json --as all    # oracle reward 1; nop 0; wr
 
 ## Taxonomy v2 (`shared/taxonomy/taxonomy.py`)
 
-A spec is `{family, mechanism, shape, environment, verification, dial, seed?, design?}`.
-Six families (`FAMILIES`), each with its mechanisms, environments and verification methods
-(GET /v1/families lists them); `shape_for(mechanism)` gives fix / implement / optimize /
-migrate; the dial is 1-3 (`DEFAULT_DIAL` 2). `legacy_view` gives the v1
+A spec is `{family, mechanism, shape, environment, verification, dial, domain, domain_label,
+mechanism_note, seed?, design?}`. Six families (`FAMILIES`), each with its mechanisms,
+environments and verification methods (GET /v1/families lists them; the table is in
+docs/AUTHORING.md §3.2). `domain` is one of about 40 application domains (`APP_DOMAINS`;
+performance never draws `payment_ledger`), and `mechanism_note` (`MECHANISM_NOTES`) is the
+defect pattern the world author plants. Retired on 2026-11-18: `greedy_counterexample` and
+`optimality_required` (the honest guarantee names the fix), `scalability_wall` and
+`memory_bound` (generic). `shape_for(mechanism)` gives fix / implement / optimize /
+migrate (every performance mechanism is `optimize`); the dial is 1-3 (`DEFAULT_DIAL` 2). `legacy_view` gives the v1
 `{taxonomy, difficulty}` view one-shot mode uses.
 
 `sample_spec_v2(existing, area, mechanism, environment, dial)` spreads a batch: the family

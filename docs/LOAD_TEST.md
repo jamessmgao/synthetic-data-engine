@@ -113,7 +113,7 @@ below).
 | 7 | **Timeouts treated inconsistently** | an agent run at the 1-hour limit | it waits for the Trace Parser's ruling; a timeout isn't a failure by itself | `856db8c`, `f1c822e` |
 | 8 | **Validate re-ran the author's checks** | 4 trials (~4 min) per bundle, already run by `sde-task` | validate adopts stamped author checks when exact: validate takes **~4 s** | `ab466d2` (`SDE_ADOPT_AUTHOR_CHECKS=1`) |
 | 9 | **Authoring self-check memory** | `sde-task run` roles in parallel exceeded the 5-6 GiB dind | roles run one at a time per session (`SDE_TASK_PARALLEL=1`), 3 sessions a pod | `082166f`, `77002d7` |
-| 10 | **Work supply** (most of the night) | idle authoring sessions between waves (10 of 42 busy at one point) | six lanes keep ~5-6 tasks each in flight and top up per decision; at 23:55, new-world batches across lanes | the method (HILLCLIMBING_ALGORITHM.md) |
+| 10 | **Work supply** (most of the night) | idle authoring sessions between waves (10 of 42 busy at one point) | six lanes keep ~5-6 tasks each in flight and top up per decision; at 23:55, new-world batches across lanes | the method (HILLCLIMBING.md) |
 | 11 | **Authoring capacity** (now) | 33 of 33 sessions busy, 9 worlds READY at 00:03 | the next lever is more generation pods. They're cheap in CPU (~0.4 GB, model-bound) but each self-check spikes to 1 CPU / 2 GB | not done |
 
 Not bottlenecks tonight:

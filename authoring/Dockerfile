@@ -1,4 +1,4 @@
-# The authoring image (docs/AGENTIC_AUTHORING_PLAN.md §3.4): the container a
+# The authoring image (docs/AUTHORING.md §3.4): the container a
 # world / create agent works in. Build context = the repo root:
 #
 #   docker build -f authoring/Dockerfile -t sde-authoring:dev .

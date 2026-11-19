@@ -1,4 +1,4 @@
-"""API1 (docs/AGENTIC_AUTHORING_PLAN.md §3.1-3.2): taxonomy v2, spec v2, areas and
+"""API1 (docs/AUTHORING.md §3.1-3.2): taxonomy v2, spec v2, areas and
 filters on tasks and batches, the first job by author mode, reports by family and
 mechanism, and the task's world."""
 

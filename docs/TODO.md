@@ -11,11 +11,11 @@ Built by `deploy/remote-deploy.sh` and a make target, pinned by digest after the
 schema's `BASE_IMAGES` allowlist, and used by worlds and tasks `FROM`.
 
 **Why it waits:** Docker's layer cache already reuses identical install steps on a machine, so
-local builds are about 1.5 min (P1). The gain is mostly on fresh AWS runners with an empty cache.
+local builds are about 1.5 min (P1). The gain is mostly on fresh EC2 instances with an empty cache.
 It's an optimization, not a missing piece.
 
 **When it matters:** if the load test (docs/LOAD_TEST.md) shows image builds as a bottleneck, or
-when a batch runs on newly started runners. Owner when picked up: the infrastructure session.
+when a batch runs on newly started EC2 instances. Owner when picked up: the infrastructure session.
 
 ## Batch report generator
 
@@ -57,6 +57,9 @@ before shipping the final batch. Owner when picked up: the api-service session (
 
 ## Hardness tiebreak in `choose_mutations`
 
+**Status (2026-11-19):** half done. The mutation author already gets the parent world's hardness
+results (6f13462). The tiebreak rule below is still parked.
+
 **What:** when a task comes back too easy, `calibration.choose_mutations` picks up to 2
 operators from the pass-review evidence. The tiebreak (the user chose this version over
 ranking hardness first) lets the world_check hardness result fill only a slot that would
@@ -72,14 +75,3 @@ mutation prompt's hardness section stays empty; nothing else changes.
 
 **When it matters:** once the batch shows whether the warn-mode hardness results correlate with
 lower pass rates. Owner when picked up: -c0.
-
-## A request timeout for the solver's model calls
-
-**What:** P1's rollout 2 hung on one model call for 11+ minutes after the agent said it was
-done, and would have waited until the 60-minute agent timeout. Set a per-request timeout (and
-retry) for terminus-2's LiteLLM calls in the Executor's Harbor invocation, e.g. 300 s.
-
-**Why it waits:** found during the run, after coding stopped. One occurrence so far.
-
-**When it matters:** for any batch, since a hung call wastes a slot for up to an hour. Owner
-when picked up: -c0 (evaluation/harbor.py).

@@ -274,7 +274,7 @@ def hard_brief_specs() -> list[tuple[str, dict]]:
     return specs
 
 
-# Pilot p4: briefs built from docs/TASK_DIFFICULTY.md. Each raises several
+# Pilot p4: briefs built from docs/DIFFICULTY.md. Each raises several
 # of B (search), C (constraint coupling), H (horizon), U (unfamiliarity) and
 # V (low self-verifiability) at once, with every requirement stated.
 FRONTIER_COMMON = HARD_COMMON + [

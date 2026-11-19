@@ -1,5 +1,5 @@
 """
-Build the data tables for docs/PILOT_RESULTS.md from experiments/results/<pilot>/.
+Build the data tables for docs/archive/PILOT_RESULTS.md from experiments/results/<pilot>/.
 
 Every number in the generated tables comes from a candidate record; nothing
 is typed by hand. The narrative (why tasks land where they do) is written on

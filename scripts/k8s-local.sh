@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The pipeline on a local K3s cluster: k3d (K3s in Docker), 1 server + 2 agent nodes, kube
-# context k3d-sde, namespace sde. Run through make (docs/K8S_PLAN.md):
+# context k3d-sde, namespace sde. Run through make (docs/KUBERNETES.md):
 #
 #   up       create the cluster if needed (start it if it exists), install KEDA, build +
 #            import the image

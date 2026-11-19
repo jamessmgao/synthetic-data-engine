@@ -92,7 +92,7 @@ PRIORITY = {
     JobType.WORLD: 10,
     JobType.SMOKE: 0,
 }
-# How tasks are authored (docs/AGENTIC_AUTHORING_PLAN.md §1):
+# How tasks are authored (docs/AUTHORING.md §1):
 #   oneshot  create / revise: one GLM-5.1 call per draft (generator/worker.py:run_generate_job)
 #   agent    world → world_check → create → validate. world, create and revise are each a
 #            Harbor authoring trial, terminus-2 + GLM-5.1, time-boxed by the trial's agent timeout, 2 h for a world
