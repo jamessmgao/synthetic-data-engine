@@ -14,6 +14,50 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
+## How we got here
+
+### 1. Targeted prompt and rule refinement, with a double feedback loop
+
+At the start it was impossible to one-shot a task in the band: the first 16 tasks produced 0. So I
+hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
+
+- **Loop 1, per task:** the pipeline revises its own tasks. A too-easy task gets a world mutation,
+  a too-hard one an easier revision ([docs/EVALUATION.md](docs/EVALUATION.md)).
+- **Loop 2, across tasks:** a sliding window with a draining window to test iterative refinements.
+  Coding agents read the trajectories and proposed one subtle, targeted change per finding, each on
+  its own branch per mini-batch "lane" ([38 lane branches](https://github.com/jamessmgao/synthetic-data-engine/branches/all?query=lane-)). I checked
+  their changes, and each one was judged on the tasks authored after it
+  ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
+
+Each lane worked in its own git worktree, on its own branch, so every targeted refinement can be
+inspected on its own: `git fetch && git branch -r | grep lane-`, then `git log -p origin/<branch>`.
+
+This was the inflection point for the yield rate. The prompts became good enough to one-shot a
+significant share of tasks: 18 of the 43 accepted tasks were accepted at their first version.
+
+The refinements themselves were small. Instructions became short user-voiced requests that don't
+name the fix (342 → 92 words, [`b9e1d01`](https://github.com/jamessmgao/synthetic-data-engine/commit/b9e1d01)). When a guarantee had one textbook
+remedy, the remedy went into the system already, subtly wrong ([`4916619`](https://github.com/jamessmgao/synthetic-data-engine/commit/4916619)).
+Greedy-algorithm tasks, where "be optimal" names the fix, were replaced by subtle defects inside
+exact algorithms ([`lane-l2-alg-exact`](https://github.com/jamessmgao/synthetic-data-engine/tree/lane-l2-alg-exact)). Mutations that add persistent
+state became a last resort after 0 of 7 reached the band ([`9af8ab7`](https://github.com/jamessmgao/synthetic-data-engine/commit/9af8ab7)), and
+tests started their own service on a free port ([`00f44fd`](https://github.com/jamessmgao/synthetic-data-engine/commit/00f44fd)).
+
+### 2. The synthetic taxonomy
+
+I started with distributed systems, the problems I knew. The worlds were small, with too few
+components. To target harder problems I used an external model (ChatGPT) to seed ideas, so they
+didn't all come from the model that authors the tasks, which avoids collapsing onto one model's
+training distribution. The taxonomy grew from 22 to 62 bug mechanisms across six families and 40+
+application domains ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py),
+[docs/DIFFICULTY.md](docs/DIFFICULTY.md)). The synthetic taxonomy gave the diversity, and the
+iterative mutations made the tasks novel.
+
+**Result:** 0 of the first 16 tasks in band; about 58% of decided tasks now (43 accepted of 74, as
+of 2026-11-19 06:45 UTC). Why the accepted tasks are hard:
+[docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). Example tasks with links to the runs:
+[docs/DEMO_EXAMPLES.md](docs/DEMO_EXAMPLES.md).
+
 ## What it does
 
 ### 1. Builds worlds
@@ -139,33 +183,22 @@ the API is at [`.claude/skills/sde-pipeline-api/SKILL.md`](.claude/skills/sde-pi
 
 | Route | Does |
 |---|---|
-| `POST /v1/batches` | N tasks (1–50) under one batch id: `count`, `batch_id`, `area` (a family or a list), `mechanism`, `environment`, `dial` (1–3), `prompt`, `spec`, `budget_usd`, `reuse_worlds` |
-| `POST /v1/tasks` | one task from a `prompt`, a `spec`, a `raw_prompt`, or nothing (sampled; same filters) |
-| `GET /v1/families` | the families and each one's mechanisms, environments, verification methods and shapes |
-| `GET /v1/worlds?area=` | the checked worlds `reuse_worlds` picks from, and how often each was reused |
-| `GET /v1/batches`, `/v1/batches/{id}` | every batch with its outcome counts; one batch and its tasks (`?scope=`) |
-| `GET /v1/batches/{id}/report` | the batch's yield, cost and time (`?scope=`) |
-| `GET /v1/tasks` | tasks with status, stage, version, pass pattern, cost, family, mechanism, environment, batch, accepted version, reused-world flag and each version's origin and pass count (`?status=&since=&scope=`) |
-| `GET /v1/tasks/{id}` | one task: versions, gates, leak reviews, every agent run with the Trace Parser's analysis, jobs, cost, decision |
-| `GET /v1/report` | yield, cost and time over `task_id`s or since a moment (`?scope=`) |
-| `GET /v1/queue` | job counts by type and status, and the jobs running now |
-| `GET /v1/artifacts/{kind}/{key}` (`/file?path=`) | the files of a bundle or world (by sha256), a leak review, or a job's trace (by job id) |
-| `POST /v1/tasks/{id}/cancel`, `POST /v1/batches/{id}/cancel` | stop a task or a batch's undecided tasks (`{"by", "note"}`); idempotent |
-| `GET /healthz` | status, database, spend and the budget cap |
+| `GET /v1/families` | what you can ask for: the families and each one's mechanisms and environments |
+| `POST /v1/batches` | submit N tasks (1–50): `count`, `batch_id`, `area` (a family or a list), `mechanism`, `environment`, `dial` (1–3) |
+| `POST /v1/tasks` | submit one task from a `prompt`, a `spec`, or nothing (sampled) |
+| `GET /v1/batches/{id}` | follow a batch: each task's status, version, pass pattern and cost |
+| `GET /v1/tasks/{id}` | one task in full: versions, gates, every agent run with the failure explanation |
+| `POST /v1/batches/{id}/cancel`, `POST /v1/tasks/{id}/cancel` | stop a batch or a task |
 
-`scope` is `prod` (the default for reports: real runs), `dev` (mock runs and `SDE_DEV_BATCHES`) or
-`all`. Giving your own `batch_id` or `task_id` (`[a-z0-9-]`, up to 64) makes the call idempotent.
+Every other route (reports, the queue, the world pool, artifacts, health) is in [docs/API.md](docs/API.md).
 
 ```bash
 H='X-Api-Key: <SDE_API_KEY>'
 curl -s localhost:8000/v1/families -H "$H"
 curl -s -X POST localhost:8000/v1/batches -H "$H" -H 'Content-Type: application/json' \
   -d '{"batch_id": "b1", "count": 5, "area": ["database_consistency", "compilers_parsers"], "dial": 3}'
-curl -s -X POST localhost:8000/v1/batches -H "$H" -H 'Content-Type: application/json' \
-  -d '{"batch_id": "b2", "count": 4, "area": "distributed_concurrency", "reuse_worlds": true}'   # reuse checked worlds
 curl -s localhost:8000/v1/batches/b1 -H "$H"          # per-task status, version, pass pattern, cost
-curl -s localhost:8000/v1/batches/b1/report -H "$H"    # yield, cost, time
-curl -s localhost:8000/v1/queue -H "$H"                # what is running and waiting
+curl -s localhost:8000/v1/tasks/b1-t01 -H "$H"         # one task in full
 curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H" -H 'Content-Type: application/json' -d '{"note": "stop"}'
 ```
 
