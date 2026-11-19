@@ -11,7 +11,7 @@ import { RunningNow } from "@/components/running-board";
 import { QueryState, Stat } from "@/components/status";
 import { ApiError, useApi } from "@/lib/api";
 import { duration, pct, usd } from "@/lib/format";
-import type { BatchSummary, JobStatus, Queue, Report, TaskSummary } from "@/lib/types";
+import type { BatchSummary, JobStatus, Queue, Report } from "@/lib/types";
 
 // The pipeline's job types in flow order (README "The flow").
 const JOB_TYPES = ["world", "world_check", "create", "revise", "validate", "rollout", "analyze"];
@@ -22,7 +22,6 @@ export default function Overview() {
   const report = useApi<Report>(`/v1/report${scopeQuery(scope)}`);
   const queue = useApi<Queue>("/v1/queue");
   const batches = useApi<BatchSummary[]>("/v1/batches");
-  const tasks = useApi<TaskSummary[]>("/v1/tasks");
   const noTasks = report.error instanceof ApiError && report.error.status === 404;
   const r = report.data;
 
@@ -52,8 +51,6 @@ export default function Overview() {
         </div>
       )}
       {noTasks && <p className="text-sm text-muted-foreground">No tasks yet.</p>}
-
-      <ByFamily tasks={(tasks.data ?? []).filter((t) => t.dev === (scope === "dev"))} />
 
       <Card>
         <CardHeader>
@@ -134,63 +131,5 @@ export default function Overview() {
         </Card>
       </div>
     </div>
-  );
-}
-
-// One row per family: its tasks, how they ended, and the yield (accepted / decided). Each row
-// opens the tasks list filtered to that family. Nothing to show on an API without families.
-function ByFamily({ tasks }: { tasks: TaskSummary[] }) {
-  const rows = new Map<string, { tasks: number; accepted: number; rejected: number; inFlight: number }>();
-  for (const t of tasks) {
-    if (!t.family) continue;
-    const r = rows.get(t.family) ?? { tasks: 0, accepted: 0, rejected: 0, inFlight: 0 };
-    r.tasks += 1;
-    if (t.status === "ACCEPTED") r.accepted += 1;
-    else if (t.status === "REJECTED") r.rejected += 1;
-    else if (t.status === "CALIBRATING" || t.status === "CREATED") r.inFlight += 1;
-    rows.set(t.family, r);
-  }
-  if (rows.size === 0) return null;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>By family</CardTitle>
-        <CardDescription>Yield = accepted / decided (accepted + rejected); cancelled tasks are left out</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Family</TableHead>
-              <TableHead className="text-right">Tasks</TableHead>
-              <TableHead className="text-right">Accepted</TableHead>
-              <TableHead className="text-right">Rejected</TableHead>
-              <TableHead className="text-right">In flight</TableHead>
-              <TableHead className="text-right">Yield</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {[...rows.entries()]
-              .sort((a, b) => b[1].tasks - a[1].tasks || a[0].localeCompare(b[0]))
-              .map(([family, r]) => (
-                <TableRow key={family}>
-                  <TableCell>
-                    <Link href={`/tasks?family=${encodeURIComponent(family)}`} className="font-mono text-xs underline-offset-4 hover:underline">
-                      {family}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">{r.tasks}</TableCell>
-                  <TableCell className="text-right tabular-nums">{r.accepted}</TableCell>
-                  <TableCell className="text-right tabular-nums">{r.rejected}</TableCell>
-                  <TableCell className="text-right tabular-nums">{r.inFlight}</TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {r.accepted + r.rejected ? pct(r.accepted / (r.accepted + r.rejected)) : "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
   );
 }

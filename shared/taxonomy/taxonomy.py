@@ -267,8 +267,14 @@ MECHANISM_NOTES: dict[str, str] = {
                                   "a TTL or delete-before-write is the wrong fix",
     "protocol_wrong_state_accept": "after a reconnect one component accepts a message only valid in a state the other reset "
                                    "(prepare, ack, commit); a check in the one handler the counterexample hits is not enough",
-    "saga_timeout_double_compensation": "a step times out after succeeding; the orchestrator compensates and recovery replay "
-                                        "compensates again; a per-order idempotency key blocks legitimate partial refunds",
+    # Reworked (L3, 2026-11-19): "add a per-delivery refunded marker" was the blind predictor's answer
+    # (aws-w8-l1-new-t04); the marker now already exists, in the wrong step, so that becomes the wrong fix.
+    "saga_timeout_double_compensation": "a step times out after succeeding and recovery replay compensates again; the "
+                                        "idempotency marker ALREADY exists and is checked, but is written in a different "
+                                        "step or transaction than the effect (after the external refund returns, keyed by "
+                                        "an id replay regenerates, or in another store); wrong fix: add another marker or "
+                                        "unique key; real fix: the marker in the effect's atomic step, keyed by the "
+                                        "durable delivery id",
     "wall_clock_ordering_skew": "events are ordered by local wall clocks, so a skewed node reorders causally related "
                                 "writes and last-writer-wins drops a later update; clamping on the receiver only is wrong",
     # performance_resources (L4): the guarantee is an outcome (same output under N s / M MB), never the technique.

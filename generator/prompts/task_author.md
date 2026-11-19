@@ -56,27 +56,26 @@ Every blocking read of a child process has a timeout (a hang fails one test, not
 the verifier). Run processes one at a time unless the instruction states the overlap (one
 paused mid-operation as another starts).
 
-**Instruction** (`instruction`): a short request in a user's voice, at most ~150 words, like a
-message to a colleague: what went wrong, and what must be true once it is fixed, in plain
+**Instruction** (`instruction`): a short request in a user's voice, at most ~150 words: what went wrong and what must be true once fixed, in plain
 outcome terms ("an order is never charged twice, even if the service crashes"). Name only what
 a user would name: the command they run, the file or URL they read, the output format they
 expect. Never mention tools, modules, how it's built or where to look: the agent
 discovers the tools itself. No enumerated list of guarantees.
 Say what a command must report, never the checks it applies or the criteria an answer meets
 (BAD: "`verify` (checks every job starts after its prerequisites)"). Anything else the tests
-use must be discoverable in the environment (its README, `--help`, the code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
+use must be discoverable in the environment (README, `--help`, code). GOOD (a real Terminal-Bench task): "The file chess_board.png has an image of a chess
 board. It is currently white to move. Write the best move for white to play to /app/move.txt in
 the form [src][dst], for example, e2e4." NEVER: the counterexample (its steps, schedule or
 trigger), where a crash fires relative to the effects, crash hooks or stage names (say only
-that workers can be killed at any moment and restarted), the cause, the files to change, or
+that workers can be killed and restarted), the cause, the files to change, or
 the shape of the fix. The symptom is what
 users saw (a wrong total, a double charge), never the inputs, sequence or state that trigger
-it; for a mutated world, never the case the mutation added. An outcome holds on every path.
+it, nor a when/if/because/for-example clause (BAD: "fails when one macro calls another"); for a mutated world, never the case the mutation added. An outcome holds on every path.
 For a speedup, today's output is the requirement: say "the same output as now", never the
 orderings, tie-breaks or edge cases to keep (finding them is the task).
 
-Every event, field, file or output the tests rely on is REQUIRED wherever it is described (the
-request, or the environment's README / `--help`), never a "may" an agent can ignore (BAD: "the
+Every event, field, file or output the tests rely on is REQUIRED wherever it is described
+(request, README, `--help`), never a "may" an agent can ignore (BAD: "the
 worker may emit `result_ready`" when a test waits for it).
 
 # Shape and difficulty

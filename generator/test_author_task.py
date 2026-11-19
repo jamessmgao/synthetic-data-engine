@@ -140,7 +140,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
                    # P1: no counterexample schedule, no hook position, no fix shape; plain heredocs.
                    "where a crash fires relative to the effects", "GOOD (a real Terminal-Bench task)",
                    "never nest heredocs", "Timing assertions need a 5x margin", "one file or test group per response", "both must exit 0 before you finish", "is REQUIRED wherever it is described", "may emit `result_ready`",
-                   "a short request in a user's voice", "discovers the tools itself", "never the checks it applies or the criteria an answer meets", "today's output is the requirement", "Each test starts from clean state it creates", "Every blocking read of a child process has a timeout", "a free port it picks, else stop a leftover listener", "unless the instruction states the overlap", "Make the suite comprehensive", "# Before you finish", "you are not done until both commands exit 0", "Never finish with a failing check"):
+                   "a short request in a user's voice", "discovers the tools itself", "never the checks it applies or the criteria an answer meets", "nor a when/if/because/for-example clause", "today's output is the requirement", "Each test starts from clean state it creates", "Every blocking read of a child process has a timeout", "a free port it picks, else stop a leftover listener", "unless the instruction states the overlap", "Make the suite comprehensive", "# Before you finish", "you are not done until both commands exit 0", "Never finish with a failing check"):
         assert needle in text, needle
     # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
     assert text.index("# Checklist") < text.index("# The draft")
@@ -232,6 +232,7 @@ def test_the_performance_brief_states_outcomes_and_steers_off_ledgers():
     assert "not a ledger or payments system" in brief
     assert "the plausible wrong fix is that fast version" in brief
     assert "no name or comment that describes the cost" in brief  # aws-w1-l3-t04's find_pending scans
+    assert "deferring or skipping the work" in brief and "the updates AND the reads" in brief
 
 
 def test_every_shape_and_dial_renders(work):

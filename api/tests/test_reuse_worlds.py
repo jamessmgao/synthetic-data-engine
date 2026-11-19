@@ -247,3 +247,16 @@ def test_the_task_list_carries_taxonomy_and_each_versions_origin_and_score(clien
     assert by_id[raw]["family"] is None
     assert by_id[raw]["versions"] == [{"n": 1, "origin": "initial", "pass_count": None}]
     assert by_id[raw]["pass_pattern"] == "·····" and "cost_usd" in by_id[raw]
+
+
+def test_an_early_stopped_version_has_its_pass_count(client, backend):
+    # Early stopping SKIPs the runs left once the verdict is certain (✗✗✓✗·): the version is settled.
+    from api.tests.test_api import set_task
+    tid = client.post("/v1/tasks", json={"spec": {"family": "distributed_concurrency"}},
+                      headers=AUTH).json()["task_id"]
+    for slot, outcome in enumerate(["VALID_FAIL", "VALID_FAIL", "VALID_PASS", "VALID_FAIL", "SKIPPED"]):
+        rollout(backend, tid, 1, slot, outcome)
+    set_task(backend, tid, accepted_version=1, status="ACCEPTED")
+    t = {t["id"]: t for t in client.get("/v1/tasks", headers=AUTH).json()}[tid]
+    assert t["versions"] == [{"n": 1, "origin": "initial", "pass_count": 1}]
+    assert client.get(f"/v1/tasks/{tid}", headers=AUTH).json()["versions"][0]["pass_count"] == 1

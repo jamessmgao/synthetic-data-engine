@@ -92,7 +92,11 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                  "cache-fronted lookup service; not a ledger or payments system",
         "counterexample": "two inputs in repro/: a load shape where the current code misses the bound by 5x or "
                           "more, and one where the obvious fast version gives a different answer than the slow "
-                          "reference (checked differentially); the plausible wrong fix is that fast version",
+                          "reference (checked differentially); the plausible wrong fix is that fast version. The "
+                          "bound covers every operation the workload times (the updates AND the reads after "
+                          "them), so deferring or skipping the work (rebuild lazily on read, compact only when "
+                          "asked, move the slow call out of the lock onto the caller) only moves the cost and "
+                          "still misses it: in the first window every too-easy perf world was solved that way",
         "scaffold": "sde_repro.py, with the slow implementation as the differential reference and the bound "
                     "checked on the adversarial input",
         "dependent": "the cost and the semantic sit in different modules (a helper, a repository, a cache layer, "

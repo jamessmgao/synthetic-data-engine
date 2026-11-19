@@ -375,3 +375,56 @@ it. The one-test-per-invariant rule stays.
 
 Also seen: the "ledger" domain dominates (13 of 46 CALIBRATING tasks at 22:41; every named L3 task).
 Under reuse-only, selection is the only lever (L1's domain cap, 4505796).
+
+## Windows 7-9 (2026-11-18 23:15 - 2026-11-19 01:40 UTC): the expanded taxonomy, new worlds, image isolation
+
+User decisions in this period: expand the taxonomy "wildly" toward novel, difficult tasks, performance
+first (23:28); halt submissions until it's deployed (23:35); cancel every task in world building on
+pre-fix pods (23:52, 30 tasks: 11 revisions incl. 3 wedged on heredocs, 19 new distributed worlds);
+inject new worlds, then stop using old worlds altogether (23:55-23:58; 17 variant tasks cancelled at
+$0); generation 11 -> 14 pods (00:07); switch to the backup gateway key with a rolling restart, accept
+failures on draining pods (00:55-01:05).
+
+| Window | Release (where) | Live (UTC) | Changes (lane: lever) |
+|---|---|---|---|
+| 7 | 1ea009b (full, drained) | ~23:55 | taxonomy: 40 application domains + 10 language systems, sampled least-used, `spec.domain` / `domain_label` / `mechanism_note`; mechanisms 22 -> 62 (perf 16, algorithmic 12, distributed 11, db 8, compilers 7, cross 8); greedy_counterexample, optimality_required, scalability_wall, memory_bound retired; perf weight 1.5 (L1, with mechanisms from L2/L3/L4/L5). Family briefs: perf "the obvious speedup breaks a semantic the slow path gives for free", 3+ modules (L4); distributed "every piece present, the defect is their interaction on a failure path" (L2); algorithmic "hide from random testing, never ship a reference" (L5); db/compilers/cross (L3). Calibration: extend_cross_component_dependency first for perf (L4). Variant mechanism line (L4), test timeouts (L3), executor dind 400m (L5), variant sources (L1) |
+| 7, API side | 8db82d6 (api) | ~00:05 | environments spread within a family over this taxonomy's specs (5/5 new distributed worlds had drawn Go, 5/5 perf Java); no payment_ledger for perf (L1) |
+| 8 | 72249d7 (generation, drained) | ~00:50 | per-job image tags in the authoring docker wrapper (L5) + world.md / world_mutation.md (L1, L4): a pod's sessions shared one dind and the literal tag `sde-world-dev` (L4: 7 of 9 worlds ran another world's image, 3-15 min lost each; the gate was safe, world_check uses uuid tags). world.md: no ENTRYPOINT, docker cp + script files, build once, the check contract stated, design the 2-component cause up front (no padding to clear fix_not_local), the domain's own nouns (L1, from all five lanes' trace reviews). Algorithmic counterexample: >= 5 elements, shipped and fixed agree on 200 random small inputs (L5: 3 of 5 new algorithmic worlds had 2-3 element counterexamples) |
+| 9, API side | 63a7ea5, de46075 (api) | ~01:25-01:35 | an early-stopped version has its pass count (me); saga_timeout_double_compensation reworked: the marker exists but is written in the wrong step (L1/L3; aws-w8-l1-new-t04 blind-leaked "a per-delivery refunded marker") |
+| next | ec35180 + L4 perf escape (merged, not deployed) | - | task_author: tests pick their own port (L3, aws-w2-l5-t01 :8080); the symptom never states its trigger or a when/if clause (L3: 4 of the first new-taxonomy leaks). Perf brief: the bound covers the reads after the updates too, so deferring or skipping the work still misses it (L4: 3 of 3 new perf v1s too easy by deferring) |
+
+**New-taxonomy tasks (33+ new worlds from 23:55, all dial 3)** decided by 01:40:
+
+| Task | Family / mechanism / domain | Result | Cost |
+|---|---|---|---|
+| aws-w7-l3-new-b-t01 | cross / saga_timeout_double_compensation / video pipeline | ACCEPTED v1, 2/5 | $1.52 |
+| aws-w7-l3-new-t01 | compilers / error_recovery_state_leak / SQL planner | ACCEPTED v1, 1/5 | $2.74 |
+| aws-w8-l1-new-t02 | db / session_read_your_writes / ad bidding | REJECTED (semantic leak x3: "The overspend happens...") | $4.28 |
+| aws-w6-l4-perf-t05 | perf / lock_convoy_across_io / CDN | v1 5/5, mutating (moved the fetch out of the lock; the program printed `elapsed_ms=7066 bound_ms=1200`) | - |
+| aws-w6-l4-perf-t02 | perf / lsm_compaction_pathology / file sync | v1 4/4 early-stopped, mutating (deferred compaction to `compact`) | - |
+| aws-w7-l4-perf-py-t01 | perf / coarse_invalidation_recompute / cart | v1 4/4 early-stopped, mutating (rebuilt carts lazily on read) | - |
+| aws-w8-l1-new-t03 | db / mvcc_gc_vs_long_reader / web crawler | v1 4/5+, mutating | - |
+
+Too early to judge the window (2 accepted, 1 rejected, 4 too easy at v1 and mutating, ~25 in flight).
+Findings: worlds are on domain and on mechanism and don't name the fix (all five lanes' trace reviews);
+creates cost ~$2.5 and 30+ min (was ~$0.7); the leading leak is the instruction stating the symptom
+with its trigger; perf v1s escape by deferring the work, since the workloads timed only the updates.
+
+**Older windows decided in this period** (authored before window 7): accepted aws-w1-l2-t03 v2 1/5,
+aws-w1-l1-t03 v2 1/5, aws-w1-l5-t01 v1 2/5, aws-w2-l3-t01 v2 3/5, aws-w7-l1-dc-new-t01 v1 1/5,
+aws-w1-l5-t02 v3 1/5, aws-iter2-t06 v3 1/5, aws-w1-l3-t05 v1 3/5, aws-w2-l4-t02 v3 1/5, aws-w4-l2-t01
+v2 2/4 (early stop); rejected aws-w2-l4-t01 (blind leak x3). Windows 1-2: 15 accepted of ~27 decided.
+Iteration 2 final: 7 accepted of 10 decided (t01, t03, t06, t07, t08, t09, t10; rejected t02, t04, t11).
+
+**Revision evidence:** extend_cross_component_dependency was in 3 converged mutations tonight
+(aws-iter2-t08, aws-iter1-t03, aws-w4-l2-t01); perf mutations with it 2/2 in band vs 0/5 without (L4).
+Overshoot then ease lands (aws-w2-l4-t02: 5/5 -> 0/5 -> 1/5).
+
+**Infrastructure:** generation 14 x 3 = 42 authoring sessions; executors KEDA to 16 x 2. Kubelet image
+GC (nodes at 80-86% disk) deleted the freshly imported release image on 2 nodes before any pod used it
+(ErrImageNeverPull); L5 re-imported it and pruned unused old release tags (disk 56-86% -> 36-79%).
+world_check's 600 s per-script timeout let a hung repro stay silent ~90 min (aws-w8-l1-new-t01); L5 is
+adding a 300 s per-script timeout that removes the container and stops the check. Spend on the books
+$552 at ~00:55, ~$110/h; production moved to the backup gateway key at ~01:00.
+
+**Goal status:** not met. No window of 10+ new-taxonomy tasks is decided yet.

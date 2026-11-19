@@ -73,6 +73,13 @@ def _scored(jobs: list[dict], version: int) -> dict[int, str]:
     }
 
 
+def _settled(jobs: list[dict], version: int, scored: dict[int, str], n_runs: int) -> bool:
+    """Every slot of the version is scored, or SKIPPED by early stopping once the verdict was certain."""
+    skipped = {j["slot"] for j in jobs if j["type"] == JobType.ROLLOUT and j["version"] == version
+               and j["outcome"] == Outcome.SKIPPED and j["slot"] not in scored}
+    return len(scored) + len(skipped) == n_runs
+
+
 def _sum_cost(jobs) -> float | None:
     """Sum of recorded costs; None if nothing has a recorded cost yet."""
     costs = [j["cost_usd"] for j in jobs if j["cost_usd"] is not None]
@@ -135,7 +142,7 @@ def _taxonomy_summary(task: dict, jobs: list[dict], n_runs: int) -> dict:
         scored = _scored(jobs, n)
         versions.append({"n": n, "origin": version_input(vjobs).get("origin"),
                          "pass_count": (sum(o == Outcome.VALID_PASS for o in scored.values())
-                                        if len(scored) == n_runs else None)})
+                                        if _settled(jobs, n, scored, n_runs) else None)})
     return {"family": slot.get("family"), "mechanism": slot.get("mechanism"),
             "environment": slot.get("environment"), "batch_id": task.get("batch_id"),
             "accepted_version": task.get("accepted_version"), "reused_world": "reused_world" in slot,
@@ -156,7 +163,7 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
 
     if version == task["current_version"]:
         state = task["stage"]
-    elif len(scored) == n_runs:
+    elif _settled(jobs, version, scored, n_runs):
         # Only an out-of-band version is ever superseded by a revision.
         state = Stage.BAND_OK if in_band(pass_count) else Stage.OUT_OF_BAND
     else:
@@ -173,7 +180,7 @@ def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> di
         "bundle_sha256": built[-1]["bundle_sha256"] if built else None,
         "repairs": sum((j["input"] or {}).get("origin") == "repair" for j in generates),
         "gates": (validates[-1]["result"] or {}).get("gates") if validates else None,
-        "pass_count": pass_count if len(scored) == n_runs else None,
+        "pass_count": pass_count if _settled(jobs, version, scored, n_runs) else None,
         "pass_pattern": pass_pattern(jobs, version, n_runs),
         "cost_usd": _sum_cost(vjobs),
         "analysis": _analysis_view(vjobs, scored),
