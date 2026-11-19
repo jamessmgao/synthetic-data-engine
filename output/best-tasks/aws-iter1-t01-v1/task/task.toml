@@ -1,0 +1,50 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "synthetic-data-engine/ledger-dedup-cache-loss"
+description = "Fix a Go ledger service that debits accounts multiple times when transactions are retried after restart or recovery."
+keywords = [ "dedup", "go", "restart", "sqlite", "state",]
+[[task.authors]]
+name = "synthetic-data-engine task pipeline"
+
+[metadata]
+author_name = "synthetic-data-engine task pipeline"
+difficulty = "medium"
+category = "distributed-systems"
+tags = [ "go", "sqlite", "dedup", "state", "restart",]
+expert_time_estimate_min = 10.0
+junior_time_estimate_min = 25.0
+
+[metadata.generation]
+author_mode = "agent"
+dial = 2
+job_id = "aws-iter1-t01-v1-create"
+model = "z-ai/glm-5.1"
+origin = "initial"
+prompt_sha256 = "3eaa36d40d4884c578fe548fa85cf287ec643b3f05cc2502032ce5ed1e5a0179"
+shape = "fix"
+world_sha256 = "611e2fe4c9cf6ed5f7cef2f17d719da9f9a90ae62cb9ac524e172824278d2e8a"
+
+[verifier]
+timeout_sec = 900.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+user = "agent"
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 900.0
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

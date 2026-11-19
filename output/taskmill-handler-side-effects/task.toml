@@ -1,0 +1,48 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "synthetic-data-engine/taskmill-handler-side-effects"
+description = "A background job processor with a reliability bug where the worker acknowledges jobs before persisting results, causing silent data loss on crashes, and the handler writes side effects through a separate database connection, making those side effects non-atomic with result writes so that recovery causes duplicate notifications"
+keywords = [ "background-jobs", "crash-recovery", "debugging", "distributed-systems", "idempotency", "python", "reliability", "side-effects",]
+[[task.authors]]
+name = "synthetic-data-engine task pipeline"
+
+[metadata]
+author_name = "synthetic-data-engine task pipeline"
+difficulty = "medium"
+category = "taskmill"
+tags = [ "distributed-systems", "debugging", "reliability", "background-jobs", "crash-recovery", "idempotency", "side-effects", "python",]
+expert_time_estimate_min = 35.0
+junior_time_estimate_min = 75.0
+
+[metadata.generation]
+model = "z-ai/glm-5.1"
+operator = "increase_constraint_interaction"
+origin = "revision"
+parent_bundle_sha256 = "7b9439599a1f934a05711c90b36c8b0e374f97c41ec2ed35ca7300505994d4f5"
+prompt_sha256 = "658676740bc20eafed3f0ed8277a58242860a19f5ff21d8fad48884c40d8ed7d"
+system_prompt_sha256 = "7bb04d4dfe96debfc4bbe943076df90fd5fc21b94962343cda639dc5db86a254"
+
+[verifier]
+timeout_sec = 900.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+user = "agent"
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 900.0
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

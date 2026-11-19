@@ -1,0 +1,40 @@
+{
+    "schema_version": 1,
+    "id": "57e526a8-cac5-44ef-8a36-c04efef59331",
+    "started_at": "2026-11-18T12:47:03.397202",
+    "updated_at": "2026-11-18T12:57:11.168576",
+    "finished_at": "2026-11-18T12:57:11.168576",
+    "n_total_trials": 1,
+    "stats": {
+        "n_completed_trials": 1,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "terminus-2__z-ai/glm-5.3-flash__adhoc": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 1.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "3d5d10337d1b387c0acf363208c39c03__gKVGq3D"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 108823,
+        "n_cache_tokens": 45498,
+        "n_output_tokens": 35894,
+        "cost_usd": 0.022946822
+    }
+}

@@ -1,0 +1,101 @@
+{
+    "results": {
+        "tool": {
+            "name": "pytest",
+            "version": "8.4.1"
+        },
+        "summary": {
+            "tests": 7,
+            "passed": 1,
+            "failed": 6,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "start": 1794995184.1621358,
+            "stop": 1794995217.6229684
+        },
+        "tests": [
+            {
+                "name": "test_outputs.py::test_invariant_1_each_order_reserves_at_most_one_fulfillment_package",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.280672961000164,
+                "start": 1794995184.2561822,
+                "stop": 1794995189.582964,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_invariant_1_each_order_reserves_at_most_one_fulfillment_package():\n        # invariant: 1\n        for seed in range(10):\n>           run_schedule(seed, assert_at_most_one_package)\n\n/tests/test_outputs.py:161: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:116: in run_schedule\n    crash_and_retry(order_id)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\norder_id = 'ORD-0-0', kill_signal = <Signals.SIGKILL: 9>\n\n    def crash_and_retry(order_id, kill_signal=signal.SIGKILL):\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, order_id, \"result_ready\", timeout=5.0)\n>           assert event is not None, f\"worker did not emit result_ready for {order_id}\"\nE           AssertionError: worker did not emit result_ready for ORD-0-0\nE           assert None is not None\n\n/tests/test_outputs.py:96: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_invariant_2_order_with_no_queued_work_is_fulfilled",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.244987960000799,
+                "start": 1794995189.58358,
+                "stop": 1794995194.8613653,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_invariant_2_order_with_no_queued_work_is_fulfilled():\n        # invariant: 2\n        for seed in range(10):\n>           run_schedule(seed, assert_no_queued_work_is_fulfilled)\n\n/tests/test_outputs.py:167: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:116: in run_schedule\n    crash_and_retry(order_id)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\norder_id = 'ORD-0-0', kill_signal = <Signals.SIGKILL: 9>\n\n    def crash_and_retry(order_id, kill_signal=signal.SIGKILL):\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, order_id, \"result_ready\", timeout=5.0)\n>           assert event is not None, f\"worker did not emit result_ready for {order_id}\"\nE           AssertionError: worker did not emit result_ready for ORD-0-0\nE           assert None is not None\n\n/tests/test_outputs.py:96: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_invariant_3_fulfilled_order_records_its_reservation_result",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.287199127997155,
+                "start": 1794995194.8631089,
+                "stop": 1794995200.2026846,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_invariant_3_fulfilled_order_records_its_reservation_result():\n        # invariant: 3\n        for seed in range(10):\n>           run_schedule(seed, assert_fulfilled_records_result)\n\n/tests/test_outputs.py:173: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:116: in run_schedule\n    crash_and_retry(order_id)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\norder_id = 'ORD-0-0', kill_signal = <Signals.SIGKILL: 9>\n\n    def crash_and_retry(order_id, kill_signal=signal.SIGKILL):\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, order_id, \"result_ready\", timeout=5.0)\n>           assert event is not None, f\"worker did not emit result_ready for {order_id}\"\nE           AssertionError: worker did not emit result_ready for ORD-0-0\nE           assert None is not None\n\n/tests/test_outputs.py:96: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_invariant_4_the_order_result_identifies_the_reservation_package",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.238023210002211,
+                "start": 1794995200.2037187,
+                "stop": 1794995205.4825976,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_invariant_4_the_order_result_identifies_the_reservation_package():\n        # invariant: 4\n        for seed in range(10):\n>           run_schedule(seed, assert_result_identifies_package)\n\n/tests/test_outputs.py:179: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:116: in run_schedule\n    crash_and_retry(order_id)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\norder_id = 'ORD-0-0', kill_signal = <Signals.SIGKILL: 9>\n\n    def crash_and_retry(order_id, kill_signal=signal.SIGKILL):\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, order_id, \"result_ready\", timeout=5.0)\n>           assert event is not None, f\"worker did not emit result_ready for {order_id}\"\nE           AssertionError: worker did not emit result_ready for ORD-0-0\nE           assert None is not None\n\n/tests/test_outputs.py:96: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_invariant_5_cached_and_stored_results_agree",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.472815585999342,
+                "start": 1794995205.485804,
+                "stop": 1794995210.9884229,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_invariant_5_cached_and_stored_results_agree():\n        # invariant: 5\n        for seed in range(10):\n>           run_schedule(seed, assert_cached_and_stored_agree)\n\n/tests/test_outputs.py:185: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n/tests/test_outputs.py:116: in run_schedule\n    crash_and_retry(order_id)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\norder_id = 'ORD-0-0', kill_signal = <Signals.SIGKILL: 9>\n\n    def crash_and_retry(order_id, kill_signal=signal.SIGKILL):\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, order_id, \"result_ready\", timeout=5.0)\n>           assert event is not None, f\"worker did not emit result_ready for {order_id}\"\nE           AssertionError: worker did not emit result_ready for ORD-0-0\nE           assert None is not None\n\n/tests/test_outputs.py:96: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_exact_counterexample_replay",
+                "status": "failed",
+                "raw_status": "call_failed",
+                "duration": 5.173832336000487,
+                "start": 1794995210.9910386,
+                "stop": 1794995216.244818,
+                "retries": 0,
+                "file_path": "test_outputs.py",
+                "trace": "def test_exact_counterexample_replay():\n        reset()\n        submit(\"ORDER-42\", \"widget\", 3)\n        lock = sqlite3.connect(ORDERS_DB, timeout=5.0)\n        lock.execute(\"BEGIN IMMEDIATE\")\n        proc = subprocess.Popen(\n            SERVICE + [\"worker\"],\n            cwd=WORKDIR,\n            text=True,\n            stdout=subprocess.PIPE,\n            stderr=subprocess.PIPE,\n        )\n        try:\n            event = read_event(proc, \"ORDER-42\", \"result_ready\", timeout=5.0)\n>           assert event is not None, \"worker did not emit result_ready\"\nE           AssertionError: worker did not emit result_ready\nE           assert None is not None\n\n/tests/test_outputs.py:202: AssertionError",
+                "message": "The test failed in the call phase due to an assertion error"
+            },
+            {
+                "name": "test_outputs.py::test_regression_and_edge_cases",
+                "status": "passed",
+                "duration": 1.3746570009989227,
+                "start": 1794995216.2455883,
+                "stop": 1794995217.6213856,
+                "retries": 0,
+                "file_path": "test_outputs.py"
+            }
+        ]
+    }
+}

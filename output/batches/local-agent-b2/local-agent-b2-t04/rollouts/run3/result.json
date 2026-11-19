@@ -1,0 +1,165 @@
+{
+    "schema_version": 1,
+    "id": "ccf7196b-2a9a-4dad-97c0-c1a20f3fcacb",
+    "task_name": "synthetic-data-engine/retry-cache-commit-order-workflow",
+    "trial_name": "b85c1abc7d95817da1b6361576334210__o4uo4xQ",
+    "trial_uri": "file:///Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/executor-worker/work/traces/local-agent-b2-t04-v1-rollout3-r0/b85c1abc7d95817da1b6361576334210__o4uo4xQ",
+    "task_id": {
+        "path": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/executor-worker/work/bundles/b85c1abc7d95817da1b6361576334210b9281d0b44e3350362535fa54d325e1d"
+    },
+    "source": null,
+    "task_checksum": "4cc51b839149af1fbc39caf0d70f00a00aece480cfec65f246b6cce77828b620",
+    "config": {
+        "schema_version": 1,
+        "task": {
+            "path": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/executor-worker/work/bundles/b85c1abc7d95817da1b6361576334210b9281d0b44e3350362535fa54d325e1d",
+            "git_url": null,
+            "git_commit_id": null,
+            "name": null,
+            "ref": null,
+            "overwrite": false,
+            "download_dir": null,
+            "source": null
+        },
+        "trial_name": "b85c1abc7d95817da1b6361576334210__o4uo4xQ",
+        "trials_dir": "/Users/jamesgao/IdeaProjects/synthetic-data-engine/.claude/worktrees/executor-worker/work/traces/local-agent-b2-t04-v1-rollout3-r0",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "terminus-2",
+            "import_path": null,
+            "model_name": "openrouter/z-ai/glm-5.3-flash",
+            "base_url": null,
+            "model_api_key_name": null,
+            "model_api_format": null,
+            "skip_model_parsing": false,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "reasoning_effort": "high"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "override_error_policy": {},
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "6ffc6821-b6a1-4186-ade4-41e5860dca93",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "terminus-2",
+        "version": "2.0.0",
+        "model_info": {
+            "name": "z-ai/glm-5.3-flash",
+            "provider": "openrouter"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 492070,
+        "n_cache_tokens": 386064,
+        "n_output_tokens": 66581,
+        "cost_usd": 0.06052748439999999,
+        "model_usage": {
+            "z-ai/glm-5.3-flash": {
+                "n_input_tokens": 492070,
+                "n_cache_tokens": 386064,
+                "n_output_tokens": 66581,
+                "cost_usd": 0.06052748439999999
+            }
+        },
+        "rollout_details": [],
+        "metadata": {
+            "n_episodes": 24,
+            "api_request_times_msec": [
+                4453.0744552612305,
+                4024.4781970977783,
+                160765.1505470276,
+                24059.430837631226,
+                4349.87735748291,
+                3823.164463043213,
+                59357.78045654297,
+                6426.094055175781,
+                3052.180528640747,
+                26229.60329055786,
+                208536.78917884827,
+                34282.506465911865,
+                6071.928262710571,
+                18932.506322860718,
+                8350.50106048584,
+                19980.227947235107,
+                3116.7023181915283,
+                7136.535882949829,
+                52726.09567642212,
+                8766.817331314087,
+                33741.321086883545,
+                5310.330629348755,
+                2665.159225463867,
+                46373.45743179321
+            ],
+            "summarization_count": 0
+        }
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-11-18T09:24:23.052956Z",
+    "finished_at": "2026-11-18T09:39:44.931227Z",
+    "environment_setup": {
+        "started_at": "2026-11-18T09:24:23.114895Z",
+        "finished_at": "2026-11-18T09:24:43.702732Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-11-18T09:24:43.712011Z",
+        "finished_at": "2026-11-18T09:25:06.772627Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-11-18T09:25:06.789880Z",
+        "finished_at": "2026-11-18T09:38:48.070847Z"
+    },
+    "verifier": {
+        "started_at": "2026-11-18T09:38:48.574557Z",
+        "finished_at": "2026-11-18T09:39:40.891651Z"
+    },
+    "step_results": null,
+    "reward_valid": true
+}

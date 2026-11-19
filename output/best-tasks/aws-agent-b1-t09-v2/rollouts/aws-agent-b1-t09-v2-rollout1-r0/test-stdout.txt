@@ -1,0 +1,160 @@
+Downloading cpython-3.13.9-linux-x86_64-gnu (download) (32.6MiB)
+ Downloading cpython-3.13.9-linux-x86_64-gnu (download)
+Downloading pygments (1.2MiB)
+ Downloading pygments
+Installed 6 packages in 12ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.9, pytest-8.4.1, pluggy-1.7.0
+rootdir: /tests
+plugins: json-ctrf-0.3.5
+collected 6 items
+
+../tests/test_outputs.py FF.FFF                                          [100%]
+
+=================================== FAILURES ===================================
+___________________ test_invariant_1_bounded_reconciliation ____________________
+
+six_million = (PosixPath('/tmp/pytest-of-root/pytest-0/counterexample0/ledger-6000000.log'), CompletedProcess(args=['java', '-Xmx128...031653800191003\naccount-0005999|1000|500992494|5999|5999999|1700130239|1701564239|8164052324853368219\n', stderr=b''))
+restart_ledger = PosixPath('/tmp/pytest-of-root/pytest-0/restarts0/ledger-10000.log')
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_invariant_1_bounded_recon0')
+
+    def test_invariant_1_bounded_reconciliation(six_million, restart_ledger, tmp_path):
+        """The required 6M reconciliation, and restarted reconciliations, stay bounded."""
+        _, actual, _ = six_million
+        assert actual.returncode == 0, actual.stderr.decode(errors="replace")
+        assert actual.stdout, "the bounded 6M reconciliation produced no report"
+    
+        for seed in range(10):
+            rng = random.Random(seed)
+            output = tmp_path / "killed-report-{}.txt".format(seed)
+            command = [
+                "java",
+                "-Xmx128m",
+                "-cp",
+                APP,
+                "Main",
+                "reconcile",
+                str(restart_ledger),
+            ]
+            with output.open("wb") as stream:
+                process = subprocess.Popen(
+                    command,
+                    cwd=APP,
+                    stdout=stream,
+                    stderr=subprocess.PIPE,
+                )
+                time.sleep(0.002 + rng.random() * 0.01)
+                assert process.poll() is None, "process exited before the seeded kill"
+                process.kill()
+                _, stderr = process.communicate(timeout=5)
+                assert process.returncode != 0
+                assert not output.read_bytes(), "killed run left successful output"
+    
+            restarted = run_main("reconcile", str(restart_ledger), heap="128m", timeout=75)
+            assert restarted.returncode == 0, stderr_details(restarted, seed)
+>           assert restarted.stdout, "restarted reconciliation produced no report"
+E           AssertionError: restarted reconciliation produced no report
+E           assert b''
+E            +  where b'' = CompletedProcess(args=['java', '-Xmx128m', '-cp', '/app', 'Main', 'reconcile', '/tmp/pytest-of-root/pytest-0/restarts0/ledger-10000.log'], returncode=0, stdout=b'', stderr=b'').stdout
+
+/tests/test_outputs.py:141: AssertionError
+___________________ test_invariant_2_exact_reference_report ____________________
+
+six_million = (PosixPath('/tmp/pytest-of-root/pytest-0/counterexample0/ledger-6000000.log'), CompletedProcess(args=['java', '-Xmx128...031653800191003\naccount-0005999|1000|500992494|5999|5999999|1700130239|1701564239|8164052324853368219\n', stderr=b''))
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_invariant_2_exact_referen0')
+
+    def test_invariant_2_exact_reference_report(six_million, tmp_path):
+        """The 6M report, and seeded reports, are byte-identical to the reference."""
+        _, actual, expected = six_million
+>       assert actual.stdout == expected.stdout
+E       AssertionError: assert b'events|6000...709542040|170' == b'events|6000...24853368219\n'
+E         
+E         At index 31 diff: b'2' != b'1'
+E         Use -v to get more diff
+
+/tests/test_outputs.py:152: AssertionError
+______________ test_invariant_4_timestamp_sequence_checksum_order ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_invariant_4_timestamp_seq0')
+
+    def test_invariant_4_timestamp_sequence_checksum_order(tmp_path):
+        """Checksums follow timestamp order, with sequence breaking ties."""
+        for seed in range(10):
+            rng = random.Random(seed)
+            account_count = 2 + seed % 4
+            accounts = ["account-{:03d}".format(index) for index in range(account_count)]
+            events = []
+            sequence = 1
+            for _ in range(30 + 3 * seed):
+                timestamp = 1_700_000_000 + rng.randrange(25)
+                amount = 1 + rng.randrange(1000)
+                events.append((sequence, timestamp, amount, rng.choice(accounts)))
+                sequence += 1
+    
+            # Every seed includes an explicit timestamp tie for one account.
+            events.append((sequence, 1_700_000_500, 17, "account-000"))
+            sequence += 1
+            events.append((sequence, 1_700_000_500, 23, "account-000"))
+    
+            log = tmp_path / "ordering-{}.log".format(seed)
+            log.write_text(
+                "".join(
+                    "{}|{}|{}|{}\n".format(*event) for event in events
+                )
+            )
+            result = run_main("reconcile", str(log), heap="128m", timeout=30)
+            assert result.returncode == 0, stderr_details(result, seed)
+>           assert result.stdout.decode() == expected_report(events), (
+                "seed={} checksum/order mismatch".format(seed)
+            )
+E           AssertionError: seed=0 checksum/order mismatch
+E           assert '' == 'events|32\na...92804866798\n'
+E             
+E             - events|32
+E             - account-000|16|8273|4|32|1700000015|1700000500|995070897225172499
+E             - account-001|16|6937|1|28|1700000012|1700000014|1940464592804866798
+
+/tests/test_outputs.py:227: AssertionError
+_______________________ test_counterexample_exact_replay _______________________
+
+six_million = (PosixPath('/tmp/pytest-of-root/pytest-0/counterexample0/ledger-6000000.log'), CompletedProcess(args=['java', '-Xmx128...031653800191003\naccount-0005999|1000|500992494|5999|5999999|1700130239|1701564239|8164052324853368219\n', stderr=b''))
+
+    def test_counterexample_exact_replay(six_million):
+        """Exact counterexample: 6M events, 128 MiB heap, reference comparison."""
+        log, actual, expected = six_million
+        assert log.is_file()
+        assert actual.returncode == 0, actual.stderr.decode(errors="replace")
+>       assert actual.stdout == expected.stdout
+E       AssertionError: assert b'events|6000...709542040|170' == b'events|6000...24853368219\n'
+E         
+E         At index 31 diff: b'2' != b'1'
+E         Use -v to get more diff
+
+/tests/test_outputs.py:237: AssertionError
+_______________________ test_edge_cases_and_concurrency ________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-0/test_edge_cases_and_concurrenc0')
+
+    def test_edge_cases_and_concurrency(tmp_path):
+        """Exact tiny-input results, rejection, retries, and concurrent reads."""
+        single = [(1, 1_700_000_000, 1, "a")]
+        single_log = tmp_path / "single.log"
+        single_log.write_text("1|1700000000|1|a\n")
+        result = run_main("reconcile", str(single_log), heap="128m", timeout=30)
+        assert result.returncode == 0
+>       assert result.stdout.decode() == expected_report(single)
+E       AssertionError: assert '' == 'events|1\na|...29902592309\n'
+E         
+E         - events|1
+E         - a|1|1|1|1|1700000000|1700000000|751229902592309
+
+/tests/test_outputs.py:247: AssertionError
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED ../tests/test_outputs.py::test_invariant_3_rejects_non_increasing_sequences
+FAILED ../tests/test_outputs.py::test_invariant_1_bounded_reconciliation - As...
+FAILED ../tests/test_outputs.py::test_invariant_2_exact_reference_report - As...
+FAILED ../tests/test_outputs.py::test_invariant_4_timestamp_sequence_checksum_order
+FAILED ../tests/test_outputs.py::test_counterexample_exact_replay - Assertion...
+FAILED ../tests/test_outputs.py::test_edge_cases_and_concurrency - AssertionE...
+========================= 5 failed, 1 passed in 14.57s =========================

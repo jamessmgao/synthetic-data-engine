@@ -1,0 +1,50 @@
+schema_version = "1.4"
+artifacts = []
+
+[task]
+name = "synthetic-data-engine/retry-cache-commit-order-workflow"
+description = "Fix a Python order worker so retries after crashes settle cached fulfillment results without reserving duplicate packages."
+keywords = [ "crash-recovery", "orders", "python", "retry-cache", "sqlite",]
+[[task.authors]]
+name = "synthetic-data-engine task pipeline"
+
+[metadata]
+author_name = "synthetic-data-engine task pipeline"
+difficulty = "hard"
+category = "stateful-systems"
+tags = [ "python", "sqlite", "retry-cache", "crash-recovery", "orders",]
+expert_time_estimate_min = 20.0
+junior_time_estimate_min = 40.0
+
+[metadata.generation]
+author_mode = "agent"
+dial = 2
+job_id = "local-agent-b2-t04-v1-create"
+model = "z-ai/glm-5.1"
+origin = "initial"
+prompt_sha256 = "9bea8a5e45b3fffdeba4cf3d14befc0ea805f368dffe69d47d7dc03377bf820e"
+shape = "fix"
+world_sha256 = "52addbb9881b84937541e9cf06eb53dbf6d1e347904fa8de8e65c40e0d6e8c02"
+
+[verifier]
+timeout_sec = 900.0
+collect = []
+
+[verifier.env]
+
+[agent]
+timeout_sec = 3600.0
+user = "agent"
+
+[environment]
+network_mode = "public"
+build_timeout_sec = 900.0
+os = "linux"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+mcp_servers = []
+
+[environment.env]
+
+[solution.env]

@@ -1,0 +1,61 @@
+{
+  "documents": [
+    {
+      "id": "surface",
+      "template": "{{ macro line }}{{ let amount = quantity }}[{{ output amount }}]{{ end }}{{ let quantity = 2 }}first={{ use line }};{{ let quantity = 7 }}second={{ use line }}",
+      "environment": {
+        "quantity": 0
+      },
+      "expected": {
+        "reference": "first=[2];second=[7]",
+        "bindings": [
+          {
+            "name": "quantity",
+            "value": 2
+          },
+          {
+            "name": "amount",
+            "value": 2
+          },
+          {
+            "name": "quantity",
+            "value": 7
+          },
+          {
+            "name": "amount",
+            "value": 7
+          }
+        ]
+      }
+    },
+    {
+      "id": "nested",
+      "template": "{{ macro label }}{{ if region == 'north' }}{{ let amount = quantity }}[{{ output amount }}]{{ end }}{{ end }}{{ let quantity = 2 }}first={{ use label }};{{ let quantity = 7 }}second={{ use label }}",
+      "environment": {
+        "quantity": 0,
+        "region": "north"
+      },
+      "expected": {
+        "reference": "first=[2];second=[7]",
+        "bindings": [
+          {
+            "name": "quantity",
+            "value": 2
+          },
+          {
+            "name": "amount",
+            "value": 2
+          },
+          {
+            "name": "quantity",
+            "value": 7
+          },
+          {
+            "name": "amount",
+            "value": 7
+          }
+        ]
+      }
+    }
+  ]
+}

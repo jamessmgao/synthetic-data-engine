@@ -8,7 +8,7 @@ The output is RL training environments in the Harbor / Terminal-Bench 2 task for
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
 `glm-5.3-flash` at `reasoning_effort=high`.
 
-![The synthetic-data-engine in 9 slides: hard-problem generation, the architecture, scaling, validation, difficulty, hill-climbing, and why agents fail](docs/slides/synthetic-data-engine-slides.png)
+![The synthetic-data-engine in 9 slides: the short version, the architecture, scaling agentic workloads, validating task quality, engineering genuine difficulty, agentic hill-climbing, why agents fail, the anatomy of agent failures, and results](docs/slides/synthetic-data-engine-slides.png)
 
 *The presentation in 9 slides* (the deck: [docs/slides/synthetic-data-engine-presentation-v5.pptx](docs/slides/synthetic-data-engine-presentation-v5.pptx)).
 
@@ -195,6 +195,7 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 
 **Start here**
 - [docs/slides/](docs/slides/): the presentation (the 9-slide image above, and the deck).
+- [docs/DEMO_EXAMPLES.md](docs/DEMO_EXAMPLES.md): seven example tasks for the demo, with links to the runs in the dashboard.
 - [CHANGELOG.md](CHANGELOG.md): every change, with commits.
 
 **Design**
