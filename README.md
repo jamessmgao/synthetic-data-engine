@@ -128,50 +128,48 @@ make up-agent             # the whole stack in agent mode (or `make up` for one-
 curl -s localhost:8000/healthz                 # status, DB, budget cap and spend
 ```
 
-The stack reads the gateway key from the repo's `.env` (`OPENROUTER_API_KEY`,
-`OPENROUTER_API_BASE`; never committed). Every app container reads `deploy/local.env`.
-Unset means the code's default:
+Runtime settings (`SDE_*`) are listed in [docs/DEPLOY.md](docs/DEPLOY.md), and `deploy/local.env.example` lists every setting the code reads. The stack reads the gateway key from the repo's `.env`, which is never committed.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `SDE_AUTHOR_MODE` | `oneshot` | `agent` = world-first agent authoring; `oneshot` = one glm-5.1 call per draft |
-| `SDE_AUTHORING_IMAGE` | `sde-authoring:dev` | the image agent sessions run in (`make authoring-image`) |
-| `SDE_GENERATION_CONCURRENCY` | 8 | Generation Service claim threads per process |
-| `SDE_DOCKER_SLOTS` | 4 | Docker jobs per machine (validate, world_check, agent runs, agent sessions) |
-| `SDE_AGENT_SLOTS` | `DOCKER_SLOTS − 1` | of those, hour-long agent sessions (world, create/revise from a world) |
-| `SDE_MIN_FREE_MEMORY_PCT` | 20 | below this free memory no Docker work is claimed (the real limit) |
-| `SDE_MAX_CPU_LOAD_PCT` | 90 | above this CPU load no Docker work is claimed |
-| `SDE_DOCKER_CLAIM_SPACING_S` | 0 | minimum seconds between Docker claims on one machine (claim pacing) |
-| `SDE_AGENT_LEASE_TTL_S` | 1800 | lease length for agent jobs (other jobs: `SDE_LEASE_TTL_S`, 600) |
-| `SDE_SUSPECT_MAX_WAIT_S` | 600 | how long a job whose worker died waits for crash isolation before anyone may take it |
-| `SDE_BUDGET_USD` | none | global spend cap; batches also take `budget_usd` |
-| `SDE_MAX_VERSIONS` | 8 | revisions per task before REJECTED exhausted |
-| `SDE_WORLD_HARDNESS` | `warn` | world_check's hardness checks: `off` / `warn` (recorded, not failing) / `enforce` / `strict` |
-| `SDE_LEAK_REVIEW` / `SDE_LEAK_BLIND` | 1 / 1 | the leak review in create and validate / its blind fix prediction |
-| `SDE_CREATE_TIMEOUT_S` / `SDE_WORLD_TIMEOUT_S` | 7200 / 7200 | agent session safety nets (the prompts aim for ~10–12 min); per-call caps `SDE_AUTHORING_LLM_TIMEOUT_S` / `SDE_WORLD_LLM_TIMEOUT_S` are set on AWS |
-| `SDE_DB_POOL_MAX` | 4 | Postgres connections per process (bounded pool) |
-| `SDE_CANCEL_GRACE_SEC` | 30 | how long a cancelled running job may take to stop |
-| `SDE_MOCK_LLM` | unset | load tests only: fake model calls. **Never set for a real batch.** |
+### API
 
-`deploy/local.env.example` lists every setting the code reads; `tests/deploy/test_compose_env.py`
-enforces that.
+Every `/v1` call needs the header `X-Api-Key: <SDE_API_KEY>` (not Bearer). `GET /healthz` needs none.
+Locally the API is `localhost:8000`; on AWS it's the tunnel URL that `make aws-k8s-public` prints.
+Full request and response shapes are in [docs/API.md](docs/API.md); a Claude Code skill for driving
+the API is at [`.claude/skills/sde-pipeline-api/SKILL.md`](.claude/skills/sde-pipeline-api/SKILL.md).
 
-### Submit, watch, cancel
+| Route | Does |
+|---|---|
+| `POST /v1/batches` | N tasks (1–50) under one batch id: `count`, `batch_id`, `area` (a family or a list), `mechanism`, `environment`, `dial` (1–3), `prompt`, `spec`, `budget_usd`, `reuse_worlds` |
+| `POST /v1/tasks` | one task from a `prompt`, a `spec`, a `raw_prompt`, or nothing (sampled; same filters) |
+| `GET /v1/families` | the families and each one's mechanisms, environments, verification methods and shapes |
+| `GET /v1/worlds?area=` | the checked worlds `reuse_worlds` picks from, and how often each was reused |
+| `GET /v1/batches`, `/v1/batches/{id}` | every batch with its outcome counts; one batch and its tasks (`?scope=`) |
+| `GET /v1/batches/{id}/report` | the batch's yield, cost and time (`?scope=`) |
+| `GET /v1/tasks` | tasks with status, stage, version, pass pattern, cost, family, mechanism, environment, batch, accepted version, reused-world flag and each version's origin and pass count (`?status=&since=&scope=`) |
+| `GET /v1/tasks/{id}` | one task: versions, gates, leak reviews, every agent run with the Trace Parser's analysis, jobs, cost, decision |
+| `GET /v1/report` | yield, cost and time over `task_id`s or since a moment (`?scope=`) |
+| `GET /v1/queue` | job counts by type and status, and the jobs running now |
+| `GET /v1/artifacts/{kind}/{key}` (`/file?path=`) | the files of a bundle or world (by sha256), a leak review, or a job's trace (by job id) |
+| `POST /v1/tasks/{id}/cancel`, `POST /v1/batches/{id}/cancel` | stop a task or a batch's undecided tasks (`{"by", "note"}`); idempotent |
+| `GET /healthz` | status, database, spend and the budget cap |
+
+`scope` is `prod` (the default for reports: real runs), `dev` (mock runs and `SDE_DEV_BATCHES`) or
+`all`. Giving your own `batch_id` or `task_id` (`[a-z0-9-]`, up to 64) makes the call idempotent.
 
 ```bash
 H='X-Api-Key: <SDE_API_KEY>'
-curl -s localhost:8000/v1/families -H "$H"                          # areas, mechanisms, environments
+curl -s localhost:8000/v1/families -H "$H"
 curl -s -X POST localhost:8000/v1/batches -H "$H" -H 'Content-Type: application/json' \
-  -d '{"batch_id": "b1", "count": 5, "area": ["database_consistency", "compilers_parsers"], "dial": 3, "budget_usd": 50}'
+  -d '{"batch_id": "b1", "count": 5, "area": ["database_consistency", "compilers_parsers"], "dial": 3}'
+curl -s -X POST localhost:8000/v1/batches -H "$H" -H 'Content-Type: application/json' \
+  -d '{"batch_id": "b2", "count": 4, "area": "distributed_concurrency", "reuse_worlds": true}'   # reuse checked worlds
 curl -s localhost:8000/v1/batches/b1 -H "$H"          # per-task status, version, pass pattern, cost
-curl -s localhost:8000/v1/batches/b1/report -H "$H"   # summary.json + the yield block
-curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H"   # stop the batch: CANCELLED, spend kept
+curl -s localhost:8000/v1/batches/b1/report -H "$H"    # yield, cost, time
+curl -s localhost:8000/v1/queue -H "$H"                # what is running and waiting
+curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H" -H 'Content-Type: application/json' -d '{"note": "stop"}'
 ```
 
-Single tasks: `POST /v1/tasks` takes an empty body (sampled spec), a `prompt`, a `spec` or a
-`raw_prompt`. Then `GET /v1/tasks/{id}` (versions, worlds, gates, mutations) and
-`POST /v1/tasks/{id}/cancel`. `scripts/run_tasks.py --batch b1 --count 10` runs a whole batch: it creates the batch, follows it and writes
-`output/reports/<batch>/summary.json`. Accepted tasks are published to
+`scripts/run_tasks.py --batch b1 --count 10` runs a whole batch: it creates the batch, follows it and writes `output/reports/<batch>/summary.json`. Accepted tasks are published to
 `output/accepted/<task>/` with a `verdict.md` (`evaluation/verdict.py`).
 
 ### Deploy

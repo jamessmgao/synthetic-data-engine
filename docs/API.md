@@ -64,6 +64,7 @@ Request fields:
 | `dial` | both | difficulty dial, 1-3 |
 | `count` | batch | 1-50 tasks |
 | `budget_usd` | batch | the batch's spend cap |
+| `reuse_worlds` | batch | start every task at task authoring on a checked world from the pool (`GET /v1/worlds`), within `area`, instead of building a world |
 | `prompt` | both | a free-text idea (each task's seed) |
 | `spec` | both | an explicit spec (`family`, `dial`, `design`: a list of extra requirements, …) |
 | `raw_prompt` | task | the whole user message, verbatim |
@@ -132,3 +133,43 @@ Or run `curl` inside the cluster:
 ```bash
 python scripts/k8s_aws.py status
 ```
+
+## 7. Every route
+
+All `/v1` routes need `X-Api-Key`; `/healthz` doesn't.
+
+| Route | Query / body | Returns |
+|---|---|---|
+| `GET /healthz` | | status, DB, `budget` (`spent_usd`, `leased_estimate_usd`, `cap_usd`) |
+| `GET /v1/families` | | families with mechanisms, environments, verification methods, shapes |
+| `GET /v1/worlds` | `area` | the pool `reuse_worlds` draws from: `world_sha256`, `family`, `mechanism`, `source_task`, `source_status`, `source_reason`, `reuses` |
+| `POST /v1/tasks` | one of `prompt` / `spec` / `raw_prompt`, filters, `task_id` | `{task_id, created}` (202) |
+| `POST /v1/batches` | `count` 1-50, `batch_id`, `prompt`/`spec`, filters, `budget_usd`, `reuse_worlds` | `{batch_id, task_ids, created}` (202) |
+| `GET /v1/batches` | | every batch: counts by outcome, `created_at`, `dev` |
+| `GET /v1/batches/{id}` | `scope` | the batch's task summaries and counts by status |
+| `GET /v1/batches/{id}/report` | `scope` | `summary.json` and the yield block |
+| `GET /v1/tasks` | `status`, `since`, `scope` | task summaries (below) |
+| `GET /v1/tasks/{id}` | | the task, its versions, agent runs, jobs, `cost_usd`, `decision`, `reason` |
+| `GET /v1/report` | repeated `task_id`, `since`, `scope` | yield, cost, time, `by_family`, `by_mechanism`, pass-count histogram |
+| `GET /v1/queue` | | `counts` by job type and status, and `running` jobs |
+| `GET /v1/artifacts/{kind}/{key}` | | the file list of a bundle or world (sha256), leak review, or a job's trace (job id) |
+| `GET /v1/artifacts/{kind}/{key}/file` | `path` | one file as text (the first 1 MB) |
+| `POST /v1/tasks/{id}/cancel` | `{by, note}` | cancels an undecided task; idempotent |
+| `POST /v1/batches/{id}/cancel` | `{by, note}` | cancels every undecided task of the batch; idempotent |
+
+**`scope`** is `prod` (real work, the default for reports), `dev` (mock runs, with every recorded
+cost 0, and the batches in `SDE_DEV_BATCHES`) or `all`.
+
+**A task summary** (`GET /v1/tasks`) has `id`, `name`, `status`, `reason`, `current_version`,
+`stage`, `pass_pattern` (one mark per agent run: ✓ pass, ✗ fail, · not scored), `cost_usd`, `dev`,
+`created_at`, and the taxonomy and history: `family`, `mechanism`, `environment`, `batch_id`,
+`accepted_version`, `reused_world`, and `versions`: a list of `{n, origin, pass_count}` where
+`origin` is `initial`, `mutation`, `variant`, `easier`, `repair_ambiguity` or `revision`.
+
+**Outcomes of an agent run** in `GET /v1/tasks/{id}`: `VALID_PASS`, `VALID_FAIL`, `INVALID`
+(retried, never scored), `TIMEOUT` (until the Trace Parser rules on it) and `SKIPPED` (not run,
+because the verdict was already certain).
+
+**Reject reasons:** `invalid` (the leak review or a gate failed), `exhausted` (out of band at the
+version cap), `infra_unresolved` (a job kept failing); a cancelled task's reason is
+`cancelled_by_user`.
