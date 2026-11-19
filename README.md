@@ -8,6 +8,10 @@ The output is RL training environments in the Harbor / Terminal-Bench 2 task for
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
 `glm-5.3-flash` at `reasoning_effort=high`.
 
+![The synthetic-data-engine in 9 slides: hard-problem generation, the architecture, scaling, validation, difficulty, hill-climbing, and why agents fail](docs/slides/synthetic-data-engine-slides.png)
+
+*The presentation in 9 slides* (the deck: [docs/slides/synthetic-data-engine-presentation-v5.pptx](docs/slides/synthetic-data-engine-presentation-v5.pptx)).
+
 ## What it does
 
 ### 1. Builds worlds
