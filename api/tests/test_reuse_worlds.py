@@ -222,3 +222,28 @@ def test_the_task_view_shows_the_reused_world_while_create_runs(client, backend)
     # The reuse block names the source world; the version's own world is the variant, not built yet.
     assert d["reuse"]["world_sha256"] == "w1" and d["reuse"]["from_task"] == "src-1"
     assert client.get("/v1/tasks/src-1", headers=AUTH).json()["reuse"] is None
+
+
+def test_the_task_list_carries_taxonomy_and_each_versions_origin_and_score(client, backend):
+    # The UI's analytics (L2): tasks by family / mechanism, and how many versions each needed.
+    from api.tests.test_api import set_task
+    tid = client.post("/v1/tasks", json={"spec": {"family": "database_consistency", "mechanism": "write_skew"}},
+                      headers=AUTH).json()["task_id"]
+    for slot in range(5):  # v1: 5/5, too easy
+        rollout(backend, tid, 1, slot, "VALID_PASS")
+    add_job(backend, tid, 2, "world", f"{tid}-v2-world", outcome="OK", input={"origin": "mutation"})
+    for slot, outcome in enumerate(["VALID_PASS"] * 2 + ["VALID_FAIL"] * 3):  # v2: 2/5, accepted
+        rollout(backend, tid, 2, slot, outcome)
+    set_task(backend, tid, current_version=2, accepted_version=2, status="ACCEPTED", batch_id="b-tax")
+    raw = client.post("/v1/tasks", json={"prompt": "a raw idea"}, headers=AUTH).json()["task_id"]
+    by_id = {t["id"]: t for t in client.get("/v1/tasks", headers=AUTH).json()}
+    t = by_id[tid]
+    assert (t["family"], t["mechanism"], t["batch_id"], t["accepted_version"], t["reused_world"]) == (
+        "database_consistency", "write_skew", "b-tax", 2, False)
+    assert t["environment"] in FAMILIES["database_consistency"].environments
+    assert t["versions"] == [{"n": 1, "origin": "initial", "pass_count": 5},
+                             {"n": 2, "origin": "mutation", "pass_count": 2}]
+    # A raw-prompt task has no taxonomy; the existing fields are unchanged.
+    assert by_id[raw]["family"] is None
+    assert by_id[raw]["versions"] == [{"n": 1, "origin": "initial", "pass_count": None}]
+    assert by_id[raw]["pass_pattern"] == "·····" and "cost_usd" in by_id[raw]

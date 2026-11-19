@@ -16,17 +16,26 @@ The trial's label is SDE_DOCKER_LABEL (`sde.job=<job id>`).
   DOCKER_HOST / DOCKER_CONTEXT, and `compose` commands that stop or remove anything
   not labeled.
 Read-only commands that touch nothing of others (version, info, images, pull, ...) pass.
+
+Image names are per trial: the trials sharing a daemon (three authoring sessions per
+generation pod) all build `sde-world-dev` because the prompt says so, and each then ran
+whichever build finished last. So `build -t X` and `tag ... X` name `X-<job id>`, and an
+image reference (the image of `run` / `create`, the source of `tag`, `inspect`, `rmi`,
+`history`, `save`) is read as `X-<job id>` when this trial has built one; anything else (a
+base image like python:3.12) is left as written.
 Residual risk: the socket itself is still reachable (curl --unix-socket); a
 label-scoped socket proxy is the stronger fix.
 """
 
 import json
 import os
+import re
 import subprocess
 import sys
 
 REAL = os.environ.get("SDE_DOCKER_REAL", "/opt/sde/libexec/docker.real")
 LABEL = os.environ.get("SDE_DOCKER_LABEL", "").strip()  # "sde.job=<job id>"
+SUFFIX = re.sub(r"[^a-z0-9_.-]+", "-", LABEL.partition("=")[2].lower()).strip("-.")[:80]
 
 # Options that take a value, per command (others are flags). update: every option does.
 VALUE_FLAGS = {
@@ -43,13 +52,31 @@ VALUE_FLAGS = {
     "rmi": set(), "rm": set(), "pause": set(), "unpause": set(), "wait": set(), "top": set(),
     "port": set(), "diff": set(), "cp": set(), "rename": set(), "network rm": set(), "volume rm": set(),
 }
+# `run` / `create` options that take a value (the image is the first positional after them).
+# An option missing here only means its value is tried as an image name, which is left alone
+# unless this trial built an image by that name.
+RUN_VALUE_FLAGS = {
+    "-a", "--attach", "--add-host", "--cap-add", "--cap-drop", "--cgroup-parent", "--cidfile",
+    "--cpu-period", "--cpu-quota", "--cpu-shares", "-c", "--cpus", "--cpuset-cpus", "--detach-keys",
+    "--device", "--dns", "--dns-option", "--dns-search", "--entrypoint", "-e", "--env", "--env-file",
+    "--expose", "--gpus", "--group-add", "--health-cmd", "--health-interval", "--health-retries",
+    "--health-timeout", "-h", "--hostname", "--ip", "--ipc", "-l", "--label", "--label-file", "--link",
+    "--log-driver", "--log-opt", "-m", "--memory", "--memory-swap", "--mount", "--name", "--network",
+    "--net", "--network-alias", "--pid", "--platform", "-p", "--publish", "--pull", "--restart",
+    "--runtime", "--security-opt", "--shm-size", "--stop-signal", "--stop-timeout", "--tmpfs",
+    "-u", "--user", "--ulimit", "--userns", "-v", "--volume", "--volumes-from", "-w", "--workdir",
+}
+IMAGE_REF_VALUE_FLAGS = {"inspect": VALUE_FLAGS["inspect"], "rmi": set(), "history": {"--format"},
+                         "save": {"-o", "--output"}}
 FIRST_ONLY = {"exec", "attach", "top", "port", "rename", "commit"}  # the rest of the args are not targets
 TARGETED = set(VALUE_FLAGS) | {"update"}
 # `docker container <x>` / `docker image <x>` spellings of the same commands.
 ALIASES = {("container", "ls"): "ps", ("container", "list"): "ps", ("container", "ps"): "ps",
            ("container", "run"): "run", ("container", "create"): "create", ("image", "build"): "build",
            ("buildx", "build"): "build", ("builder", "build"): "build", ("image", "rm"): "rmi",
-           ("image", "remove"): "rmi", ("container", "rm"): "rm", ("container", "remove"): "rm"}
+           ("image", "remove"): "rmi", ("container", "rm"): "rm", ("container", "remove"): "rm",
+           ("image", "tag"): "tag", ("image", "inspect"): "inspect", ("image", "history"): "history",
+           ("image", "save"): "save"}
 for verb in ("kill", "stop", "restart", "pause", "unpause", "exec", "cp", "logs", "inspect", "update",
              "start", "attach", "wait", "top", "port", "rename", "commit", "diff", "export"):
     ALIASES[("container", verb)] = verb
@@ -91,6 +118,63 @@ def owned(target: str, kind: str = "container") -> bool:
     value = LABEL.partition("=")[2]
     exists, got = label_of(target, kind)
     return exists and got == value
+
+
+def scoped(name: str) -> str:
+    """`name` with this trial's suffix on its repository part: sde-world-dev -> sde-world-dev-<job>,
+    app:1 -> app-<job>:1. A digest reference (`@sha256:...`) is left alone."""
+    if not SUFFIX or "@" in name:
+        return name
+    head, sep, tag = name.rpartition(":")
+    repo, tag = (head, sep + tag) if sep and "/" not in tag else (name, "")
+    return name if repo.endswith("-" + SUFFIX) else f"{repo}-{SUFFIX}{tag}"
+
+
+def resolve(name: str) -> str:
+    """The trial's own image for a reference, if it built one under that name; else as written."""
+    s = scoped(name)
+    return s if s != name and real(["inspect", "--type", "image", "-f", "{{.Id}}", s]).returncode == 0 else name
+
+
+def positionals(args: list[str], values: set[str]) -> list[int]:
+    """Indices of the positional args (options in `values` take the next arg)."""
+    out, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            return out + list(range(i + 1, len(args)))
+        if a.startswith("-") and a != "-":
+            i += 2 if a in values and "=" not in a else 1
+            continue
+        out.append(i)
+        i += 1
+    return out
+
+
+def scope_images(cmd: str, args: list[str]) -> list[str]:
+    """`args` with image names made per trial (see the module docstring)."""
+    args = list(args)
+    if cmd == "build":
+        for k, a in enumerate(args):
+            if a in ("-t", "--tag") and k + 1 < len(args):
+                args[k + 1] = scoped(args[k + 1])
+            elif a.startswith(("--tag=", "-t=")):
+                flag, _, v = a.partition("=")
+                args[k] = f"{flag}={scoped(v)}"
+    elif cmd in ("run", "create"):
+        pos = positionals(args, RUN_VALUE_FLAGS)
+        if pos:
+            args[pos[0]] = resolve(args[pos[0]])
+    elif cmd == "tag":
+        pos = positionals(args, set())
+        if len(pos) >= 2:
+            args[pos[0]], args[pos[1]] = resolve(args[pos[0]]), scoped(args[pos[1]])
+    elif cmd in IMAGE_REF_VALUE_FLAGS:
+        for k in positionals(args, IMAGE_REF_VALUE_FLAGS[cmd]):
+            if cmd == "inspect" and label_of(args[k], "container")[0]:
+                continue  # a container keeps its name
+            args[k] = resolve(args[k])
+    return args
 
 
 def split(cmd: str, args: list[str]) -> tuple[list[str], list[str]]:
@@ -169,6 +253,7 @@ def main(argv: list[str]) -> None:
         if cmd in TARGETED or cmd in ("ps", "compose"):
             refuse("SDE_DOCKER_LABEL is not set, so ownership can't be checked")
         os.execv(REAL, [REAL, *argv])
+    args = scope_images(cmd, args)
 
     if cmd == "ps":
         out = [*glob, "ps", "--filter", f"label={LABEL}", *args]
@@ -200,6 +285,8 @@ def main(argv: list[str]) -> None:
         if bad:
             refuse(f"`docker compose {args[sub]}` would touch containers this trial didn't start: {bad[:5]}")
         out = [*glob, "compose", *args]
+    elif cmd in ("tag", "history", "save"):
+        out = [*glob, cmd, *args]
     else:
         out = argv
     os.execv(REAL, [REAL, *out])

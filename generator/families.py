@@ -62,9 +62,15 @@ FAMILY_BRIEFS: dict[str, dict[str, str]] = {
                  "version of the algorithm (no --reference / --audit mode, no plan_reference(), no exact "
                  "fallback behind a flag): in the pass reviews of 2026-11-18 agents replaced the planner with "
                  "the shipped reference in one line",
-        "counterexample": "a concrete small input with the structure or history the defect needs (not one a "
-                          "random generator would hit), on which the exact algorithm returns a wrong or "
-                          "suboptimal answer, checked against a brute-force reference solver on that input",
+        "counterexample": "a concrete input with the structure or history the defect needs, on which the exact "
+                          "algorithm returns a wrong or suboptimal answer, checked against a brute-force reference "
+                          "solver on that input. It needs a structure no small random input has: at least 5 "
+                          "elements arranged a specific way (a tie across stages, an edit history, a window "
+                          "straddling the boundary), never the 2-3 element case you find first (in the worlds of "
+                          "2026-11-18, 3 of 5 had one, and a fuzzer finds it in seconds). Check it: run the shipped "
+                          "and the fixed system on 200 seeded random inputs of at most 4 elements; they must agree "
+                          "on every one (if one differs, rework the defect so it needs more structure), and record "
+                          "the check in world.json as counterexample.random_small_agree (seed, count, result)",
         "scaffold": "sde_repro.py, with a small brute-force reference solver as the invariant check on the "
                     "counterexample input; the reference lives only in the world's check and the task's hidden "
                     "tests, never in the system the agent works on",
@@ -177,7 +183,8 @@ def domain_line(spec: dict) -> str:
     label = spec.get("domain_label") or (spec.get("domain") or "").replace("_", " ")
     if not label:
         return ""
-    return f"**Build a {label} system**; the defect lives in its own logic."
+    return (f"**The system is a {label}**; the defect lives in its own logic. No accounts, balances, "
+            "payments or refunds unless that domain has them.")
 
 
 def mechanism_line(spec: dict) -> str:

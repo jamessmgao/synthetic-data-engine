@@ -13,6 +13,7 @@ What the services write and these read (PRD §5.1):
   - analyze (Trace Parser): `result.action` and its review cost.
 """
 
+import json
 import os
 import re
 from collections import Counter, defaultdict
@@ -115,9 +116,30 @@ def list_tasks(store: SqlStore, status: str | None = None, since: str | None = N
             "cost_usd": _sum_cost(jobs_by_task[t["id"]]),
             "dev": _is_dev(t, jobs_by_task[t["id"]]),
             "created_at": t["created_at"],
+            **_taxonomy_summary(t, jobs_by_task[t["id"]], n_runs),
         }
         for t in tasks
     ]
+
+
+def _taxonomy_summary(task: dict, jobs: list[dict], n_runs: int) -> dict:
+    """The list view's taxonomy and revision history (the UI's analytics): the spec's family,
+    mechanism and environment, the batch, the accepted version, whether the task reused a
+    world, and per version its origin and pass count (as _version_view has them)."""
+    slot = task.get("slot") or {}
+    if isinstance(slot, str):
+        slot = json.loads(slot or "{}")
+    versions = []
+    for n in range(1, task["current_version"] + 1):
+        vjobs = [j for j in jobs if j["version"] == n]
+        scored = _scored(jobs, n)
+        versions.append({"n": n, "origin": version_input(vjobs).get("origin"),
+                         "pass_count": (sum(o == Outcome.VALID_PASS for o in scored.values())
+                                        if len(scored) == n_runs else None)})
+    return {"family": slot.get("family"), "mechanism": slot.get("mechanism"),
+            "environment": slot.get("environment"), "batch_id": task.get("batch_id"),
+            "accepted_version": task.get("accepted_version"), "reused_world": "reused_world" in slot,
+            "versions": versions}
 
 
 def _version_view(task: dict, version: int, jobs: list[dict], n_runs: int) -> dict:

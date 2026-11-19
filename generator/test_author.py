@@ -258,7 +258,17 @@ def test_world_prompts_say_build_first_and_never_finish_on_a_failing_check():
         return " ".join((author.PROMPTS / name).read_text().split())
 
     world = text("world.md")
-    assert "docker build -t sde-world-dev environment/" in world and "build again after every module" in world
+    # A per-job tag: the sessions on one generation pod share a Docker daemon, and a shared
+    # "sde-world-dev" tag let concurrent worlds overwrite each other's image (aws-w8-l1-new t01/t02/t05).
+    assert 'docker build -q -t "sde-dev-$${SDE_DOCKER_LABEL#sde.job=}" environment/ && echo BUILD_OK' in world
+    assert "sde-world-dev" not in world and "build again after every module" in world
+    rendered = author.render_world_instruction({"family": "database_consistency"})
+    # The same per-job tag as world_mutation.md / world_variant.md (L4).
+    assert 'docker build -q -t "sde-dev-${SDE_DOCKER_LABEL#sde.job=}" environment/' in rendered
+    # The 2026-11-19 trace reviews (L1-L4): scripts as files, no argument entrypoint, no checker source.
+    assert "never pipe a script or heredoc into `docker exec`/`run`" in world
+    assert "no ENTRYPOINT/CMD that takes arguments" in world and "don't read its source" in world
+    assert "patch code with a script file" in world
     assert "`COPY a b c dest` needs `dest/`" in world
     for name in ("world.md", "world_mutation.md"):
         assert "Never finish with a failing or skipped check" in text(name), name

@@ -122,6 +122,13 @@ class TaskCreated(BaseModel):
     created: bool  # False when this exact task already existed
 
 
+class VersionSummary(BaseModel):
+    """One version in the list view: how it was made and how it scored."""
+    n: int
+    origin: str | None  # initial | mutation | easier | repair_ambiguity | variant | …
+    pass_count: int | None  # passes, once all agent runs are scored
+
+
 class TaskSummary(BaseModel):
     id: str
     name: str | None
@@ -134,3 +141,11 @@ class TaskSummary(BaseModel):
     cost_usd: float | None
     dev: bool = False  # recorded cost exactly 0 (mock runs); left out of reports by default
     created_at: str
+    # Taxonomy and revision history (the UI's analytics); None on raw-prompt / pre-v2 tasks.
+    family: str | None = None
+    mechanism: str | None = None
+    environment: str | None = None
+    batch_id: str | None = None
+    accepted_version: int | None = None
+    reused_world: bool = False
+    versions: list[VersionSummary] = []

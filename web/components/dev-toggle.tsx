@@ -45,15 +45,8 @@ export function useScope(): [Scope, (v: Scope) => void] {
 // The query string for a scoped API path.
 export const scopeQuery = (scope: Scope) => `?scope=${scope}`;
 
-export function ScopeToggle({
-  scope,
-  onChange,
-  other,
-}: {
-  scope: Scope;
-  onChange: (v: Scope) => void;
-  other?: number; // tasks the other view has
-}) {
+// The switch itself lives in the nav, on every page; every page reads the same stored value.
+export function ScopeToggle({ scope, onChange }: { scope: Scope; onChange: (v: Scope) => void }) {
   const option = (value: Scope, label: string) => (
     <button
       type="button"
@@ -65,16 +58,19 @@ export function ScopeToggle({
     </button>
   );
   return (
-    <div className="flex items-center gap-2">
-      <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5" role="group" aria-label="Which tasks this page counts">
-        {option("prod", "Prod")}
-        {option("dev", "Dev")}
-      </div>
-      {other ? (
-        <span className="text-xs text-muted-foreground">
-          {other} task{other === 1 ? "" : "s"} in the {scope === "prod" ? "Dev" : "Prod"} view
-        </span>
-      ) : null}
+    <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5" role="group" aria-label="Which tasks every page counts">
+      {option("prod", "Prod")}
+      {option("dev", "Dev")}
     </div>
+  );
+}
+
+// A page's note on what the other view has, beside its title.
+export function OtherScopeNote({ scope, other }: { scope: Scope; other?: number }) {
+  if (!other) return null;
+  return (
+    <span className="text-xs text-muted-foreground">
+      {other} task{other === 1 ? "" : "s"} in the {scope === "prod" ? "Dev" : "Prod"} view
+    </span>
   );
 }

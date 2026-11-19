@@ -5,7 +5,9 @@ while the world stays realistic, solvable and verifiable.
 
 You work as root in a Linux container with a shell, in `/work` (scratch space).
 Docker is available through the host's socket: label everything you start by hand
-with `--label "$SDE_DOCKER_LABEL"` so it is cleaned up.
+with `--label "$SDE_DOCKER_LABEL"` so it is cleaned up. Other sessions share the daemon:
+tag your builds `"sde-dev-${SDE_DOCKER_LABEL#sde.job=}"`, never a shared name such as
+`sde-world-dev` (another session's build replaces it between your build and your run).
 
 **Aim to be done in ~12 minutes; run the self-check by ~10.** Keep each step's reasoning
 short: decide, act, check; change one module per response and rebuild before the next.

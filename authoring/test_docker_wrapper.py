@@ -53,7 +53,8 @@ def docker(tmp_path):
         e.pop("DOCKER_HOST", None) if "DOCKER_HOST" not in env else None
         p = subprocess.run([sys.executable, str(WRAPPER), *args], capture_output=True, text=True, env=e)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
-        final = [c for c in calls if c[:1] != ["inspect"] and "-sde" not in c]
+        # the wrapper's own lookups (inspect -f ..., compose ps -sde) aren't the command it ran
+        final = [c for c in calls if not (c[:1] == ["inspect"] and "-f" in c) and "-sde" not in c]
         return p.returncode, p.stderr, final[-1] if final else None
     return run
 
@@ -94,7 +95,7 @@ def test_its_own_objects_are_allowed(docker, args):
 
 def test_run_create_and_build_get_the_trials_label(docker):
     assert docker("run", "--rm", "img", "true")[2] == ["run", "--label", LABEL, "--rm", "img", "true"]
-    assert docker("build", "-t", "w", ".")[2] == ["build", "--label", LABEL, "-t", "w", "."]
+    assert docker("build", "-t", "w", ".")[2] == ["build", "--label", LABEL, "-t", "w-t1-v1-world", "."]
     assert docker("network", "create", "n1")[2] == ["network", "create", "--label", LABEL, "n1"]
     already = docker("run", "--label", LABEL, "img")[2]
     assert already.count(LABEL) == 1
@@ -130,3 +131,46 @@ def test_read_only_commands_pass_and_without_a_label_targets_are_refused(docker)
     code, err, _ = docker("kill", "mine", label="")
     assert code == 1 and "SDE_DOCKER_LABEL is not set" in err
     assert docker("ps", label="")[0] == 1
+
+
+# Two trials sharing a daemon both build `sde-world-dev` (the world prompt's name); each must
+# get its own image back, and base images must be left alone.
+SCOPED = {**OBJECTS,
+          "sde-world-dev-t1-v1-world": {"kind": "image", "labels": {"sde.job": "t1-v1-world"}},
+          "sde-world-dev-t2-v1-world": {"kind": "image", "labels": {"sde.job": "t2-v1-world"}}}
+
+
+@pytest.mark.parametrize("args,expect", [
+    (("build", "-t", "sde-world-dev", "environment/"), ["-t", "sde-world-dev-t1-v1-world", "environment/"]),
+    (("build", "--tag=app:1", "."), ["--tag=app-t1-v1-world:1", "."]),
+    (("buildx", "build", "-t", "localhost:5000/app", "."), ["-t", "localhost:5000/app-t1-v1-world", "."]),
+    (("build", "-t", "sde-world-dev-t1-v1-world", "."), ["-t", "sde-world-dev-t1-v1-world", "."]),  # no double suffix
+])
+def test_build_names_are_per_trial(docker, args, expect):
+    code, err, sent = docker(*args)
+    assert code == 0, err
+    assert sent[-len(expect):] == expect
+
+
+@pytest.mark.parametrize("args,expect", [
+    (("run", "--rm", "-e", "X=1", "-v", "vol:/data", "sde-world-dev", "sh", "-c", "ls /app"),
+     ["run", "--label", LABEL, "--rm", "-e", "X=1", "-v", "vol:/data", "sde-world-dev-t1-v1-world", "sh", "-c", "ls /app"]),
+    (("create", "--name", "c1", "sde-world-dev", "sleep", "300"),
+     ["create", "--label", LABEL, "--name", "c1", "sde-world-dev-t1-v1-world", "sleep", "300"]),
+    (("run", "-it", "--rm", "python:3.12", "python"), ["run", "--label", LABEL, "-it", "--rm", "python:3.12", "python"]),
+    (("tag", "sde-world-dev", "snap"), ["tag", "sde-world-dev-t1-v1-world", "snap-t1-v1-world"]),
+    (("image", "inspect", "sde-world-dev"), ["inspect", "sde-world-dev-t1-v1-world"]),
+    (("rmi", "sde-world-dev"), ["rmi", "sde-world-dev-t1-v1-world"]),
+])
+def test_image_references_resolve_to_the_trials_own_build(docker, args, expect):
+    code, err, sent = docker(*args, objects=SCOPED)
+    assert code == 0, err
+    assert sent == expect
+
+
+def test_another_trials_build_is_never_used(docker):
+    """Trial t3 has built nothing yet: `sde-world-dev` must not resolve to t1's or t2's image."""
+    code, _, sent = docker("run", "--rm", "sde-world-dev", "true", label="sde.job=t3-v1-world", objects=SCOPED)
+    assert code == 0 and sent[-2:] == ["sde-world-dev", "true"]
+    code, _, sent = docker("run", "--rm", "sde-world-dev", "true", label="sde.job=t2-v1-world", objects=SCOPED)
+    assert sent[-2:] == ["sde-world-dev-t2-v1-world", "true"]

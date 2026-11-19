@@ -6,16 +6,19 @@ import { useIsFetching } from "@tanstack/react-query";
 import { cn } from "cn";
 import { useApi } from "@/lib/api";
 import { usd } from "@/lib/format";
+import { ScopeToggle, useScope } from "@/components/dev-toggle";
 import type { Health } from "@/lib/types";
 
 const LINKS = [
   { href: "/", label: "Overview" },
   { href: "/batches", label: "Batches" },
   { href: "/tasks", label: "Tasks" },
+  { href: "/analytics", label: "Analytics" },
 ];
 
 export function Nav() {
   const pathname = usePathname();
+  const [scope, setScope] = useScope();
   const health = useApi<Health>("/healthz");
   const fetching = useIsFetching();
   const budget = health.data?.budget;
@@ -41,6 +44,7 @@ export function Nav() {
           ))}
         </nav>
         <div className="ml-auto flex items-center gap-4 text-sm text-muted-foreground">
+          <ScopeToggle scope={scope} onChange={setScope} />
           {budget && (
             <span title="Pipeline spend (and the global cap, if one is set)">
               spent {usd(budget.spent_usd)}

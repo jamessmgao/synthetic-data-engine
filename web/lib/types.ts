@@ -40,6 +40,22 @@ export interface TaskSummary {
   cost_usd: number | null;
   dev: boolean; // recorded cost exactly 0: a mock run (load test, prodmock)
   created_at: string;
+  // Taxonomy and revision history (api/service.py list_tasks); null on tasks from before the
+  // fields existed or on raw-prompt tasks.
+  family?: string | null;
+  mechanism?: string | null;
+  environment?: string | null;
+  batch_id?: string | null;
+  accepted_version?: number | null;
+  reused_world?: boolean;
+  versions?: VersionSummary[];
+}
+
+// One version of a task: how it was made and how it scored.
+export interface VersionSummary {
+  n: number;
+  origin: string | null; // initial | mutation | easier | repair_ambiguity | …
+  pass_count: number | null; // passes out of the scored agent runs, once all are scored
 }
 
 export interface Batch {
@@ -56,6 +72,7 @@ export interface Breakdown {
   learnable_rate: number | null;
   valid_rollouts: number;
   pass_rate: number | null;
+  cost_usd?: { authoring: number | null; evaluation: number | null; authoring_per_task: number | null };
 }
 
 export interface Report {

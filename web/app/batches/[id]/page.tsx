@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScopeToggle, scopeQuery, useScope } from "@/components/dev-toggle";
+import { OtherScopeNote, scopeQuery, useScope } from "@/components/dev-toggle";
 import { ReportView } from "@/components/report-view";
 import { QueryState } from "@/components/status";
 import { TasksTable } from "@/components/tasks-table";
@@ -13,7 +13,7 @@ import type { Batch, Report } from "@/lib/types";
 export default function BatchPage() {
   const { id } = useParams<{ id: string }>();
   const path = `/v1/batches/${encodeURIComponent(id)}`;
-  const [scope, setScope] = useScope();
+  const [scope] = useScope();
   const batch = useApi<Batch>(`${path}${scopeQuery(scope)}`);
   const report = useApi<Report>(`${path}/report${scopeQuery(scope)}`);
 
@@ -26,7 +26,7 @@ export default function BatchPage() {
           </Link>
           <h1 className="font-mono text-xl font-semibold">{id}</h1>
         </div>
-        <ScopeToggle scope={scope} onChange={setScope} other={report.data?.other_scope} />
+        <OtherScopeNote scope={scope} other={report.data?.other_scope} />
       </div>
       <QueryState error={report.error} isLoading={report.isLoading} />
       {report.data && <ReportView report={report.data} />}

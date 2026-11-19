@@ -31,12 +31,11 @@ $world_summary
 
 **Tests** (`test_outputs`, `test_support_files`) check the invariants as properties over many
 executions:
-1. A dedicated test per invariant, named after it and marked `# invariant: N` (its number
-   above). It reads only observable state (command output, inspect JSON, exposed files)
+1. A dedicated test per invariant, named after it and marked `# invariant: N`. It reads only observable state (command output, inspect JSON, exposed files)
    and asserts the invariant after every step of at least 10 seeds of random
    schedules: random operations, the process killed (SIGKILL) and restarted,
    retries, and concurrency where the world allows. Seeds are fixed:
-   `rng = random.Random(seed)` for `seed in range(10)`; never unseeded `random.*` or a clock seed.
+   `rng = random.Random(seed)` for `seed in range(10)`; never unseeded `random.*`.
 2. The exact counterexample as one case, replayed as `repro.sh` does it (from the image's
    `WORKDIR`, by absolute `/app/...` paths).
 3. Regression and edge cases for what must keep working, with exact expected values.
@@ -46,9 +45,9 @@ Make the suite comprehensive (input shapes, edge cases, restarts, every command)
 for the obvious case only fails. Every assertion traces to the request's plain meaning or to behavior the environment
 documents (README, `--help`), never to a detail neither states.
 Assert outcomes; pin one answer among equally valid ones only if the tie-break is stated.
-Each test starts from clean state it creates (fresh data dir, DB, state files, service; a DB:
-temp dir, free port, `pg_ctl -w start`): the agent's experiments leave files, rows and a stale
-`postmaster.pid` behind.
+Each test starts from clean state it creates (fresh data dir, DB, state files; a service or DB
+on a free port it picks, else stop a leftover listener; `pg_ctl -w start`): the agent's
+experiments leave files, rows, servers and a stale `postmaster.pid` behind.
 Drive the system only through its interface (never import internals or write its
 tables or state files: a solver may change their schema); crashes come from the
 test, not a hook in the system; together the tests reject the wrong fix; the suite runs in
