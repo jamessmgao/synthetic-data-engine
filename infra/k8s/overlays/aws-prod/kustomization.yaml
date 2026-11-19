@@ -51,7 +51,7 @@ configMapGenerator:
 replicas:
   # One per node across 17 (the spread), 3 authoring sessions each (generation.yaml): 51.
   # Needs the 17 runners joined and RDS db.t4g.medium (micro's ~80 connections fit only 10).
-  - {name: generation, count: 11}  # 33 authoring sessions (3 each): authoring is model-bound, ~1.3 GB a pod, little CPU
+  - {name: generation, count: 14}  # 42 authoring sessions (3 each; the user OK 2026-11-19, was 11): authoring is model-bound, ~1.3 GB a pod, little CPU
   - {name: validate, count: 4}  # the user's call, 2026-11-18: more validation concurrency
   # executor: KEDA, 1-10 in production (the base's ScaledObject says 1-4; patched below).
 patches:

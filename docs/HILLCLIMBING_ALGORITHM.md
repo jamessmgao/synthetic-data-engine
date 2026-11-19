@@ -130,7 +130,7 @@ the dashboard's Prod numbers and of the yield.
 ## Infrastructure
 
 - The cluster (2026-11-18): 17 EC2 instances (9 on-demand, 8 Spot), RDS db.t4g.medium (~400
-  connections); generation 11 pods x 3 authoring sessions; executors 2-10 pods (KEDA) x 3 agent
+  connections); generation 14 pods x 3 authoring sessions (11 until 2026-11-19); executors 2-10 pods (KEDA) x 3 agent
   runs; validate 4. Spot nodes are drained on their interruption notice (the termination
   handler), and a worker hands its jobs back at once.
 - Monitor the cluster (make aws-k8s-status, make aws-k8s-logs SVC=..., /healthz): pod restarts,

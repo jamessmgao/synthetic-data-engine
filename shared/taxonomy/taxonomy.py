@@ -331,8 +331,12 @@ def describe(spec: dict) -> dict:
 
 
 def domains_for(family: str) -> tuple[str, ...]:
-    """The domains a family's worlds are sampled from."""
-    return tuple(COMPILER_DOMAINS) if family == "compilers_parsers" else tuple(APP_DOMAINS)
+    """The domains a family's worlds are sampled from (no ledger for performance: the user's ask)."""
+    if family == "compilers_parsers":
+        return tuple(COMPILER_DOMAINS)
+    if family == "performance_resources":
+        return tuple(d for d in APP_DOMAINS if d != "payment_ledger")
+    return tuple(APP_DOMAINS)
 
 
 SHAPES = ("fix", "implement", "optimize", "migrate")
@@ -456,7 +460,11 @@ def sample_spec_v2(existing: list[dict], area: str | list[str] | None = None, me
     family = min(eligible, key=lambda f: (used["family"][f] / FAMILY_WEIGHTS.get(f, 1.0), rng.random()))
     in_family = [c for c in combos if c[0] == family]
     fresh = [c for c in in_family if c not in taken] or in_family
-    _, mech, env = min(fresh, key=lambda c: (used["mechanism"][c[1]] + used["environment"][c[2]], rng.random()))
+    # The environment spreads within the family over the specs with a domain (this taxonomy's: the
+    # live window and this batch's own picks), not over every task ever: counted over all history,
+    # Python's long lead made every draw Go (L2's 5 distributed) or Java (L4's 5 perf).
+    env_used = Counter(s.get("environment") for s in existing if s.get("family") == family and "domain" in s)
+    _, mech, env = min(fresh, key=lambda c: (used["mechanism"][c[1]], env_used[c[2]], rng.random()))
     # The domain: given (a variant keeps its world's), else the family's least-used one.
     if domain is None:
         domain = min(domains_for(family), key=lambda d: (used["domain"][d], rng.random()))

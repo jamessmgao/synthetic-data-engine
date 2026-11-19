@@ -1,7 +1,164 @@
-# Load test: finding the bottleneck with mock LLM calls
+# Load test: finding the bottleneck, first with mock LLM calls, then in production
 
-Status: **first round run (2026-11-18), stopped by the user after run A.** Owner: infrastructure
-session. Results are in §6. Recommendations and follow-ups are in §7.
+## First → now: how the system evolved (2026-11-17 → 2026-11-19)
+
+Each row is one optimization (or a group of them), with the number measured before it and the
+number measured after. The sources are this doc, docs/CAPACITY.md, docs/ITERATION_LOG.md and the
+job records.
+
+**How the job-record rows were computed** (validate, the queue waits, create and rollout times):
+they are p50 / p90 over the job records of decided tasks (n = 15-130 per row), split by when the
+job was created:
+- **early**: before 12:00 UTC on 11-18;
+- **day**: 12:00-20:00 UTC;
+- **night**: from 20:00 UTC.
+
+A job's `started_at` keeps its first start, so restarted jobs overstate their run time.
+
+| Area | Optimization | First | Now | Change |
+|---|---|---|---|---|
+| **Cluster** | 8 Compose runners → 17 EC2 instances on K3s (9 on-demand + 8 Spot) | 16 vCPU | **34 vCPU** | 2.1x |
+| Database | db.t4g.micro → db.t4g.medium; bounded pools + a heartbeat pool (`5f86caa`) | connections exhausted ("remaining connection slots are reserved"), then 66 of 79 held (84%) | **88 of 400 (22%)**, 0 pool waits, 0 errors | 5x headroom |
+| Authoring capacity | generation on every runner (`4c7be83`), then 11 pods × 3 sessions | 2 sessions (control runner only); create jobs queued a median **21 min** | **33 sessions** | 16x |
+| Authoring queue wait (create) | the capacity above, plus drains | day: p50 124 s, **p90 2,589 s** (43 min) | night: p50 0 s, **p90 12 s** | p90 216x lower |
+| World queue wait | the same | day: **p90 3,646 s** (61 min) | night: **p90 52 s** | p90 70x lower |
+| Validate | the author's stamped self-checks are adopted (`ab466d2`) | early: run **p50 127 s**; round 1 (mock): ~260 s unloaded, 363 s under a burst | night: run **p50 3 s, p90 5 s** | ~40x faster |
+| Claim bursts | claim pacing 10 s (`41b25be`), CPU guard (`b31ff23`) | validate p50 363 s, rollout queue wait p50 177 s (mock, 30-task burst) | validate **263 s**, rollout wait **91 s** | 28% and 49% lower |
+| Model stalls in authoring | call timeout 600 s / 1200 s for worlds (`09821ad`) | litellm default 6,000 s; one world spent **32.5 of 61 min** stalled (one call 1,214 s for 310 tokens) | a stalled call ends at 600 s (1,200 s for a world) | worst stall 10x shorter |
+| Polling in authoring | 60 s waits, not 10 s polls (iteration 1 prompts) | 36% of agent steps empty; **46%** of prompt tokens on them | **28%** of steps, **29%** of prompt tokens | 37% fewer polling tokens |
+| Abandoned jobs | suspect isolation capped at `SDE_SUSPECT_MAX_WAIT_S` (`f743fd1`); release at shutdown | an abandoned create waited **~80 min**, a rollout hours | another process takes it after **≤600 s**; a shutdown hands it back **at once** | ≥8x faster recovery |
+| Deploys and scale-downs | drains (`de83f9c`, `688012f`), release refund (`84cf067`), Spot hand-back (`3b7a2b7`) | a deploy killed every running session: e.g. all 5 aws-w1-l3 worlds restarted from scratch at 20:55; scale-downs dead-lettered healthy runs | sessions finish (up to 60 min), agent runs up to 3,700 s; 2 scale-downs, **0** re-claims, **0** new dead letters | no lost work |
+| Executor placement | spread + CPU requests the scheduler can fit (`3055a73`, `70878d6`, `5cd4b52`) | executors stacked at load 4-6 on 2 vCPU; then a 1,800m request: pods **Pending 11 min** ("0/17 nodes: Insufficient cpu") | 500m + 400m dind: pods schedule | unblocked |
+| Agent runs per verdict | early stopping (`af4cdb8`) | always 5 runs | a certain verdict stops early: aws-w1-l3-t03 was accepted after **3** | up to 40% fewer runs on such versions |
+| Agent-run reliability | classify, heartbeats that survive store errors, the terminal-close fix | INVALID from reclaims (`FileNotFoundError: 'ps'`), lapsed heartbeats, a closed terminal after a pass | **0 INVALID in 230** mock runs; reclaims adopt finished trials | |
+| **Yield** | prompts, gates, the Trace Parser, world mutations (ITERATION_LOG) | iteration 0: **0 of 10** in band; iteration 1: 0 of 6 | **21 accepted** production tasks by 00:05 UTC 11-19 (5 by 20:50) | 0 → 21 |
+| **Cost per accepted task** | the same | **~$40** of model spend per accepted task (20:50: $203 for 5) | **~$23** ($480 for 21) | 43% lower |
+| Prompt size | caps over every spec (`6d56823`) | 3,500 / 2,200-token caps measured on one fixture each | real worst case **3,536 / 2,688** tokens, guarded at 3,650 / 2,800 | now measured |
+
+What hasn't improved:
+- **Agent-run queue wait went UP:** day p50 21 s → night p50 **149 s**, p90 575 s. Agent runs
+  are CPU-bound (~1 vCPU each) and capped by executor pods. More tasks reach the agent-run
+  stage now, so this is the next wall after authoring (§0.3 #11).
+- **Run times are mostly the model's thinking:** create ~23 min p50, a world ~35 min, an
+  agent run ~9 min. Infrastructure can't shorten those.
+
+Status:
+- **Round 2 (§0, 2026-11-18 evening → 2026-11-19 00:05 UTC):** measured on the production
+  K3s cluster under real load (six lanes, real models).
+- **Round 1 (§1-§7, 2026-11-18 early):** mock LLM calls on 8 EC2 runners, stopped by the user
+  after run A. It's kept as history. Its §7 recommendations are mostly done; §0.4 says which.
+
+Owner: infrastructure session.
+
+## 0. Round 2: production on K3s, real models (2026-11-18 → 19)
+
+No new mock run was done. These are measurements of the production cluster while six lanes
+kept ~25-60 real tasks in flight, plus the optimizations shipped during the night (commits
+below).
+
+**In one paragraph.**
+- **The cluster grew** from 8 EC2 runners on Docker Compose to **17 EC2 instances on K3s**
+  (9 on-demand + 8 Spot, m7i-flex.large, 34 vCPU) with RDS **db.t4g.medium** (400
+  connections). Round 1's two walls (CPU and RDS connections) were moved.
+- **Theoretical:** agent runs are still the bottleneck (~1 vCPU each, CPU-bound), then
+  authoring.
+- **In practice:**
+  - for most of the night it was **work supply**: authoring sessions sat idle between waves;
+  - since the 23:55 "new worlds" push it is **authoring**: 33 sessions, all busy, 9 worlds
+    queued;
+  - throughout, **yield, not throughput**: most rejections are the leak review, not anything
+    the cluster does.
+- **The infrastructure fixes were about not losing work:**
+  - drains on deploy, Spot hand-back, refunded attempts;
+  - authoring call timeouts, heredoc self-heal;
+  - pod CPU requests the scheduler can actually fit;
+  - early stopping, which skips agent runs whose verdict is already certain.
+
+### 0.1 The cluster now
+
+| Resource | Round 1 | Now | Commit |
+|---|---|---|---|
+| Machines | 8 EC2 runners, Compose | **17 EC2 instances, K3s** (1 server + 16 agents), 9 on-demand + 8 Spot | `af545f8`, `d80d56f`, `e0c8857` |
+| vCPU / RAM | 16 / 64 GB | **34 / ~129 GiB allocatable** | |
+| RDS | db.t4g.micro, 79 connections | **db.t4g.medium, 400** | `71b6943` |
+| Authoring (generation pods) | generation on every runner, 2-3 sessions | **11 pods × 3 sessions = 33**, CPU request 100m app + 100m dind | `c8d1cbe`, `2e422dc` |
+| Agent runs (executor pods) | 8 Docker slots per runner | **KEDA 2-16 pods × 2 runs = up to 32**, request 500m / 1Gi (+400m dind) | `4ec4c2b`, `70878d6`, `5cd4b52` |
+| Validate | per runner | **4 pods × 3 slots** | |
+| Spot | refused (Free plan / SCP) | 8 Spot nodes; AWS Node Termination Handler; validate kept off Spot | `40aa1be`, `3b7a2b7` |
+
+### 0.2 Live snapshot (2026-11-19 00:03 UTC, just after the "new worlds" push)
+
+| Metric | Value |
+|---|---|
+| Running jobs | 58: **25 world**, 20 agent runs, 6 create, 4 revise, 2 analyze |
+| Queued | **9 worlds READY**: authoring is full |
+| Pods | generation 11 (+2 draining), executor 8 (+8 draining after the deploy), validate 4 |
+| Node CPU (`kubectl top`) | 1 node at **99%**, 4 at 51-65%, 3 at 23-37%, **9 at ≤14%** |
+| Node memory | 12-52% |
+| RDS connections | **88 of 400**: 58 pool + 26 heartbeat idle, 2 active |
+| Guards, last 2 h (8 sampled pods) | `guard: cpu` 2-15 per pod; **0** DB pool waits or DB errors |
+| Spend on the books | **$479.93** (from $202.73 at 20:47: about $85/h on the books; the ledger prices prompts uncached, so the gateway's own figure is lower) |
+| Accepted production tasks | 21 (their own cost $137; total spend / accepted ≈ $23) |
+
+### 0.3 Bottlenecks found tonight, in the order they bit
+
+| # | Bottleneck | Evidence | Fix | Commit |
+|---|---|---|---|---|
+| 1 | **Stalled model calls inside authoring** | iter1-t04's world: 61 min = 32.5 min of stalled calls (one 1214 s for 310 tokens); litellm's default timeout was 6000 s | call timeout 600 s for authoring, 1200 s for worlds at reasoning high | `09821ad` |
+| 2 | **Deploys and scale-downs killed or re-ran work** | jobs "released at worker shutdown" re-ran from scratch; KEDA scale-down dead-lettered healthy agent runs | generation drains on deploy (sessions finish, up to 60 min); executor drains up to 3700 s; a release refunds the attempt | `de83f9c`, `688012f`, `84cf067` |
+| 3 | **Spot interruptions** | the 2-minute notice is shorter than a drain | the termination handler hands jobs back at once (deploys still drain) | `3b7a2b7`, `40aa1be` |
+| 4 | **Executors piled on a few nodes** | the scheduler can't see dind's CPU: executors stacked to load 4-6 on 2 vCPU while other nodes idled | spread constraints; CPU requests. An 1800m request fit no node (pods Pending 23:22-23:33, "Insufficient cpu"), so 500m app + 400m dind; generation's requests cut to 100m + 100m (measured) | `3055a73`, `4ec4c2b`, `70878d6`, `5cd4b52`, `2e422dc` |
+| 5 | **Authoring terminals wedged** | an unclosed heredoc (aws-w1-l3-t01's world: `</EOF>`, 23 min without a step); a 35 KB heredoc (aws-w1-l5-t05 v2) | commands under ~4 KB; the terminal says so at every heredoc continuation line; the 30 worlds started on pre-fix pods were cancelled at 23:52 | `d1ad21c`, `6b42dca` |
+| 6 | **Agent runs spent on decided versions** | a version with 1 pass and 2 fails after 3 runs is in band whatever the last 2 do | early stopping: decide once the verdict is certain, skip the rest (aws-w1-l3-t03 was accepted after 3 runs) | `af4cdb8` |
+| 7 | **Timeouts treated inconsistently** | an agent run at the 1-hour limit | it waits for the Trace Parser's ruling; a timeout isn't a failure by itself | `856db8c`, `f1c822e` |
+| 8 | **Validate re-ran the author's checks** | 4 trials (~4 min) per bundle, already run by `sde-task` | validate adopts stamped author checks when exact: validate takes **~4 s** | `ab466d2` (`SDE_ADOPT_AUTHOR_CHECKS=1`) |
+| 9 | **Authoring self-check memory** | `sde-task run` roles in parallel exceeded the 5-6 GiB dind | roles run one at a time per session (`SDE_TASK_PARALLEL=1`), 3 sessions a pod | `082166f`, `77002d7` |
+| 10 | **Work supply** (most of the night) | idle authoring sessions between waves (10 of 42 busy at one point) | six lanes keep ~5-6 tasks each in flight and top up per decision; at 23:55, new-world batches across lanes | the method (HILLCLIMBING_ALGORITHM.md) |
+| 11 | **Authoring capacity** (now) | 33 of 33 sessions busy, 9 worlds READY at 00:03 | the next lever is more generation pods. They're cheap in CPU (~0.4 GB, model-bound) but each self-check spikes to 1 CPU / 2 GB | not done |
+
+Not bottlenecks tonight:
+- **RDS:** 88 of 400 connections, 0 waits or errors;
+- **Redis and S3:** no errors;
+- **memory:** ≤52% on every node.
+
+The CPU guard fires a few times an hour per pod, so it still protects against bursts.
+
+### 0.4 Round 1's follow-ups (§7), where they stand
+
+| Round 1 follow-up | Status |
+|---|---|
+| 1. RDS connections before scaling out | **Done**: db.t4g.medium, 400 connections; 88 used with 17 nodes |
+| 2. More CPU for more throughput | **Done**: 34 vCPU (17 m7i-flex.large); a larger on-demand quota request (48 vCPU) is open |
+| 3. Verifier toolchain reinstalled per trial (~15 s) | Not done (the user's call; it changes every generated task) |
+| 4. Finish runs A-C and a 60-task confirm (mock) | Not done; production load replaced it |
+| 5. A real-wait profile | Measured live instead: model-bound authoring, CPU-bound agent runs (§0.2) |
+| 6. Mock robustness | Not done; `SDE_MOCK_LLM=0` in aws-prod |
+
+### 0.5 Throughput now
+
+| Stage | Capacity | Per task | Theoretical tasks/h |
+|---|---|---|---|
+| Authoring | 33 sessions | a new world ~30 min + create ~10-15 min (+ repairs) | **~40** |
+| Agent runs | up to 32 (16 pods × 2) | 5 × ~15 min; early stopping often skips 1-2 | **~25-30** |
+| Validate | 12 slots | ~4 s adopted | hundreds |
+
+Real tasks/h is set by the in-band rate. Each accepted task took 1-4 versions, and every
+rejection decided between 22:35 and 23:15 UTC was a blind leak failure on three drafts. So the throughput lever that
+matters most is yield (TASK_GENERATION_RULES.md, the leak review), not cluster size.
+
+### 0.6 How to re-measure
+
+- **Node CPU and pods:** run `kubectl top nodes` and `kubectl get pods` through
+  `scripts/k8s_aws.py`'s `remote` on runner 0.
+- **Queue:** `GET /v1/queue` (READY = waiting, LEASED = running).
+- **Spend:** `GET /healthz`.
+- **RDS connections:** `pg_stat_activity` from `deploy/control`.
+- **Guard and pool signals:** `kubectl logs … | grep -cE 'guard: cpu|waited .* for a database connection'`.
+- **Limits:** `infra/k8s/overlays/aws-prod/kustomization.yaml`; see also docs/CAPACITY.md.
+
+---
+
+# Round 1: mock LLM calls on 8 EC2 runners (2026-11-18, history)
 
 **In one paragraph.** With every model call mocked ($0 spend), the 8-runner AWS cluster ran
 10 and 30 fixture tasks end to end: 230 rollouts, **0 INVALID**. **CPU is the bottleneck**:

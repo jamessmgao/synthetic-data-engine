@@ -210,6 +210,23 @@ def test_batch_without_area_in_agent_mode_samples_the_whole_taxonomy(client, bac
     assert {s["family"] for s in specs} == set(FAMILIES)  # 12 tasks, least-used: all six families
 
 
+def test_environments_spread_within_a_family_whatever_the_history():
+    # 2026-11-18: L2's 5 distributed tasks all drew Go and L4's 5 perf all drew Java, because the
+    # draw counted every task ever and Python had a long history. Only this taxonomy's specs count.
+    history = [{"family": "distributed_concurrency", "mechanism": "adversarial_schedule",
+                "environment": "Python service"}] * 30  # older specs: no domain
+    existing = list(history)
+    for i in range(6):
+        existing.append(sample_spec_v2(existing, area="distributed_concurrency", rng=random.Random(i)))
+    envs = Counter(s["environment"] for s in existing[len(history):])
+    assert envs == {"Python service": 3, "Go service": 3}
+    perf = []
+    for i in range(8):
+        perf.append(sample_spec_v2(perf, area="performance_resources", rng=random.Random(i)))
+    assert Counter(s["environment"] for s in perf) == {e: 2 for e in FAMILIES["performance_resources"].environments}
+    assert "payment_ledger" not in {s["domain"] for s in perf}
+
+
 def test_batch_finer_filters(client, backend):
     specs = slots(backend, batch(client, count=3, area="database_consistency", mechanism="idempotent_retry",
                                  dial=1)["task_ids"])
