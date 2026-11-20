@@ -32,3 +32,6 @@ deploy/terraform/.terraform/
 *.tfstate*
 deploy/local.env
 deploy/make.env
+
+# Local backup of the S3 artifacts and the Postgres dump (never commit: s3-tfstate holds the DB password)
+.data/
