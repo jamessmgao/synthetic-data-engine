@@ -237,8 +237,17 @@ class Pipeline:
     def wait_until(self, predicate, timeout: float = 60) -> None:
         deadline = time.time() + timeout
         while not predicate():
+            # A process that died on its own (not one this test killed) can't make progress.
+            dead = [(p.pid, p.returncode) for p in self.procs
+                    if p.poll() not in (None, 0) and str(p.pid) not in self.killed]
+            if dead:
+                pytest.fail(f"pipeline process exited (pid, returncode) = {dead}; logs in {self.tmp}")
             if time.time() > deadline:
-                pytest.fail(f"condition not reached in {timeout}s")
+                for p in self.procs:  # the live ones dump their thread stacks to their logs
+                    if p.poll() is None:
+                        p.send_signal(signal.SIGUSR1)
+                time.sleep(1)
+                pytest.fail(f"condition not reached in {timeout}s; logs and thread stacks in {self.tmp}")
             time.sleep(0.05)
 
     # evidence

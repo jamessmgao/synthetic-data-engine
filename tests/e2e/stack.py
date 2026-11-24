@@ -19,8 +19,10 @@ point; that's what the tests do.
 Usage: python tests/e2e/stack.py [--forever]
 """
 
+import faulthandler
 import logging
 import os
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -67,6 +69,10 @@ def real_adapters(backend):
 
 
 def main() -> int:
+    # Thread stacks to the stack log on a fatal signal, or on SIGUSR1 (conftest sends it when a
+    # wait times out), so a stalled or crashed stack explains itself.
+    faulthandler.enable(all_threads=True)
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(process)d %(name)s %(message)s")
     if os.environ.get("SDE_E2E_EARLY_STOP") != "1":
         # Early stopping decides a version on whichever runs finish first, so the scripted
