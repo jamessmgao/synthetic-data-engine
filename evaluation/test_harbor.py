@@ -18,6 +18,20 @@ from evaluation import harbor, settings
 
 AGENT = harbor.AgentConfig("terminus-2", "openrouter/z-ai/glm-5.3-flash", {"reasoning_effort": "high"})
 
+
+@pytest.fixture(autouse=True)
+def gateway_base(monkeypatch):
+    monkeypatch.setattr(harbor.config, "OPENROUTER_API_BASE", "http://127.0.0.1:9/v1")  # required; never called
+
+
+def test_a_model_run_without_the_gateway_base_url_is_a_named_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(harbor.config, "OPENROUTER_API_BASE", "")
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_BASE is not set"):
+        harbor.run_trial(tmp_path, "job-1", AGENT, threading.Event(), traces_dir=tmp_path / "traces",
+                         env_file=tmp_path / "missing.env")
+    (tmp_path / "ok.env").write_text("OPENROUTER_API_BASE=http://127.0.0.1:9/v1\n")
+    harbor.config.require_gateway_base(tmp_path / "ok.env")  # set in the file Harbor is given: fine
+
 # Mimics `harbor run`: writes <out>/<job>/<trial>/result.json after FAKE_SLEEP
 # seconds, and counts its invocations in FAKE_CALLS.
 FAKE_HARBOR = f"""#!{sys.executable}

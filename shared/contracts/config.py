@@ -24,9 +24,24 @@ _load_dotenv(os.path.join(ROOT_DIR, ".env"))
 # z-ai/glm-* through its OpenRouter endpoint (`/v1` also answers for them, but
 # the gateway's docs name this one for non-first-party models).
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_API_BASE = os.environ.get(
-    "OPENROUTER_API_BASE", "https://gateway.example.com/openrouter/api/v1"
-)
+# No default for the base URL: it comes from the environment or .env (see .env.example).
+OPENROUTER_API_BASE = os.environ.get("OPENROUTER_API_BASE", "")
+
+
+def require_gateway_base(env_file: "os.PathLike | str | None" = None) -> None:
+    """Raise unless the gateway base URL is set, in the environment or in `env_file` (the file
+    Harbor is given). Called before a real model call, so a missing setting is named instead of
+    showing up as a connection error to some other host."""
+    if OPENROUTER_API_BASE:
+        return
+    if env_file is not None and os.path.exists(env_file):
+        with open(env_file) as f:
+            for line in f:
+                key, _, value = line.strip().partition("=")
+                if key.strip() == "OPENROUTER_API_BASE" and value.strip().strip("'\""):
+                    return
+    raise RuntimeError("OPENROUTER_API_BASE is not set: put your OpenRouter-compatible gateway "
+                       "URL in .env (see .env.example)")
 
 # --- Authoring model (the LLM that writes tasks) ---------------------------
 # Called through the gateway with the OpenAI-compatible client (see llm.py).

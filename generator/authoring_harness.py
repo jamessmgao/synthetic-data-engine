@@ -282,6 +282,7 @@ def run_authoring_trial(job_id: str, instruction: str, files: dict[str, bytes],
             n += 1
         job_dir.rename(job_dir.with_name(f"{JOB_NAME}.{kind}-{n}"))
 
+    config.require_gateway_base()  # Harbor's LiteLLM reads it from this process's environment
     task_dir = render_task(trace / "task", job_id, instruction, files, timeout_sec)
     stop = _RUNNING.setdefault(job_id, threading.Event())
     stopped = False

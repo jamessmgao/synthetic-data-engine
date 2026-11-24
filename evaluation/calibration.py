@@ -2,7 +2,7 @@
 Difficulty decisions for one evaluated version (docs/PRD.md §6.6): the pinned
 band, which revision operator to try next, and the evidence handed to GLM-5.1.
 
-Operator names are task-builder's `prompting.OPERATORS`.
+Operator names are `generator.prompting.OPERATORS`.
 """
 
 import hashlib

@@ -3,6 +3,68 @@
 Big changes only, newest first. Each heading gives the hour the change started, in PST, from its
 first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
 
+## 2026-11-24, 12 PM PST: layout tidy: leftovers deleted, deploy tooling in one place, real packages
+
+**What changed**
+- **Deleted (e8d8cdc).** Files nothing used: `examples/`
+  (six hand-written example tasks), `harbor/` (vendored Harbor files; Harbor is installed as a package),
+  the committed `output/` (old batches, best-task copies, the taskmill and
+  f1 task directories, rendered P1 prompts) and three unused scripts (`scripts/usage.py`,
+  `scripts/generate.sh`, `scripts/evaluate.sh`). `output/` is now a gitignored runtime
+  directory.
+- **Moved (e8d8cdc).** The P1 fixture `output/p1/p1-local-1` is `tests/fixtures/p1-local-1`
+  (the load test and the chaos test inject it). The P1 prototype, its prompt renderer and its
+  test moved from `scripts/` and `tests/p1/` to `experiments/`.
+- **Docs archived (e8d8cdc).** `K3S_PLAN.md`, `K8S_PLAN.md`, `SPEC.md`,
+  `DEMO_EXAMPLES.md`, `AGENT_MODE_DEPLOY.md` and `slides/` moved to docs/archive/. The two
+  "Moved" pointers (`HILLCLIMBING_ALGORITHM.md`, `ITERATION_RUNBOOK.md`) are gone.
+  docs/KUBERNETES.md is an index: docs/DEPLOY.md §8 for the cluster as built, the archived
+  plans for the design.
+- **Deploy tooling in one place (f578e03).** `infra/k8s/` is `deploy/k8s/`, and
+  `scripts/k8s_aws.py` and `scripts/k8s-local.sh` are in `deploy/`. Pure moves: all four
+  overlays render byte-identical to before. `aws_ops deploy` and `k8s_aws` now share one
+  release upload (`aws_ops.upload_release`).
+- **Real packages (0d75e7e).** `generator`, `validator` and `authoring` are packages, imported
+  by qualified name (`from generator import config`). The `sys.path` inserts that reached into
+  those directories are gone. A script run by path (`sde-task`, `sde-world`, `generate.py`,
+  `materialize.py`, `gates.py`) swaps its own directory for the root on the import path, so
+  the authoring image needs no `PYTHONPATH`. `authoring/scaffold` stays flat, because it is
+  copied into generated worlds.
+- **e2e tests fixed (33391b6).** `tests/e2e` had failed 6 to 8 of 15 tests since early
+  stopping landed (af4cdb8): it decides a version on whichever agent runs finish first, and the
+  scripted scenarios assert exact jobs and pass counts. The test stack now pins early stopping
+  off, and one new test turns it on. The cluster-only tests skip when the data services are
+  down.
+- **`infra_unresolved`, as documented.** A slot that never gets a valid agent run rejects the
+  task only when the scored runs don't already make the verdict certain. With 1 pass and 3
+  fails the version is accepted on the 4 scored runs. The code already did this; the docs now
+  say so (docs/VALIDATION.md, docs/EVALUATION.md, docs/PRD.md §6.4).
+- **Test commands.** `make test-unit` and `make test-all` run every suite: `tests/pipeline`,
+  `tests/deploy`, `api`, `generator`, `evaluation`, `validator`, `authoring` and `experiments`
+  (they ran four of the eight before).
+- **docs/DEPLOY.md.** It now says that production runs on K3s (§8.6) and that §2 and §4 to §6
+  describe the Compose deployment; sizes follow Terraform's defaults and the aws-prod overlay.
+- **Gateway base URL out of the repo.** `OPENROUTER_API_BASE` has no default in the code, the
+  compose file or the deploy scripts. Locally it comes from `.env` (`.env.example` shows the
+  shape). On AWS, `make aws-secrets` copies it from `.env` to SSM `/sde/openrouter_api_base`, and
+  both deploys read it from there. A model call without it fails with a message that names the
+  variable.
+
+**Why**
+- The repo still had the template's files and committed run output, deploy tooling in three
+  directories, and imports that only worked through path edits. A reader could not tell what was
+  live.
+
+**Tradeoffs**
+- The next AWS deploy needs `make aws-secrets` run once first, with `OPENROUTER_API_BASE` in
+  `.env`. Without the SSM parameter the deploy stops with a message that says so.
+- A release from before f578e03 still has `infra/k8s`, so `make aws-k8s-deploy REF=<older sha>`
+  fails with the current script. Rolling back to one needs `scripts/k8s_aws.py` from that
+  checkout.
+- The scripted e2e scenarios no longer exercise early stopping; the one new test and the unit
+  tests in tests/pipeline/test_services.py do.
+- docs/archive/ keeps its old paths in prose. Only its links were fixed.
+
 ## 2026-11-18, 5 PM PST: the final result, the README's "How we got here" and the presentation
 
 **What changed**
@@ -14,20 +76,22 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
   Parser's revisions inside the pipeline. Loop 2 is the agentic coding loop around it, run with
   `/goal`. It lists the loop's four highest-leverage optimizations: prompt engineering, taxonomy
   seeding, trace-driven mutations and generation control.
-- **Slides (5ebbb16, a3fdfac, 134ecf3).** docs/slides/ holds the deck
+- **Slides (5ebbb16, a3fdfac, 134ecf3).** docs/slides/ (now docs/archive/slides/) holds the deck
   (`synthetic-data-engine-presentation-v7.pptx`) and the 9-slide overview image
   (`synthetic-data-engine-slides.png`), which the README embeds.
-- **Demo examples (e71fa8d).** docs/DEMO_EXAMPLES.md lists example tasks with links to each
+- **Demo examples (e71fa8d).** docs/DEMO_EXAMPLES.md (now docs/archive/DEMO_EXAMPLES.md) lists example tasks with links to each
   agent run in the dashboard.
 
 ## 2026-11-18, 5 PM PST: docs cleanup, the API reference and a Claude skill
 
 **What changed**
 - **Project rename (3aefff5, f5cd88e).** The project is `synthetic-data-engine`, with a new
-  README. The first design spec is docs/SPEC.md.
+  README. The first design spec is
+  docs/SPEC.md (now docs/archive/SPEC.md).
 - **Merged docs (f5cd88e, 925adf4, d58c922, 4c37f01).**
   - docs/HILLCLIMBING.md merges the algorithm, the goal and the runbook.
-    docs/HILLCLIMBING_ALGORITHM.md and docs/ITERATION_RUNBOOK.md are now pointers to it.
+    docs/HILLCLIMBING_ALGORITHM.md and docs/ITERATION_RUNBOOK.md are now pointers to it
+    (both deleted on 2026-11-24).
   - docs/DIFFICULTY.md merges three difficulty docs.
   - docs/VALIDATION.md replaces the three validation docs; the unique failure write-ups moved
     into docs/AGENT_FAILURE_ANALYSIS.md.
@@ -50,7 +114,7 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
 
 **Tradeoffs**
 - docs/KUBERNETES.md is only an index. The as-built merge of docs/K3S_PLAN.md and
-  docs/K8S_PLAN.md is still to do.
+  docs/K8S_PLAN.md (both now in docs/archive/) is still to do.
 
 ## 2026-11-18, 3 PM PST: Trace Parser revision loop: early stopping, timeout review, review-led mutations
 
@@ -159,9 +223,9 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
 ## 2026-11-17, 11 PM PST: K3s production cluster on AWS, drained rolling deploys
 
 **What changed**
-- **Kubernetes manifests (8d80c73, 2ae7428, 62c9b7a, 4bd5099).** `infra/k8s/` has a base and
+- **Kubernetes manifests (8d80c73, 2ae7428, 62c9b7a, 4bd5099).** `infra/k8s/` (now `deploy/k8s/`) has a base and
   four overlays: `local` (k3d), `aws`, `aws-prod` (RDS, ElastiCache, S3 through IAM) and
-  `aws-prod-mock`. `scripts/k8s-local.sh` runs the local cluster. `scripts/k8s_aws.py` runs K3s
+  `aws-prod-mock`. `scripts/k8s-local.sh` runs the local cluster. `scripts/k8s_aws.py` (both now in `deploy/`) runs K3s
   across the EC2 instances over SSM.
 - **KEDA (4a8a565, fd5ecf6).** The executor scales on READY and LEASED agent-run jobs in
   Postgres.

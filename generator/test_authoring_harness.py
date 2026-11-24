@@ -31,6 +31,16 @@ class RunPopen:
 @pytest.fixture(autouse=True)
 def popen(monkeypatch):
     monkeypatch.setattr(ah.subprocess, "Popen", RunPopen)
+    monkeypatch.setattr(config, "OPENROUTER_API_BASE", "http://127.0.0.1:9/v1")  # required; never called
+
+
+def test_no_gateway_base_url_is_a_named_error_before_harbor_starts(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(config, "OPENROUTER_API_BASE", "")
+    monkeypatch.setattr(ah.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    with pytest.raises(RuntimeError, match=r"OPENROUTER_API_BASE is not set.*\.env\.example"):
+        ah.run_authoring_trial("t-v1-world", "instruction", {}, work_dir=tmp_path)
+    assert calls == []
 
 
 def fake_harbor(calls: list, *, exception=None, artifacts=("world/world.json",), tokens=(200_000, 10_000)):

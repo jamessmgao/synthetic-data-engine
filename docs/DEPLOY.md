@@ -10,6 +10,12 @@ Owner: infrastructure session. This covers how the pipeline runs on a laptop and
 
 The load test that set the numbers is in [LOAD_TEST.md](LOAD_TEST.md).
 
+**Which deployment runs production.** Production runs on K3s across the EC2 instances (§8.6).
+§2 and §4 to §6 describe the Docker Compose deployment on the same instances. `make aws-deploy`
+still installs it, and it is what `make aws-k8s-down` falls back to. The measurements in §4.4
+and §6 were taken on Compose with 8 instances, before the cluster grew; the cluster's current
+size is in [CAPACITY.md](CAPACITY.md).
+
 ## 1. One codebase, two sets of backends
 
 Every service builds its backends from the environment (`shared/storage/__init__.py`
@@ -84,9 +90,9 @@ is touched.
 | Resource | Details |
 |---|---|
 | VPC `10.42.0.0/16` | 2 public subnets (runners), 2 private (RDS, Redis); internet gateway; no NAT |
-| Runners | **8 × `m7i-flex.large`** (2 vCPU / 8 GB), Amazon Linux 2023, 80 GB gp3. The first runner is the **control** runner. First boot (`runner-init.sh.tftpl`) installs Docker, compose 2.32.4 and buildx 0.19.3 |
-| Runner access | **SSM only**: no SSH, no inbound ports. IAM role `sde-pipeline-runner`: SSM core, the artifacts bucket, read on `/sde/*` |
-| RDS | Postgres 16.13, `db.t4g.micro`, 20 GB, single-AZ, 1-day backups, private. `max_connections` = 79 (§4.4) |
+| Runners | **17 × `m7i-flex.large`** (2 vCPU / 8 GB) by default: 9 on-demand and 8 Spot (`runner_count`, `on_demand_count`). Amazon Linux 2023, 80 GB gp3. The first runner is the **control** runner. First boot (`runner-init.sh.tftpl`) installs Docker, compose 2.32.4 and buildx 0.19.3 |
+| Runner access | **SSM only**: no SSH, no inbound ports from outside (the instances reach each other, for K3s). IAM role `sde-pipeline-runner`: SSM core, the artifacts bucket, read on `/sde/*` |
+| RDS | Postgres 16.13, `db.t4g.medium` by default (`db_instance_class`), 20 GB, single-AZ, 1-day backups, private. It was `db.t4g.micro` (`max_connections` = 79) when §4.4 was measured |
 | ElastiCache | Redis 7.1, `cache.t4g.micro`, one node, private |
 | S3 | `sde-pipeline-artifacts-284460774261` (private, encrypted): releases, bundles, worlds, traces |
 | State | `sde-pipeline-tfstate-284460774261` (made by `aws_ops.py bootstrap`) |
@@ -95,23 +101,26 @@ is touched.
 `compute.tf` ignores changes to `ami`, `user_data` and `associate_public_ip_address`. A new
 AMI or init script must never replace a running runner.
 
-**Free-plan limits** (the account is on AWS's Free plan):
-- Only `m7i-flex.large`-class instances are allowed: `m6i.2xlarge` was refused.
-- The quota is 16 vCPU, so 8 runners. A request for 18 is pending.
-- RDS is `db.t4g.micro` only: `db.t4g.small` was refused with `FreeTierRestrictionError`.
+**Free-plan limits.** The account started on AWS's Free plan, which set the first sizes:
+- Only `m7i-flex.large`-class instances were allowed: `m6i.2xlarge` was refused.
+- The quota was 16 vCPU, so 8 instances.
+- RDS was `db.t4g.micro` only: `db.t4g.small` was refused with `FreeTierRestrictionError`.
 
-Upgrading the plan lifts all three.
+The upgrade to the Paid plan (2026-11-18) lifted the Spot and RDS limits. The defaults in
+`variables.tf` are now 17 instances (9 on-demand, the on-demand quota of 18 vCPU, plus 8 Spot)
+and `db.t4g.medium`.
 
 | Variable (`variables.tf`) | Default | Meaning |
 |---|---|---|
-| `runner_count` | 8 | runners (quota-bound) |
+| `runner_count` | 17 | EC2 instances; the first `on_demand_count` are on-demand, the rest Spot |
+| `on_demand_count` | 9 | on-demand instances (9 × 2 vCPU is the on-demand quota of 18 vCPU) |
 | `runner_instance_type` | `m7i-flex.large` | |
 | `runner_disk_gb` | 80 | images, builds, the work-dir cache |
 | `docker_slots` | **5** | ceiling on Docker jobs per runner (→ `SDE_DOCKER_SLOTS`, a Terraform output passed by `deploy`) |
 | `agent_slots` | **2** | ceiling on hour-long agent jobs per runner (→ SSM `/sde/agent_slots`) |
 | `agent_lease_ttl_s` | 1800 | an agent job's lease; heartbeats renew it |
-| `budget_usd` | 40 | the pipeline's spend cap (→ `/sde/budget_usd`) |
-| `db_instance_class` | `db.t4g.micro` | |
+| `budget_usd` | `none` | the pipeline's spend cap (→ `/sde/budget_usd`); `none` means no cap |
+| `db_instance_class` | `db.t4g.medium` | changing it modifies the database in place |
 
 Load tests override slots without editing the defaults:
 `terraform plan -var docker_slots=8 -var agent_slots=3 -out=…`, then apply that plan.
@@ -125,7 +134,7 @@ Credentials come from `aws login`, exported for Terraform.
 |---|---|
 | `bootstrap` | creates the Terraform state bucket (once) |
 | `plan` / `apply` | Terraform |
-| `secrets` | copies `OPENROUTER_API_KEY` from `.env` into SSM (`/sde/openrouter_api_key`, SecureString). Generates `/sde/api_key` if missing. Never prints either |
+| `secrets` | copies `OPENROUTER_API_KEY` from `.env` into SSM (`/sde/openrouter_api_key`, SecureString) and `OPENROUTER_API_BASE` into `/sde/openrouter_api_base`. Generates `/sde/api_key` if missing. Never prints a key |
 | `author-mode oneshot\|agent` | sets `/sde/author_mode` (takes effect on the next deploy) |
 | `deploy [REF]` | `git archive` of REF → S3 `releases/<sha>.tar.gz`, then on every runner in parallel, via SSM: `remote-deploy.sh <sha> <bucket> <region> <docker_slots> <control\|runner>` |
 | `smoke` | `shared.jobs.smoke` on the control runner: queue + artifacts round trip against RDS / Redis / S3, plus one reconcile pass |
@@ -158,12 +167,12 @@ can be silently left out.
 |---|---|---|---|
 | `DATABASE_URL`, `REDIS_URL`, `S3_BUCKET` | `/sde/database_url`, `/sde/redis_url`, `/sde/s3_bucket` (Terraform) | – | backends |
 | `OPENROUTER_API_KEY` | `/sde/openrouter_api_key` (`secrets`) | – | inference gateway key |
-| `OPENROUTER_API_BASE` | fixed | `https://gateway.example.com/openrouter/api/v1` | gateway |
-| `SDE_API_KEY` | `/sde/api_key` | – | API bearer token |
+| `OPENROUTER_API_BASE` | `/sde/openrouter_api_base` (`secrets`) | – | inference gateway base URL; the deploy fails if the parameter is missing |
+| `SDE_API_KEY` | `/sde/api_key` | – | the API key, sent as the `X-Api-Key` header |
 | `SDE_DOCKER_SLOTS` | Terraform output `docker_slots` | 5 | Docker job ceiling per runner |
 | `SDE_AGENT_SLOTS` | `/sde/agent_slots` | 2 | agent job ceiling per runner |
 | `SDE_AGENT_LEASE_TTL_S` | `/sde/agent_lease_ttl_s` | 1800 | |
-| `SDE_BUDGET_USD` | `/sde/budget_usd` | 40 | spend cap; paid claims stop there |
+| `SDE_BUDGET_USD` | `/sde/budget_usd` | `none` from Terraform (40 if the parameter is missing) | spend cap; paid claims stop there |
 | `SDE_AUTHOR_MODE` | `/sde/author_mode` | `oneshot` | `agent` = authoring trials in the authoring image |
 | `SDE_AUTHORING_IMAGE` | built by the deploy | `sde-authoring:<hash>` | |
 | `SDE_GENERATION_CONCURRENCY` | `/sde/generation_concurrency` | 8 | generation threads per runner |
@@ -188,6 +197,10 @@ Then redeploy. The Terraform-managed parameters (`agent_slots`, `agent_lease_ttl
 
 ### 4.4 Database connections: the limit on scaling out
 
+The numbers below were measured on Compose with 8 instances and `db.t4g.micro`. The pools work
+the same way on K3s; the database is now `db.t4g.medium`, and its connection use is in
+[CAPACITY.md](CAPACITY.md).
+
 - Each process holds **one bounded psycopg pool**: `SDE_DB_POOL_MAX`, 2 on AWS. Waits of
   `SDE_DB_POOL_WARN_S` (2 s) or more are logged as `waited … for a database connection`.
 - Each process also holds a **dedicated 1-connection heartbeat pool**, so lease renewals
@@ -205,10 +218,10 @@ db.t4g.micro  max_connections 79, ~3 reserved → 76 usable
 measured      66 with 8 runners (load test, mid-run)
 ```
 
-**8 runners is the most the micro instance supports.** Before adding a runner, raising
-`SDE_DB_POOL_MAX` or adding a process, do one of these:
-- move to `db.t4g.small` (about 180 connections; needs the paid plan);
-- make the pools release idle connections.
+**8 instances on Compose was the most the micro instance supported.** That is why the database
+moved to `db.t4g.medium` before the cluster grew. Before adding instances, raising
+`SDE_DB_POOL_MAX` or adding a process, check the connection count against `max_connections`
+again.
 
 ## 5. Keeping a runner healthy: slots, guards, pacing, leases
 
@@ -240,8 +253,8 @@ python deploy/aws_ops.py exec "curl -s localhost:8000/healthz"   # backends, rel
 python deploy/aws_ops.py exec "cd /opt/sde/current && docker compose --env-file /opt/sde/runtime.env \
   -f deploy/compose.prod.yaml exec -T worker-runner env | grep ^SDE_"   # effective settings
 ```
-The runners' security group has no inbound rules. Reach the API (`SDE_API_KEY` bearer token
-for everything but `/healthz`) through SSM, e.g. port forwarding:
+The instances' security group lets nothing in from outside. On Compose, reach the API (the
+`X-Api-Key: <SDE_API_KEY>` header for everything but `/healthz`) through SSM, e.g. port forwarding:
 `aws ssm start-session --target <control id> --document-name AWS-StartPortForwardingSession
 --parameters portNumber=8000,localPortNumber=8000`.
 
@@ -270,14 +283,15 @@ means deploying an older sha.
 
 | Item | Cost |
 |---|---|
-| 8 × `m7i-flex.large` | ~$0.10/h each |
-| RDS and ElastiCache micro | free tier |
+| `m7i-flex.large` | ~$0.10/h each on demand |
+| RDS and ElastiCache | free tier while both were micro; the current rates are in [CAPACITY.md](CAPACITY.md) |
 | S3 | pennies |
 | Model spend | separate, capped by `SDE_BUDGET_USD` |
 
-**State as of 2026-11-18:** release `b1f0f67` on all 8 runners, **mock mode on**, slots
-8 / 3 by Terraform `-var` override, left over from the load test. To return to real runs, see
-[LOAD_TEST.md](LOAD_TEST.md) §7.
+**State after the first load test (2026-11-18):** release `b1f0f67` on all 8 instances, on
+Compose, **mock mode on**, slots 8 / 3 by Terraform `-var` override. [LOAD_TEST.md](LOAD_TEST.md)
+§7 covers returning to real runs. The production cluster built after that is in
+[CAPACITY.md](CAPACITY.md).
 
 ## 7. Files
 
@@ -293,14 +307,17 @@ means deploying an older sha.
 | `authoring/Dockerfile` | the agent authoring image (Python 3.12, Go 1.22, Temurin 21, gcc, sqlite, psql, docker CLI, pytest, harbor 0.26, `sde-world` / `sde-task`) |
 | `shared/jobs/supervise.py` | per-container process supervisor |
 | `scripts/inject_task.py`, `scripts/loadtest.py` | test past generation; load test |
-| `deploy/k8s/` | local Kubernetes manifests (§8) |
-| `scripts/k8s_test.py` | the local Kubernetes chaos test (§8.4) |
+| `deploy/k8s/` | Kubernetes manifests: the base and the `local`, `aws`, `aws-prod` and `aws-prod-mock` overlays (§8) |
+| `deploy/k8s-local.sh` | the local k3d cluster (§8.4) |
+| `deploy/k8s_aws.py` | K3s on the EC2 instances (§8.6) |
+| `scripts/k8s_test.py` | the Kubernetes chaos test (§8.4) |
 
-## 8. Local Kubernetes (k3d)
+## 8. Kubernetes (k3d locally, K3s on AWS)
 
 The pipeline also runs on a local K3s cluster: k3d cluster `sde`, kube context `k3d-sde`,
 namespace `sde`. The plan, and the reasons for each choice, are in [KUBERNETES.md](KUBERNETES.md).
-It is a local deployment only; AWS stays on compose (§8.5).
+It started as a local deployment (§8.1 to §8.4). The same manifests now run production on the
+AWS EC2 instances (§8.6).
 
 ### 8.1 What runs where
 
@@ -445,21 +462,23 @@ That first deploy found two bugs in aws-prod, both fixed in `37ca6ae`:
 ### 8.5 Local vs AWS
 
 The local k3d cluster (§8.1-8.4) proved the manifests and the dind sidecar. Testing then
-moved to AWS (§8.6), because the Mac is reserved for task generation. K3s doesn't raise
-throughput on this account: the EC2 instances are a fixed 16 vCPU (the Free-plan quota), the
-work is CPU-bound, and RDS micro caps the processes (§4.4).
+moved to AWS (§8.6), because the Mac is reserved for task generation. When that was decided
+(2026-11-18, on the Free plan), K3s didn't raise throughput: the EC2 instances were a fixed
+16 vCPU, the work is CPU-bound, and RDS micro capped the processes (§4.4).
 
 What K3s adds on AWS is **isolation**. An authoring agent reaches only its own generation
 pod's dind. Tonight an agent ran `docker kill $(docker ps -q)` on the Mac and killed every
 container on the machine. On compose, the same command would kill everything on an
-instance; on K3s it kills only that pod's trials (one authoring session per pod in
-aws-prod). dind is privileged, so this contains accidents, not a determined escape.
+instance; on K3s it kills only that pod's trials (up to 3 authoring sessions per pod in
+aws-prod, `SDE_AGENT_SLOTS` in the overlay's `generation.yaml`). dind is privileged, so this contains accidents, not a determined escape.
 
 ### 8.6 K3s on the AWS EC2 instances (`deploy/k8s_aws.py`)
 
-The same manifests run on the 8 EC2 instances as one K3s cluster: a server
-(`aws_ops.runners()[0]`) and 7 agents, installed over SSM. There are no new AWS resources
-beyond one security-group rule (instance to instance, `2976f6d`).
+The same manifests run on the EC2 instances as one K3s cluster: a server
+(`aws_ops.runners()[0]`) and every other instance as an agent, installed over SSM. It started
+on 8 instances; Terraform's default is now 17 (§4.1), and new ones join with
+`deploy/k8s_aws.py join`. There are no new AWS resources beyond one security-group rule
+(instance to instance, `2976f6d`).
 
 | Command | Does |
 |---|---|
@@ -467,11 +486,11 @@ beyond one security-group rule (instance to instance, `2976f6d`).
 | `make aws-k8s-deploy OVERLAY=aws\|aws-prod\|aws-prod-mock` | ships the release, rebuilds and imports, applies the overlay, waits for the rollouts. For the production overlays it also creates Secret `sde-secrets` from SSM (values never in command text), builds the authoring image on every instance (saved to `/opt/sde/images/sde-authoring.tar`, loaded into each generation pod's dind), and checks IMDS from a pod |
 | `make aws-k8s-status` / `aws-k8s-logs SVC=…` | nodes, pods, services / logs |
 | `make aws-k8s-test ARGS=…` / `aws-k8s-test-log` | the chaos test on the server, as systemd unit `sde-k8s-test` (an SSM timeout kills a nohup'd process) |
-| `make aws-k8s-public` | the API's public HTTPS link: a Cloudflare quick tunnel (`public-tunnel` Deployment, dials out, no inbound ports). Anyone with the URL reaches the API; everything but `/healthz` needs the `SDE_API_KEY` token. The URL changes when the pod restarts |
+| `make aws-k8s-public` | the public HTTPS links of the API and the dashboard: Cloudflare quick tunnels (`public-tunnel` and `dashboard-tunnel` Deployments, dialing out, no inbound ports). Anyone with the URL reaches the API; everything but `/healthz` needs the `X-Api-Key: <SDE_API_KEY>` header. A URL changes when its tunnel pod restarts |
 | `make aws-k8s-down` | uninstalls K3s; then `make aws-deploy` restores compose |
 
 | Overlay | Data | Models | Notes |
 |---|---|---|---|
 | `aws` | in-cluster Postgres / Redis / RustFS on the server | mock | the chaos test's overlay; short leases |
-| `aws-prod` | RDS, ElastiCache, S3 (via the instance role) | real | agent authoring; 6 generation pods × 1 session, validate ×2, executor 1-4 via KEDA; the public tunnel |
+| `aws-prod` | RDS, ElastiCache, S3 (via the instance role) | real | agent authoring; 14 generation pods × 3 sessions, validate ×4, executor 2-16 via KEDA with 2 agent runs per pod; the dashboard and both tunnels. The overlay's `kustomization.yaml` and `generation.yaml` are the source for these numbers |
 | `aws-prod-mock` | as aws-prod | mock, and `SDE_AGENT_SLOTS=0` on generation (mock mode doesn't cover authoring trials) | a production check with no model calls |

@@ -78,7 +78,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
 
 # Runtime config the runner reads at deploy time. The inference key is not here:
 # `make aws-secrets` writes /sde/openrouter_api_key from .env, so it never enters
-# Terraform state.
+# Terraform state. It writes the gateway base URL (/sde/openrouter_api_base) the same way.
 resource "aws_ssm_parameter" "database_url" {
   name  = "/sde/database_url"
   type  = "SecureString"

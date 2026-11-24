@@ -45,6 +45,13 @@ fi
 # Run a component only if its code is in this release.
 cmd() { if [ -e "$release/$1" ]; then echo "$2=$3"; else echo "$2="; fi; }
 
+# The gateway base URL is not in the repo: `make aws-secrets` copies it from .env into SSM.
+api_base=$(param /sde/openrouter_api_base 2>/dev/null) || api_base=
+if [ -z "$api_base" ] || [ "$api_base" = "None" ]; then
+  echo "SSM parameter /sde/openrouter_api_base is missing: set OPENROUTER_API_BASE in .env and run \`make aws-secrets\`" >&2
+  exit 1
+fi
+
 umask 077
 {
   echo "DATABASE_URL=$(param /sde/database_url)"
@@ -52,7 +59,7 @@ umask 077
   echo "S3_BUCKET=$(param /sde/s3_bucket)"
   echo "AWS_DEFAULT_REGION=$region"
   echo "OPENROUTER_API_KEY=$(param /sde/openrouter_api_key)"
-  echo "OPENROUTER_API_BASE=https://gateway.example.com/openrouter/api/v1"
+  echo "OPENROUTER_API_BASE=$api_base"
   echo "SDE_WORK_DIR=/opt/sde/work"
   echo "SDE_DOCKER_SLOTS=$slots"
   echo "SDE_RELEASE=$sha"

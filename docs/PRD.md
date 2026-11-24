@@ -175,7 +175,7 @@ agent run slot, 3 claims per job before DEAD.
     it with reason `exhausted`.
 11. Only accepted tasks are written to `output/accepted/<name>/`, each with its `verdict.md`.
 
-**Reviewer (the reviewer)**
+**Reviewer**
 12. A reviewer can open one task and see, without reading code: its spec, every version, every
     gate result, all five agent runs with reward and evidence, the failure explanations, its cost and
     the decision.
@@ -589,7 +589,7 @@ runner and Build + Validate and the Executor on N runner machines.
 **Default local setup.** Same components, same code paths, but the three stores are
 backed locally and all roles can run in one process, so nothing beyond Docker is needed:
 
-| Interface | project (default) | Production |
+| Interface | Local (default) | Production |
 |---|---|---|
 | `Store` | SQLite file in WAL mode, `BEGIN IMMEDIATE` compare-and-set | PostgreSQL, `SELECT … FOR UPDATE` |
 | `Queue` | Claimed straight from the `jobs` table with one `UPDATE … RETURNING` (§6.7); no outbox hop | Redis sorted sets fed by the outbox publisher; Lua claim + DB lease check |
@@ -751,7 +751,10 @@ job. The classifier reads the trial's `result.json` (Harbor 0.26.0 `TrialResult`
 Every settled agent run enqueues an `analyze` ping in the same transaction. An `INVALID` agent run
 also enqueues a new `rollout` job (same slot, retry + 1), at most 3 retries per slot. When a
 slot has used its retries without a valid result, the Trace Parser sets the version
-`UNRESOLVED` and the task `REJECTED (infra_unresolved)`, never scored as hard. If invalid agent runs pile up
+`UNRESOLVED` and the task `REJECTED (infra_unresolved)`, never scored as hard. The exception is
+early stopping: if the scored agent runs already make the verdict certain (for example 1 pass
+and 3 fails), the version is decided on them and the slot is skipped
+(`evaluation/trace_parser_service.py:early_stop`). If invalid agent runs pile up
 across tasks (e.g. gateway outage: more than 5 in 10 minutes), the Executor pauses.
 
 ### 6.5 Why each failure is the model's fault (Trace Parser)

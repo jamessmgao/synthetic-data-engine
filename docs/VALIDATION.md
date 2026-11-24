@@ -19,7 +19,8 @@ A task must pass up to 15 checks across four phases before it is accepted. Each 
 end the task with one of three rejection reasons:
 - `invalid`: the task or world is broken;
 - `exhausted`: still out of band after 8 versions;
-- `infra_unresolved`: a run slot never got a valid measurement.
+- `infra_unresolved`: a run slot never got a valid measurement, and the scored runs didn't
+  already make the verdict certain.
 
 Most gates feed back into a repair first, at most 2 repairs per version, so a rejection
 means the pipeline already tried to fix it.
@@ -38,7 +39,7 @@ means the pipeline already tried to fix it.
 | Task | wrong_fix | tests a plausible wrong fix still passes | repair, then `invalid` |
 | Task | leak: semantic review | an instruction that states the fix or the counterexample, directly or in other words | repair, then `invalid` |
 | Task | leak: blind prediction + judge | an instruction from which a reviewer who sees nothing else can predict the real fix and where it goes | repair, then `invalid` |
-| Evaluation | classify | a run that didn't measure the model: harness exceptions, wrong agent config, a non-binary reward | `INVALID`, retried up to 3 times, then `infra_unresolved` |
+| Evaluation | classify | a run that didn't measure the model: harness exceptions, wrong agent config, a non-binary reward | `INVALID`, retried up to 3 times, then `infra_unresolved` (unless the scored runs already make the verdict certain) |
 | Evaluation | timeout review | a run at the 1-hour limit: was it the model's fault? | model → `VALID_FAIL`; otherwise `INVALID` and retried |
 | Evaluation | failure review | a failure the Trace Parser blames on the task, not the model | `repair_ambiguity` revision, even when the pass count is in band |
 
@@ -247,7 +248,8 @@ The 25 INVALIDs on record:
 | `ps` missing from the image | 1 |
 
 **Infrastructure failure → rejected:** a slot gets 3 retries; still without a valid run, the
-task is rejected `infra_unresolved`. If 5 runs come back INVALID within 10 minutes, the
+task is rejected `infra_unresolved`, unless the scored runs already make the verdict certain
+(early stopping). If 5 runs come back INVALID within 10 minutes, the
 executor stops claiming for 5 minutes, so a gateway or Docker outage doesn't burn every
 task's retries. 6 tasks ended `infra_unresolved`: 5 in the early aws-b1 dev batch, plus
 aws-agent-b1-t04 v4, whose create job was dead-lettered after 3 claims without settling.

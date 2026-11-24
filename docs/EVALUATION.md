@@ -35,7 +35,8 @@ and runs one Harbor trial (one agent run) each (`evaluation/harbor.py:run_trial`
     agent config that isn't the pinned one.
   
   An INVALID run is never scored; its slot is retried up to `MAX_ROLLOUT_RETRIES` (3), then
-  the task is `REJECTED infra_unresolved`. An agent that closes its own terminal after the
+  the task is `REJECTED infra_unresolved`, unless the scored runs already make the verdict
+  certain (early stopping, §2). An agent that closes its own terminal after the
   verifier scored is scored, not INVALID. A breaker (`_Breaker`: `BREAKER_INVALID` INVALIDs in
   `BREAKER_WINDOW_SEC`) pauses claims, so an outage doesn't burn every task's retries.
 - **Settle** records outcome, reward, cost and trace URI, and pings the Trace Parser

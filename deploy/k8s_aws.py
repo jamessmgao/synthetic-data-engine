@@ -32,7 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aws_ops  # noqa: E402
-from aws_ops import COMPOSE, REGION, REPO, aws, on_all, outputs, remote, run, runners  # noqa: E402
+from aws_ops import COMPOSE, REGION, aws, on_all, outputs, remote, runners  # noqa: E402
 
 K3S_VERSION = "v1.35.5+k3s1"
 KEDA_URL = "https://github.com/kedacore/keda/releases/download/v2.16.1/keda-2.16.1.yaml"
@@ -67,7 +67,7 @@ PROD_SECRETS = {
     "REDIS_URL": "/sde/redis_url",
     "S3_BUCKET": "/sde/s3_bucket",
     "OPENROUTER_API_KEY": "/sde/openrouter_api_key",
-    "OPENROUTER_API_BASE": "https://gateway.example.com/openrouter/api/v1",
+    "OPENROUTER_API_BASE": "/sde/openrouter_api_base",
     "SDE_API_KEY": "/sde/api_key",
     "SDE_BUDGET_USD": "/sde/budget_usd",
 }
@@ -95,12 +95,7 @@ def ensure_token() -> None:
 def ship(ref: str, server_only: bool = False, targets: list[str] | None = None) -> str:
     """Upload git REF as a release (as `aws_ops deploy` does) and unpack it on every runner."""
     out = outputs()
-    sha = run(["git", "rev-parse", ref], cwd=REPO)
-    key = f"releases/{sha}.tar.gz"
-    with tempfile.TemporaryDirectory() as tmp:
-        tarball = Path(tmp) / "release.tar.gz"
-        run(["git", "archive", "--format=tar.gz", "-o", str(tarball), sha], cwd=REPO)
-        aws("s3", "cp", str(tarball), f"s3://{out['artifacts_bucket']}/{key}")
+    sha, key = aws_ops.upload_release(ref, out["artifacts_bucket"])
     release = f"/opt/sde/releases/{sha}"
     unpack = [
         "until [ -f /opt/sde/.bootstrapped ]; do sleep 5; done",
@@ -367,7 +362,8 @@ def prod_secret_cmds() -> list[str]:
         "f=$(umask 077; mktemp)",
         "{ " + "; ".join(lines) + "; } > $f",
         # A missing parameter leaves an empty value: name the keys, never the values.
-        "if grep -q '=$' $f; then echo \"SSM parameter missing for: $(grep '=$' $f | cut -d= -f1 | xargs)\" >&2;"
+        "if grep -q '=$' $f; then echo \"SSM parameter missing for: $(grep '=$' $f | cut -d= -f1 | xargs)"
+        " (OPENROUTER_API_KEY / OPENROUTER_API_BASE: set them in .env and run make aws-secrets)\" >&2;"
         " rm -f $f; exit 1; fi",
         f"{K} create secret generic sde-secrets --from-env-file=$f --dry-run=client -o yaml"
         f" | {KUBECTL} apply -f - >/dev/null; rc=$?; rm -f $f; [ $rc -eq 0 ]",

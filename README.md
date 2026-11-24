@@ -189,7 +189,7 @@ make up-agent             # the whole stack in agent mode (or `make up` for one-
 curl -s localhost:8000/healthz                 # status, DB, budget cap and spend
 ```
 
-Runtime settings (`SDE_*`) are listed in [docs/DEPLOY.md](docs/DEPLOY.md), and `deploy/local.env.example` lists every setting the code reads. The stack reads the gateway key from the repo's `.env`, which is never committed.
+Runtime settings (`SDE_*`) are listed in [docs/DEPLOY.md](docs/DEPLOY.md), and `deploy/local.env.example` lists every setting the code reads. The stack reads the gateway key and the gateway base URL (`OPENROUTER_API_BASE`, no default) from the repo's `.env`, which is never committed.
 
 ### API
 
@@ -219,7 +219,8 @@ curl -s localhost:8000/v1/tasks/b1-t01 -H "$H"         # one task in full
 curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H" -H 'Content-Type: application/json' -d '{"note": "stop"}'
 ```
 
-`scripts/run_tasks.py --batch b1 --count 10` runs a whole batch: it creates the batch, follows it and writes `output/reports/<batch>/summary.json`. Accepted tasks are published to
+`scripts/run_tasks.py --batch b1 --count 10` runs a whole batch: it creates the
+batch, follows it and writes `output/reports/<batch>/summary.json`. Accepted tasks are published to
 `output/accepted/<task>/` with a `verdict.md` (`evaluation/verdict.py`).
 
 ### Deploy
@@ -242,7 +243,7 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 
 **Start here**
 - [docs/archive/slides/](docs/archive/slides/): the presentation (the 9-slide image above, and the deck).
-- [docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md): seven example tasks for the demo, with links to the runs in the dashboard.
+- [docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md): seven example tasks, with links to the runs in the dashboard.
 - [CHANGELOG.md](CHANGELOG.md): every change, with commits.
 
 **Design**

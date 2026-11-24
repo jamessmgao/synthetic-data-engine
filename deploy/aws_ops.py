@@ -2,7 +2,8 @@
 
     bootstrap        create the Terraform state bucket (once)
     plan | apply     Terraform: VPC, RDS Postgres, ElastiCache Redis, S3, runner EC2
-    secrets          copy OPENROUTER_API_KEY from .env into SSM (/sde/openrouter_api_key)
+    secrets          copy OPENROUTER_API_KEY and OPENROUTER_API_BASE from .env into SSM
+                     (/sde/openrouter_api_key, /sde/openrouter_api_base)
     author-mode M    set /sde/author_mode to oneshot or agent (takes effect on the next deploy)
     deploy [REF]     ship git REF (default HEAD) to every runner and `compose up --build`
     smoke            run shared.jobs.smoke on the control runner against RDS, Redis and S3
@@ -170,26 +171,43 @@ def cmd_bootstrap() -> None:
     print(f"created state bucket {STATE_BUCKET}")
 
 
-def cmd_secrets() -> None:
-    key = None
+def dotenv_values(names: tuple[str, ...]) -> dict[str, str]:
+    """The named settings from the repo's .env (or the main checkout's, from a worktree): the
+    first file that has the first name wins."""
     candidates = [REPO / ".env"]
     common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=REPO, check=False)
     if common:
         candidates.append(Path(common).parent / ".env")  # the main checkout, from a worktree
     for path in candidates:
+        found: dict[str, str] = {}
         if path.exists():
             for line in path.read_text().splitlines():
-                if line.startswith("OPENROUTER_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
-            if key:
-                break
+                name, sep, value = line.partition("=")
+                if sep and name.strip() in names:
+                    found[name.strip()] = value.strip().strip('"').strip("'")
+        if found.get(names[0]):
+            return found
+    return {}
+
+
+def cmd_secrets() -> None:
+    env = dotenv_values(("OPENROUTER_API_KEY", "OPENROUTER_API_BASE"))
+    key, base = env.get("OPENROUTER_API_KEY"), env.get("OPENROUTER_API_BASE")
     if not key:
         sys.exit("OPENROUTER_API_KEY not found in .env")
+    if not base:
+        sys.exit("OPENROUTER_API_BASE not found in .env (the gateway base URL; see .env.example)")
     aws("ssm", "put-parameter", "--name", "/sde/openrouter_api_key", "--type", "SecureString",
         "--value", key, "--overwrite")
     aws("ssm", "add-tags-to-resource", "--resource-type", "Parameter", "--resource-id",
         "/sde/openrouter_api_key", "--tags", "Key=project,Value=sde-task-pipeline")
     print("stored /sde/openrouter_api_key (SecureString)")
+    # The gateway base URL: not a secret, but not in the repo either. The deploys read it from here.
+    aws("ssm", "put-parameter", "--name", "/sde/openrouter_api_base", "--type", "String",
+        "--value", base, "--overwrite")
+    aws("ssm", "add-tags-to-resource", "--resource-type", "Parameter", "--resource-id",
+        "/sde/openrouter_api_base", "--tags", "Key=project,Value=sde-task-pipeline")
+    print("stored /sde/openrouter_api_base (String)")
 
     # The API's operator key (SDE_API_KEY): generated once, then kept.
     have = subprocess.run(["aws", "ssm", "get-parameter", "--region", REGION, "--name", "/sde/api_key"],
@@ -211,14 +229,20 @@ def cmd_author_mode(mode: str) -> None:
     print(f"/sde/author_mode = {mode}; run `make aws-deploy` to apply it")
 
 
-def cmd_deploy(ref: str = "HEAD") -> None:
-    out = outputs()
+def upload_release(ref: str, bucket: str) -> tuple[str, str]:
+    """`git archive` of REF to s3://<bucket>/releases/<sha>.tar.gz. Returns (sha, key)."""
     sha = run(["git", "rev-parse", ref], cwd=REPO)
     key = f"releases/{sha}.tar.gz"
     with tempfile.TemporaryDirectory() as tmp:
         tarball = Path(tmp) / "release.tar.gz"
         run(["git", "archive", "--format=tar.gz", "-o", str(tarball), sha], cwd=REPO)
-        aws("s3", "cp", str(tarball), f"s3://{out['artifacts_bucket']}/{key}")
+        aws("s3", "cp", str(tarball), f"s3://{bucket}/{key}")
+    return sha, key
+
+
+def cmd_deploy(ref: str = "HEAD") -> None:
+    out = outputs()
+    sha, key = upload_release(ref, out["artifacts_bucket"])
     ids = out["runner_instance_ids"]
     print(f"uploaded {sha[:12]} → s3://{out['artifacts_bucket']}/{key}; deploying to {len(ids)} runners…",
           flush=True)

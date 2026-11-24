@@ -87,6 +87,7 @@ class CallTimeout(Exception):
 def _client(timeout: float | None = None) -> OpenAI:
     if not config.OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not set (see .env)")
+    config.require_gateway_base()
     return OpenAI(
         base_url=config.OPENROUTER_API_BASE,
         api_key=config.OPENROUTER_API_KEY,

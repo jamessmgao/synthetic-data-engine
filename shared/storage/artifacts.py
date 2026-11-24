@@ -1,4 +1,4 @@
-"""Content-addressed, write-once artifacts: the project `ArtifactStore` (PRD §3, §6.7).
+"""Content-addressed, write-once artifacts: the local-files `ArtifactStore` (PRD §3, §6.7).
 
 Layout under the work dir:
 
@@ -98,7 +98,7 @@ def _atomic_copytree(src: Path, dest: Path) -> None:
 
 
 class LocalArtifactStore:
-    """Artifacts on local disk (the project default)."""
+    """Artifacts on local disk (the local default)."""
 
     def __init__(self, root: Path):
         self.root = root

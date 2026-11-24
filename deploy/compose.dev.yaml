@@ -115,7 +115,7 @@ services:
     environment:
       <<: *backend-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://gateway.example.com/openrouter/api/v1}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-}
     volumes: ["${PWD}/work:${PWD}/work", "${PWD}/output:/app/output"]
     depends_on: *depends
     restart: unless-stopped
@@ -136,7 +136,7 @@ services:
     environment:
       <<: *backend-env
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://gateway.example.com/openrouter/api/v1}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - "${PWD}/work:${PWD}/work"

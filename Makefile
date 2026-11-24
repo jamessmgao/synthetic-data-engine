@@ -85,7 +85,7 @@ aws-plan:
 	$(AWS_OPS) plan
 aws-apply:       ## VPC, RDS Postgres, ElastiCache Redis, S3, runner EC2
 	$(AWS_OPS) apply
-aws-secrets:     ## OPENROUTER_API_KEY from .env → SSM SecureString
+aws-secrets:     ## OPENROUTER_API_KEY (SecureString) and OPENROUTER_API_BASE from .env → SSM
 	$(AWS_OPS) secrets
 aws-author-mode: ## make aws-author-mode MODE=agent|oneshot (applies on the next aws-deploy)
 	$(AWS_OPS) author-mode $(MODE)

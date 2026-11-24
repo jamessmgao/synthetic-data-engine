@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evaluation import settings
+from shared.contracts import config
 
 
 # What Harbor records for a trial it was told to stop (SIGTERM).
@@ -273,6 +274,8 @@ def run_trial(task_dir: Path, job_id: str, agent: AgentConfig, cancel: threading
     if agent.agent == MOCK_AGENT and cancel.wait(MOCK_ROLLOUT_S * random.uniform(0.7, 1.3)):
         raise Cancelled()
 
+    if agent.model:  # a model-driven run: Harbor's LiteLLM needs the gateway (env or env file)
+        config.require_gateway_base(env_file)
     log_path = traces_dir / f"{job_id}.log"
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
