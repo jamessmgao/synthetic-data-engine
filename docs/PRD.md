@@ -1,6 +1,6 @@
 # PRD: Calibrated Task Generation Pipeline
 
-Status: written 2026-11-17, status block updated 2026-11-19. Written in a system-design format:
+Status: written 2026-11-17, status block updated 2026-11-19. Written as a system design document:
 requirements, core entities, API, high-level design, deep dives. Source material:
 [`TASK_GENERATION_RULES.md`](TASK_GENERATION_RULES.md) (difficulty levers and taxonomy, folded
 into §6.2 and §6.9), [`docs/diagrams/agent-evaluation-system_calibration_v3.excalidraw`](diagrams/agent-evaluation-system_calibration_v3.excalidraw)
@@ -496,7 +496,7 @@ containerized execution and S3. The diagram is
  Reconciler: reclaims expired leases, dead-letters, re-publishes, rebuilds Redis from PostgreSQL;
              a dead-lettered run still pings sde:analyze
  Analytics: read-only pass rates, cost, failure patterns, served through the API
- Inference egress gateway: FUTURE, not built; services call the SDE inference API directly
+ Inference egress gateway: FUTURE, not built; services call the model gateway's API directly
 ```
 
 ### 5.1 Core architecture
@@ -515,7 +515,7 @@ containerized execution and S3. The diagram is
 | **S3** | Immutable task bundles, LLM transcripts, raw execution traces and logs. | `ArtifactStore` |
 | **Reconciler** | Reclaims expired leases, dead-letters jobs that keep killing their worker (a dead run still pings `sde:analyze`), re-publishes unpublished jobs, rebuilds Redis from PostgreSQL. | `shared/jobs/reconciler.py` |
 | **Analytics** | Read-only: pass rates, duration, cost and failure patterns by taxonomy dimension, pitfall, invalid reason and version. Serves `GET /v1/report`. | `api/` report endpoint |
-| **Inference egress gateway** | **Future.** The first deployment calls the provided SDE inference API directly. | none |
+| **Inference egress gateway** | **Future.** The first deployment calls the model gateway's API directly. | none |
 
 **Who may change a task.** Every task change is a compare-and-set on `(current_version, stage)`,
 and each stage has exactly one owner, so two writers never race on the same step:

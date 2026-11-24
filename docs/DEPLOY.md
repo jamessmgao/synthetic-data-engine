@@ -10,6 +10,15 @@ Owner: infrastructure session. This covers how the pipeline runs on a laptop and
 
 The load test that set the numbers is in [LOAD_TEST.md](LOAD_TEST.md).
 
+**The repo's names no longer match the deployed stack.** On 2026-11-24 every
+project-prefixed name was changed to the `sde` prefix in the repo only (`SDE_*` settings,
+`/sde/*` SSM parameters, `/opt/sde`, the `sde` namespace, `sde-pipeline-*` resource names). The
+stack that is deployed still uses the earlier prefix. Do not run `terraform apply` from this tree against the existing state: it would
+plan to destroy and recreate the database and the buckets. The `make aws-*` targets here do not
+work against the deployed cluster either; operate it from a copy of the repo that predates the
+rename.
+[deploy/terraform/README.md](../deploy/terraform/README.md) lists every difference.
+
 **Which deployment runs production.** Production runs on K3s across the EC2 instances (§8.6).
 §2 and §4 to §6 describe the Docker Compose deployment on the same instances. `make aws-deploy`
 still installs it, and it is what `make aws-k8s-down` falls back to. The measurements in §4.4

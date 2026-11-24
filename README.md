@@ -52,7 +52,7 @@ hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
   is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). Sliding-window deployments with rolling restarts
   meant I could patch single task-builder pods at a time to test refinements. Coding agents read the trajectories and proposed one subtle,
   targeted change per finding, each on its own branch per mini-batch "lane"
-  ([38 lane branches](https://github.com/jamessmgao/synthetic-data-engine/branches/all?query=lane-)). I checked their changes, and each one was
+  (38 lane branches). I checked their changes, and each one was
   judged on the tasks authored after it ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
 
 This was the inflection point for the yield rate. The prompts became good enough to one-shot a
@@ -63,7 +63,7 @@ optimizations as the highest leverage:
 - **Prompt engineering:** instructions state outcomes, with no solution cues or semantic leaks. They
   went from 342 to 92 words ([`b9e1d01`](https://github.com/jamessmgao/synthetic-data-engine/commit/b9e1d01), [`4916619`](https://github.com/jamessmgao/synthetic-data-engine/commit/4916619)).
 - **Taxonomy seeding:** 22 → 62 bug mechanisms, spread across 40+ application domains
-  ([`lane-l1-taxonomy-domains`](https://github.com/jamessmgao/synthetic-data-engine/tree/lane-l1-taxonomy-domains)).
+  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py)).
 - **Trace-driven mutations:** the passing agent runs decide what to add: concurrency, cross-component
   paths, interacting invariants ([`evaluation/calibration.py`](evaluation/calibration.py),
   [`9af8ab7`](https://github.com/jamessmgao/synthetic-data-engine/commit/9af8ab7)).

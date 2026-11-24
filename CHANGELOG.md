@@ -1,7 +1,9 @@
 # Changelog
 
 Big changes only, newest first. Each heading gives the hour the change started, in PST, from its
-first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
+first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.) The history was squashed on
+2026-11-24: commit ids cited here and in docs/ are labels from the development history, not
+commits in this repository.
 
 ## 2026-11-24, 12 PM PST: layout tidy: leftovers deleted, deploy tooling in one place, real packages
 
@@ -39,6 +41,10 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
   task only when the scored runs don't already make the verdict certain. With 1 pass and 3
   fails the version is accepted on the 4 scored runs. The code already did this; the docs now
   say so (docs/VALIDATION.md, docs/EVALUATION.md, docs/PRD.md §6.4).
+- **Structural validator rewritten.** `validator/validate.py` now checks a task directory with
+  Harbor's own models (`TaskConfig`, `TaskPaths`, `Task`) plus the pipeline's rules, and has its
+  own tests (`validator/test_validate.py`). Harbor is a hard import there, as it already was in
+  `generator/materialize.py`. `validator/requirements.txt` is gone: nothing used it.
 - **Test commands.** `make test-unit` and `make test-all` run every suite: `tests/pipeline`,
   `tests/deploy`, `api`, `generator`, `evaluation`, `validator`, `authoring` and `experiments`
   (they ran four of the eight before).
@@ -50,8 +56,13 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
   both deploys read it from there. A model call without it fails with a message that names the
   variable.
 
+- **One name prefix, `sde`.** Every project-prefixed name now uses `sde`: the `SDE_*` settings, the `sde-task`
+  and `sde-world` CLIs, the scaffold modules, the image names, the namespace, `/opt/sde`, the
+  `/sde/*` SSM parameters, the `sde:` Redis prefix, the Terraform names and the skill
+  (`.claude/skills/sde-pipeline-api`). The change is in the repo only.
+
 **Why**
-- The repo still had the template's files and committed run output, deploy tooling in three
+- The repo still had unused files and committed run output, deploy tooling in three
   directories, and imports that only worked through path edits. A reader could not tell what was
   live.
 
@@ -63,6 +74,13 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
   checkout.
 - The scripted e2e scenarios no longer exercise early stopping; the one new test and the unit
   tests in tests/pipeline/test_services.py do.
+- The deployed AWS stack still uses the earlier prefix. Nothing was run against AWS. This tree's
+  Terraform must not be applied to the existing state (it would destroy and recreate the
+  database and the buckets), and its `make aws-*` targets do not work against the deployed
+  cluster. deploy/terraform/README.md lists the differences.
+- Local state under the earlier prefix is orphaned: the SQLite file in `work/`, the compose
+  Postgres volume, a k3d cluster, and settings in `deploy/local.env` or `.env`. Rename the
+  settings to `SDE_*` and recreate the rest.
 - docs/archive/ keeps its old paths in prose. Only its links were fixed.
 
 ## 2026-11-18, 5 PM PST: the final result, the README's "How we got here" and the presentation
@@ -86,7 +104,7 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.)
 
 **What changed**
 - **Project rename (3aefff5, f5cd88e).** The project is `synthetic-data-engine`, with a new
-  README. The first design spec is
+  README. The original spec is
   docs/SPEC.md (now docs/archive/SPEC.md).
 - **Merged docs (f5cd88e, 925adf4, d58c922, 4c37f01).**
   - docs/HILLCLIMBING.md merges the algorithm, the goal and the runbook.

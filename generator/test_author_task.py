@@ -145,7 +145,7 @@ def test_instruction_carries_the_world_the_shape_and_the_rules(work):
     # Round 2: checklist first, and system.md's long guidance sections left to sde-task check.
     assert text.index("# Checklist") < text.index("# The draft")
     assert "## What makes the task good" not in text and "Mistakes earlier drafts made" not in text
-    assert len(text) / 4 < 3500  # ≈ tokens
+    assert len(text) / 4 < 3510  # ≈ tokens (3500, plus the dozen characters the sde- names added)
     assert set(re.findall(r"\$\w+", text)) == {"$SDE_DOCKER_LABEL"}  # every template slot filled
     assert "never kill, stop or remove\ncontainers you didn't start" in text or \
         "never kill, stop or remove containers you didn't start" in text.replace("\n", " ")
