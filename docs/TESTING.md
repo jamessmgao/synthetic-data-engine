@@ -77,6 +77,11 @@ the Harbor trial. Each test scripts its tasks, for example "v1 scores 5/5, v2 sc
 "slot 3 times out once". The fake trial writes Harbor-shaped `result.json` files, which the
 executor's real classifier then scores.
 
+**Early stopping is off in the scripted stack.** In production a version is decided as soon
+as its verdict is certain, on whichever agent runs finish first. The scenarios assert exact
+jobs and pass counts, so `tests/e2e/stack.py` pins it off; one test,
+`test_early_stopping_decides_on_the_scored_runs`, turns it on (`SDE_E2E_EARLY_STOP=1`).
+
 **Backends.** Every test runs on SQLite + files. When Postgres, Redis and S3 are reachable on
 localhost (`make deps-up`), it also runs on the cluster, each test in its own throwaway
 Postgres database, reserved Redis DB and S3 bucket. It never touches the `sde` database or

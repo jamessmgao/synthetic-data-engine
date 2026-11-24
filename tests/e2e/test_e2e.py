@@ -226,6 +226,22 @@ def test_verdicts_explain_every_step(make_pipeline):
     assert retried["versions"][0]["pass_count"] == 2
 
 
+def test_early_stopping_decides_on_the_scored_runs(make_pipeline):
+    """Early stopping on, as in production (the other tests pin it off, see stack.py): with 1 pass
+    and 3 fails scored, the band is certain whatever slot 3 does, so the version is accepted on
+    the scored runs and slot 3, which never gets a valid run, doesn't reject the task."""
+    p = make_pipeline({"t01": SCENARIO["t06"]})
+    p.env["SDE_E2E_EARLY_STOP"] = "1"
+    p.submit()
+    p.wait(p.start())
+
+    got = p.api("GET", "/v1/tasks/e2e-t01")
+    assert (got["task"]["status"], got["task"]["accepted_version"]) == ("ACCEPTED", 1)
+    assert got["decision"].startswith("ACCEPTED: v1 passed 1 of ") and "early-stopped" in got["decision"]
+    assert {r["outcome"] for r in got["rollouts"] if r["slot"] == 3} <= {"INVALID", "SKIPPED"}
+    assert got["versions"][0]["analysis"]["early_stopped"]["why"] == "certain in band"
+
+
 def test_resubmitting_finished_tasks_changes_nothing(make_pipeline):
     p = make_pipeline({"t01": SCENARIO["t01"]})
     p.submit()

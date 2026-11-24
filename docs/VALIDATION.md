@@ -307,7 +307,8 @@ copies of the service can't both decide. Of 150 tasks so far:
 | 4-5 of 5 passed (too easy) | world mutation: 1-2 operators aimed at what the passing runs did, chosen from the Trace Parser's pass review |
 | 0 of 5 passed (too hard) | revise `easier` on the same world |
 | still out of band at version 8 | **rejected** `exhausted` |
-| a slot still without a valid run after 3 retries | **rejected** `infra_unresolved` |
+| a slot still without a valid run after 3 retries, and the scored runs don't make the verdict certain | **rejected** `infra_unresolved` |
+| a slot still without a valid run, but the scored runs make the verdict certain (e.g. 1 pass and 3 fails) | decided on the scored runs (early stopping); the slot is skipped |
 | any draft still failing a gate after 2 repairs | **rejected** `invalid` |
 
 **Early stopping** closes the remaining runs as `SKIPPED` when they can't change the

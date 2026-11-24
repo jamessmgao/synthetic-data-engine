@@ -276,6 +276,9 @@ class Pipeline:
 def make_pipeline(request, tmp_path, monkeypatch):
     """make_pipeline(scenario) -> Pipeline on this test's backend."""
     created: list[Pipeline] = []
+    # A test parametrized straight to "cluster" (test_e2e.py's cluster_only) has no skipif mark.
+    if request.param == "cluster" and not cluster_up():
+        pytest.skip("compose data services not reachable (make deps-up)")
     resources = _ClusterResources() if request.param == "cluster" else None
     # SQLite defaults to <SDE_WORK_DIR>/sde.db; every process must share one file.
     env = resources.__enter__() if resources else {"DATABASE_URL": f"sqlite:///{tmp_path / 'sde.db'}"}

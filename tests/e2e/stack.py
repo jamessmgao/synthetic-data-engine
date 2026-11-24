@@ -68,6 +68,11 @@ def real_adapters(backend):
 
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(process)d %(name)s %(message)s")
+    if os.environ.get("SDE_E2E_EARLY_STOP") != "1":
+        # Early stopping decides a version on whichever runs finish first, so the scripted
+        # scenarios (exact jobs, exact pass counts) pin it off; one test turns it on.
+        from evaluation import trace_parser_service
+        trace_parser_service.early_stop = lambda scored, n_runs: None
     backend = from_env()
     stop = threading.Event()
     executor = Executor(backend, run_trial=fakes.run_trial)

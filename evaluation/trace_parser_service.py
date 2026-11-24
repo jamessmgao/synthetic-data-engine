@@ -8,8 +8,10 @@ ping's (task, version), this service:
 1. finishes with `stale` if the task was decided or moved to another version;
 2. looks at the version's five run slots. A slot whose last attempt is DEAD or
    INVALID with retries left gets its retry (the executor already enqueued one
-   for INVALID; this covers DEAD runs). A slot out of retries rejects the task
-   (`infra_unresolved`). Any slot still open: finish with `wait`;
+   for INVALID; this covers DEAD runs). If the scored runs already make the
+   verdict certain (`early_stop`), the version is decided on them and the open
+   slots are skipped. Otherwise a slot out of retries rejects the task
+   (`infra_unresolved`), and any slot still open finishes with `wait`;
 3. once every slot is scored, fetches the five traces (S3 in production),
    extracts metrics and evidence and has GLM-5.1 review each failure
    (evaluation/trace_parser.py), then decides:
