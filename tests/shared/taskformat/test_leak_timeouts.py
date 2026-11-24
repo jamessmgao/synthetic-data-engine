@@ -3,7 +3,6 @@
 silently passed). Scripted model calls, no spend."""
 
 import json
-import sys
 import threading
 import time
 import types
@@ -11,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from shared.llm import llm
+from validator import gates
+from tests.shared.taskformat.test_leak_review import P1_INSTRUCTION, bundle
+
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / "generator")]
-from validator import gates  # noqa: E402
-from shared.llm import llm  # noqa: E402
-from test_leak_review import P1_INSTRUCTION, bundle  # noqa: E402
 
 CLEAN = {"verdict": "clean", "leaks": []}
 PREDICTION = {"predicted_fix": "unclear", "predicted_failure": "unclear"}

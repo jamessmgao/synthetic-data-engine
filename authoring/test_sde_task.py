@@ -1,15 +1,12 @@
 """sde-task check / run (fake Docker), and sde-world's CLI wrapper."""
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path[:0] = [str(Path(__file__).resolve().parent), str(Path(__file__).resolve().parents[1] / "generator")]
-
-from authoring import sde_task  # noqa: E402
-from test_generator import VALID, draft_with  # noqa: E402
+from authoring import sde_task
+from generator.test_generator import VALID, draft_with
 
 PLAUSIBLE = "take the middle element without averaging"
 WRONG = f"# plausible_wrong_fix: {PLAUSIBLE}\ncat > /app/stats.py <<'EOF'\ndef median(xs):\n    return sorted(xs)[len(xs) // 2]\nEOF\n"

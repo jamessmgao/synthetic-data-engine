@@ -273,9 +273,9 @@ def authoring(monkeypatch):
         return {"outcome": "OK", "failed_check": None, "feedback": "", "cost_usd": None,
                 "result": {"checks": {"build": True, "repro_fails": True, "repro_passes_with_fix": True}}}
 
-    monkeypatch.setitem(sys.modules, "author", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "generator.author", types.SimpleNamespace(
         run_world_job=run_world_job, run_create_job=run_create_job))
-    monkeypatch.setitem(sys.modules, "gates", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "validator.gates", types.SimpleNamespace(
         run_world_check_job=run_world_check_job, run_validate_job=None))
     return calls
 
@@ -333,7 +333,7 @@ def test_agent_mode_picks_the_draft_function_per_job(backend, authoring, monkeyp
         oneshot.append(job_id)
         return {"outcome": "FAILED", "error": "no draft", "cost_usd": 0.01, "result": {}}
 
-    monkeypatch.setitem(sys.modules, "worker", types.SimpleNamespace(run_generate_job=run_generate_job))
+    monkeypatch.setitem(sys.modules, "generator.worker", types.SimpleNamespace(run_generate_job=run_generate_job))
     t = add_task(backend)
     draft = worker.draft_fn(backend, "agent")
     fields = draft({"id": f"{t}-v1-create", "bundle_sha256": None, "input": {"origin": "initial", "prompt": "x"}})
@@ -421,7 +421,7 @@ def test_a_trial_is_saved_even_when_the_authoring_function_raises(backend, monke
         trial.write_text("40 minutes of work")
         raise RuntimeError("docker daemon went away")
 
-    monkeypatch.setitem(sys.modules, "author", types.SimpleNamespace(run_world_job=run_world_job,
+    monkeypatch.setitem(sys.modules, "generator.author", types.SimpleNamespace(run_world_job=run_world_job,
                                                                      run_create_job=None))
     monkeypatch.setattr(backend.artifacts, "save_trace", lambda jid: saved.append(jid) or f"traces/{jid}/")
     with pytest.raises(RuntimeError):
@@ -433,7 +433,7 @@ def test_the_create_jobs_leak_review_is_shared_with_validate(backend, monkeypatc
     registered, fetched = [], []
     monkeypatch.setattr(backend.artifacts, "register_file", lambda rel: registered.append(rel))
     monkeypatch.setattr(backend.artifacts, "fetch_file", lambda rel: fetched.append(rel) or False)
-    real_create = sys.modules["author"].run_create_job
+    real_create = sys.modules["generator.author"].run_create_job
 
     def create_with_review(job_id, job_input, work_dir=None):
         out = real_create(job_id, job_input, work_dir)
@@ -442,12 +442,12 @@ def test_the_create_jobs_leak_review_is_shared_with_validate(backend, monkeypatc
         review.write_text("{}")
         return out
 
-    monkeypatch.setattr(sys.modules["author"], "run_create_job", create_with_review)
+    monkeypatch.setattr(sys.modules["generator.author"], "run_create_job", create_with_review)
     world = worker.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
     sha = worker.draft_fn(backend, "agent")({"id": "t-v1-create", "bundle_sha256": None,
                                              "input": {"origin": "initial", "world_sha256": world}})["bundle_sha256"]
     assert f"leak_reviews/{sha}/review.json" in registered
-    monkeypatch.setitem(sys.modules, "gates", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "validator.gates", types.SimpleNamespace(
         run_validate_job=lambda b, t, **kw: {"outcome": "OK", "result": {"gates": {}}, "feedback": ""},
         run_world_check_job=None))
     worker.validate_fn(backend)({"id": "t-v1-validate-r0", "bundle_sha256": sha, "input": {}})
@@ -518,7 +518,7 @@ def test_oneshot_create_is_unchanged(backend, monkeypatch):
         calls.append(job_id)
         return {"outcome": "FAILED", "error": "no draft", "cost_usd": 0.01, "result": {}}
 
-    monkeypatch.setitem(sys.modules, "worker", types.SimpleNamespace(run_generate_job=run_generate_job))
+    monkeypatch.setitem(sys.modules, "generator.worker", types.SimpleNamespace(run_generate_job=run_generate_job))
     fns = worker.generation_fns(backend)
     assert set(fns) == {"create", "revise"}
     fields = fns["create"]({"id": "x-v1-create", "type": "create", "bundle_sha256": None,
@@ -531,13 +531,13 @@ def test_a_reused_worlds_create_gets_the_earlier_tasks_instructions(backend, aut
     (each task's latest bundle on that world; not its own, not other worlds'), so it writes a
     different one. A fresh world's create gets none."""
     seen = []
-    real = sys.modules["author"].run_create_job
+    real = sys.modules["generator.author"].run_create_job
 
     def run_create_job(job_id, job_input, work_dir=None):
         seen.append(job_input.get("earlier_instructions"))
         return real(job_id, job_input, work_dir)
 
-    monkeypatch.setattr(sys.modules["author"], "run_create_job", run_create_job)
+    monkeypatch.setattr(sys.modules["generator.author"], "run_create_job", run_create_job)
     draft = worker.draft_fn(backend, "agent")
     src, other, new = add_task(backend), add_task(backend), add_task(backend)
     world = worker.world_fn(backend)({"id": f"{src}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]

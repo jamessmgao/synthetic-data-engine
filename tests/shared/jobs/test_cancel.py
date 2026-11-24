@@ -144,7 +144,6 @@ def test_the_generation_service_stops_lost_authoring_trials(monkeypatch):
     monkeypatch.setattr(worker, "serve", lambda *a, **kw: seen.update(kw))
     worker.serve_generation(type("B", (), {"store": None, "queue": None, "artifacts": None})(), lambda j: {})
     assert seen["on_lost"] is worker.stop_authoring_trial
-    worker._import_task_builder()
     from generator import authoring_harness
 
     called = []

@@ -2,14 +2,11 @@
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / "generator")]
-from validator import gates  # noqa: E402
+from validator import gates
 
 
 def fake_harbor(calls, timeout=False):

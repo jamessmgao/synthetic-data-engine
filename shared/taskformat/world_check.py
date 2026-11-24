@@ -55,14 +55,12 @@ import json
 import os
 import re
 import subprocess
-import sys
 import uuid
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generator"))
-from shared.contracts import config  # noqa: E402
-from shared.taskformat.materialize import _pin_base_images  # noqa: E402
-from shared.taskformat.schema import _check_dockerfile  # noqa: E402
+from shared.contracts import config
+from shared.taskformat.materialize import _pin_base_images
+from shared.taskformat.schema import _check_dockerfile
 
 RUNS = 2  # each repro check runs twice: a flaky counterexample is not a counterexample
 # Per script. A check runs ~10 scripts, so a repro that never returns (a lock, a retry loop, a

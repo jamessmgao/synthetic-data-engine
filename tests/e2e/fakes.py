@@ -302,7 +302,7 @@ def _tree_sha(root: Path) -> str:
 
 
 def author_world_job(job_id: str, job_input: dict, work_dir=None, **_: Any) -> dict:
-    from shared.taskformat import schema  # shared/taskformat/schema.py, on the path once the adapters import task-builder
+    from shared.taskformat import schema
 
     work = Path(work_dir)
     for key in ("parent_world_sha256", "world_sha256"):  # the adapter must have fetched it

@@ -55,7 +55,6 @@ def real_adapters(backend):
     authoring trial and Docker replaced (fakes.author_* and fakes.docker)."""
     from shared.jobs import worker
 
-    worker._import_task_builder()
     from generator import author  # generator/author.py; draft_fn and world_fn import from it per call
     from shared.taskformat import world_check  # shared/taskformat/world_check.py; gates re-exports its run_world_check_job
 

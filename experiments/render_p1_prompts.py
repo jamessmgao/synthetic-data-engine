@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path[:0] = [str(ROOT / "generator"), str(ROOT / "validator"), str(ROOT)]
+sys.path.insert(0, str(ROOT))
 
 from generator import author  # noqa: E402
 from generator import author_task  # noqa: E402

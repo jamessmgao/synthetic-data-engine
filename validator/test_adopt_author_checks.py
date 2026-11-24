@@ -2,14 +2,11 @@
 world_check the world author's stamped sde-world check, only for the exact draft / world."""
 
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from validator import gates  # noqa: E402
-from shared.taskformat import world_check  # noqa: E402
+from shared.taskformat import world_check
+from validator import gates
 
 STAMP = "a" * 64
 SHA = "b" * 64

@@ -45,7 +45,6 @@ import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Callable
 
@@ -288,10 +287,7 @@ for). Otherwise "model".
 
 
 def _llm():
-    """shared/llm/llm.py uses flat imports (`import config`), so put generator/ on the path."""
-    root = Path(__file__).resolve().parent.parent
-    if str(root / "generator") not in sys.path:
-        sys.path.insert(0, str(root / "generator"))
+    """shared/llm/llm.py, imported on first use."""
     from shared.llm import llm
     return llm
 
@@ -366,7 +362,7 @@ PASS_COMMANDS = 12  # commands quoted per run
 
 
 def _hardening_techniques() -> dict[str, str]:
-    _llm()  # puts generator/ on the path
+    _llm()  # as before the package layout: loads shared.contracts.config (and the repo's .env) first
     from generator import prompting
     return prompting.HARDENING_TECHNIQUES
 

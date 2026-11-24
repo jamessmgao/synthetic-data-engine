@@ -12,6 +12,7 @@ traces/<job_id>/. A summary of the run is written to runs/<run_id>.json, and a
 valid task is copied to output/<name>/.
 
 Usage: python scripts/generate.py <prompt-file | prompt text | spec.json>
+       (or python -m scripts.generate ...)
 """
 
 import argparse
@@ -23,10 +24,12 @@ import time
 import uuid
 from pathlib import Path
 
-from shared.contracts import config
-from generator.worker import run_generate_job
+if not __package__:  # run by path (python scripts/generate.py): the repo root goes on the import path, in place of this directory
+    _here = Path(__file__).resolve().parent
+    sys.path[:] = [str(_here.parent)] + [p for p in sys.path if p != str(_here)]
 
-sys.path.insert(0, os.path.join(config.ROOT_DIR, "validator"))
+from shared.contracts import config  # noqa: E402
+from generator.worker import run_generate_job  # noqa: E402
 from validator.gates import run_validate_job  # noqa: E402
 
 

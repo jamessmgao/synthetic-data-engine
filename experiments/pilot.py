@@ -32,11 +32,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "generator"))
-sys.path.insert(0, str(ROOT / "validator"))
+sys.path.insert(0, str(ROOT))
 from shared.contracts import config  # noqa: E402
-from validator.gates import run_validate_job  # noqa: E402
 from generator.worker import run_generate_job  # noqa: E402
+from validator.gates import run_validate_job  # noqa: E402
 
 BUDGET_USD = 80.0
 # Docker slots, split so long agent runs can never starve the gates: a

@@ -50,7 +50,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SDE = Path(__file__).resolve().parent.parent  # /opt/sde in the image, the repo root locally
-sys.path[:0] = [str(SDE / "generator"), str(SDE / "validator")]
+if not __package__:  # run by path (bin/sde-task): the root goes on the import path, in place of this directory
+    _here = Path(__file__).resolve().parent
+    sys.path[:] = [str(_here.parent)] + [p for p in sys.path if p != str(_here)]
 
 from pydantic import ValidationError  # noqa: E402
 

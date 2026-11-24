@@ -19,14 +19,8 @@ validate or world_check job can adopt it (SDE_ADOPT_AUTHOR_CHECKS).
 """
 
 import json
-import sys
 import tempfile
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parent.parent
-for sub in ("validator", "authoring"):
-    if str(ROOT / sub) not in sys.path:
-        sys.path.insert(0, str(ROOT / sub))
 
 
 def _saved(path: Path) -> dict | None:

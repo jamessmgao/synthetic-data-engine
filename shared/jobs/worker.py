@@ -29,7 +29,6 @@ import logging
 import os
 import signal
 import socket
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -344,20 +343,9 @@ def serve_validate(backend: Backend, fn: JobFns, **kw: Any) -> None:
 # --- adapters to task-builder's job functions -------------------------------------
 
 
-def _import_task_builder():
-    """task-builder's modules use flat imports (`import config`), so they need
-    generator/ and validator/ on the path."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for sub in ("generator", "validator"):
-        path = os.path.join(root, sub)
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-
 def stop_authoring_trial(job: dict[str, Any]) -> None:
     """A lost agent job (cancelled, or taken over): stop its Harbor trial now
     (generator/authoring_harness.py:stop_trial), as the Executor does for rollouts."""
-    _import_task_builder()
     from generator import authoring_harness
 
     if authoring_harness.stop_trial(job["id"]):
@@ -422,7 +410,6 @@ def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
     A job may run on another machine than the one that wrote its inputs, so the
     parent bundle, its draft record and the world are made local first; the new
     bundle and draft record are registered after."""
-    _import_task_builder()
     from generator.worker import run_generate_job  # generator/worker.py
 
     def run(job: dict[str, Any]) -> dict[str, Any]:
@@ -467,7 +454,6 @@ def draft_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
 def world_fn(backend: Backend) -> JobFn:
     """world (agent mode): build a world, repair one (input.world_sha256) or mutate
     one (input.parent_world_sha256) with run_world_job; register the new world."""
-    _import_task_builder()
     from generator.author import run_world_job  # generator/author.py
 
     def run(job: dict[str, Any]) -> dict[str, Any]:
@@ -508,7 +494,6 @@ def generate_fn(backend: Backend, mode: str = AUTHOR_MODE) -> JobFn:
 
 
 def validate_fn(backend: Backend) -> JobFn:
-    _import_task_builder()
     from validator.gates import run_validate_job  # validator/gates.py
 
     def run(job: dict[str, Any]) -> dict[str, Any]:
@@ -534,7 +519,6 @@ def validate_fn(backend: Backend) -> JobFn:
 
 def world_check_fn(backend: Backend) -> JobFn:
     """world_check (agent mode): run_world_check_job on the world (plan §3.5)."""
-    _import_task_builder()
     from validator.gates import run_world_check_job  # validator/gates.py
     from shared.taskformat.world_check import adopt_author_check
 

@@ -3,7 +3,7 @@
 import json
 
 from generator.self_check import ensure_task_checked
-from test_generator import VALID, draft_with
+from generator.test_generator import VALID, draft_with
 
 PLAUSIBLE = "take the middle element without averaging"
 WRONG = f"# plausible_wrong_fix: {PLAUSIBLE}\ncat > /app/stats.py <<'EOF'\ndef median(xs):\n    return 0\nEOF\n"

@@ -59,7 +59,6 @@ bundles are content-addressed, and the draft record and leak review are written 
 import hashlib
 import json
 import os
-import sys
 from pathlib import Path
 from string import Template
 from typing import Any, Callable
@@ -527,10 +526,7 @@ def _ensure_task_checked(draft_path: Path, world_dir: Path, artifacts_dir: Path)
 
 
 def _leak_review(bundle_dir: Path, trace_dir: Path):
-    """validator/gates.py's leak gate (validator/ sits next to generator/ here and in the image)."""
-    validator = str(Path(__file__).resolve().parent.parent / "validator")
-    if validator not in sys.path:
-        sys.path.insert(0, validator)
+    """validator/gates.py's leak gate."""
     from validator.gates import gate_leak
 
     return gate_leak(bundle_dir, trace_dir)

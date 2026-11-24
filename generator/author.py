@@ -34,7 +34,6 @@ import json
 import os
 import re
 import shutil
-import sys
 import uuid
 from pathlib import Path
 from string import Template
@@ -45,9 +44,7 @@ from generator.author_task import render_world_mutation_instruction, run_create_
 from generator.families import brief_for, domain_line, mechanism_line
 from shared.taskformat.schema import BASE_IMAGES
 from generator.self_check import ensure_world_checked
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "validator"))
-from shared.taskformat.world_check import _check_structure  # noqa: E402
+from shared.taskformat.world_check import _check_structure
 
 PROMPTS = Path(config.PROMPTS_DIR)
 WORLD_OUT = "world"  # under the trial's artifacts dir (/logs/artifacts/world/ in the container)

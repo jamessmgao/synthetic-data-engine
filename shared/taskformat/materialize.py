@@ -28,8 +28,12 @@ from pathlib import Path
 
 from harbor.models.task.config import TaskConfig
 
-from shared.contracts import config
-from shared.taskformat.schema import AGENT_USER, BASE_IMAGES, FileEntry, TaskDraft, dockerfile_workdir
+if not __package__:  # run by path (python shared/taskformat/materialize.py): the repo root goes on the import path, in place of this directory
+    _here = Path(__file__).resolve().parent
+    sys.path[:] = [str(_here.parents[1])] + [p for p in sys.path if p != str(_here)]
+
+from shared.contracts import config  # noqa: E402
+from shared.taskformat.schema import AGENT_USER, BASE_IMAGES, FileEntry, TaskDraft, dockerfile_workdir  # noqa: E402
 
 # Runs after the agent finishes. Test-only dependencies are installed here, not
 # baked into the image (Harbor's task rubric), with pinned versions and
@@ -264,7 +268,7 @@ def write_bundle(draft: TaskDraft, bundles_dir: str | Path, generation_meta: dic
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        sys.exit("Usage: python materialize.py <draft.json> <task_dir>")
+        sys.exit("Usage: python shared/taskformat/materialize.py <draft.json> <task_dir>")
     record = json.loads(Path(sys.argv[1]).read_text())
     draft = TaskDraft.model_validate(record["draft"])
     print(materialize(draft, sys.argv[2], record.get("generation_meta")))

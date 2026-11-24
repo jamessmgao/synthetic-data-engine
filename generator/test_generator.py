@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -21,10 +20,8 @@ from shared.llm import llm
 from shared.taskformat.materialize import bundle_sha256, materialize, write_bundle
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 from generator.worker import RESPONSE_FORMAT, run_generate_job
-
-sys.path.insert(0, os.path.join(config.ROOT_DIR, "validator"))
-from validator.validate import validate_task  # noqa: E402
-from validator import gates  # noqa: E402,F401  (validator/gates.py)
+from validator import gates  # noqa: F401  (validator/gates.py)
+from validator.validate import validate_task
 
 VALID = {
     "name": "fix-median-calculation",
@@ -704,7 +701,7 @@ def test_world_check_rejects_bad_structure_before_docker(tmp_path, monkeypatch, 
 
 
 def test_world_check_is_exported_by_gates():
-    assert gates.run_world_check_job.__module__ == "world_check"
+    assert gates.run_world_check_job.__module__ == "shared.taskformat.world_check"
 
 
 def test_system_prompt_carries_the_rules_and_examples():

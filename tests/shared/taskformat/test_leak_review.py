@@ -4,15 +4,14 @@ model calls are scripted (no spend); what is tested is what each call is shown, 
 findings are verified and graded, and the verdict rules."""
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from shared.llm import llm
+from validator import gates
+
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / "generator")]
-from validator import gates  # noqa: E402
-from shared.llm import llm  # noqa: E402
 
 P1 = HERE / "fixtures" / "p1"
 P1_INSTRUCTION = (P1 / "instruction.md").read_text()

@@ -40,9 +40,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
-for p in (ROOT, ROOT / "generator", ROOT / "validator"):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from shared.taxonomy.taxonomy import sample_spec_v2  # noqa: E402
 

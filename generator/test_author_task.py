@@ -11,7 +11,7 @@ import pytest
 
 from generator import author_task as at
 from generator.families import brief_for
-from test_generator import VALID, WRONG_FIX, draft_with
+from generator.test_generator import VALID, WRONG_FIX, draft_with
 from generator.worker import load_draft_record
 
 WORLD = {
@@ -665,8 +665,8 @@ def test_the_task_author_stops_at_15_minutes(work):
                                                 ("author", "SDE_WORLD_TIMEOUT_S", 7200.0)])
 def test_authoring_time_boxes_are_env_overridable(module, var, default):
     root = Path(__file__).resolve().parent.parent
-    code = (f"import sys; sys.path[:0] = [{str(root / 'generator')!r}, {str(root / 'validator')!r}]; "
-            f"import {module}; print({module}.AUTHOR_TIMEOUT_SEC)")
+    code = (f"import sys; sys.path.insert(0, {str(root)!r}); "
+            f"from generator import {module}; print({module}.AUTHOR_TIMEOUT_SEC)")
     env = {k: v for k, v in os.environ.items() if k != var}
 
     def timeout(extra):

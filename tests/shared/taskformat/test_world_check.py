@@ -1,13 +1,10 @@
 """shared/taskformat/world_check.py's checks, against a scripted Docker (no builds, no containers)."""
 
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shared.taskformat import world_check as wc  # noqa: E402
+from shared.taskformat import world_check as wc
 
 FIX, WRONG, REPRO, SYMPTOM, DEPENDENT = wc.FIX, wc.WRONG, wc.REPRO, wc.SYMPTOM, wc.DEPENDENT
 
@@ -115,7 +112,6 @@ def test_warn_does_not_require_the_new_scripts(world, tmp_path, monkeypatch):
 
 def test_sde_world_shows_the_author_each_warning_with_a_fix_and_still_passes_in_warn(world, tmp_path, monkeypatch,
                                                                                      capsys):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "authoring"))
     from authoring import sde_world
 
     monkeypatch.setenv("SDE_WORLD_HARDNESS", "warn")
@@ -275,7 +271,6 @@ def test_limit_named_is_recorded_as_a_warning_that_never_fails_the_world(world, 
 
 
 def test_sde_world_shows_the_limit_named_warning_with_the_matched_text():
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "authoring"))
     from authoring import sde_world
 
     hit = {"file": "/app/opt.go", "function": "findTopLevelAssignments", "where": "name", "matched": ["toplevel"],

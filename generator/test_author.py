@@ -289,4 +289,4 @@ def test_a_mutation_keeps_what_the_author_says_it_defeats(tmp_path):
 
 
 def test_run_create_job_is_re_exported():
-    assert author.run_create_job.__module__ == "author_task"
+    assert author.run_create_job.__module__ == "generator.author_task"

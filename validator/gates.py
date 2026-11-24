@@ -24,7 +24,6 @@ Usage: python gates.py <bundle_dir> <trace_dir>
 """
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -32,7 +31,10 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "generator"))
+if not __package__:  # run by path (python validator/gates.py): the repo root goes on the import path, in place of this directory
+    _here = Path(__file__).resolve().parent
+    sys.path[:] = [str(_here.parent)] + [p for p in sys.path if p != str(_here)]
+
 from shared.contracts import config  # noqa: E402
 from validator.validate import validate_task  # noqa: E402
 from shared.taskformat.world_check import run_world_check_job  # noqa: E402,F401  (the world_check job, re-exported)
@@ -666,7 +668,7 @@ def run_validate_job(bundle_dir: str | Path, trace_dir: str | Path, author_check
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        sys.exit("Usage: python gates.py <bundle_dir> <trace_dir>")
+        sys.exit("Usage: python validator/gates.py <bundle_dir> <trace_dir>")
     res = run_validate_job(sys.argv[1], sys.argv[2])
     for name, g in res["result"]["gates"].items():
         print(f"{'PASS' if g['passed'] else 'FAIL'}  {name}")
