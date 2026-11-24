@@ -36,7 +36,7 @@ path, command and format the tests rely on). It must **not** state:
 - for a speedup, the orderings, tie-breaks or edge cases to keep: say "the same output as
   now".
 
-From P1 (`output/p1/p1-local-1`, quoted in the prompt):
+From P1 (`tests/fixtures/p1-local-1`, quoted in the prompt):
 
 > BAD: The documented fault-injection hook is `STOP_AFTER=inventory`: when a claimed request
 > can be fulfilled, a worker exits with status `70` after the accepted inventory movement and

@@ -10,19 +10,22 @@ TEST_ENV := SDE_TEST_DATABASE_URL=postgresql://sde:sde@localhost:$${SDE_PG_PORT:
             SDE_TEST_S3_ENDPOINT=http://localhost:$${SDE_S3_PORT:-9000} \
             AWS_ACCESS_KEY_ID=sde-dev AWS_SECRET_ACCESS_KEY=sde-dev-secret AWS_DEFAULT_REGION=us-east-1
 
+# Every unit-test suite: the packages' own tests plus tests/shared and tests/deploy.
+UNIT_TESTS := tests/shared tests/deploy api generator evaluation validator authoring experiments
+
 .PHONY: test test-unit test-e2e test-all deps-up test-infra up up-agent authoring-image down logs ps reconcile
 
 test:            ## infrastructure tests on SQLite + files (no services needed)
 	$(PYTHON) -m pytest tests/shared -q
 
 test-unit:       ## every component's unit tests (no services, no model calls)
-	$(PYTHON) -m pytest tests/shared api generator evaluation -q
+	$(PYTHON) -m pytest $(UNIT_TESTS) -q
 
 test-e2e:        ## the whole pipeline as processes, on SQLite and (if up) the compose cluster; no model calls
 	$(PYTHON) -m pytest tests/e2e -q
 
 test-all: deps-up  ## everything above, with the cluster up
-	$(TEST_ENV) $(PYTHON) -m pytest tests/shared api generator evaluation tests/e2e -q
+	$(TEST_ENV) $(PYTHON) -m pytest $(UNIT_TESTS) tests/e2e -q
 
 deps-up:         ## Postgres + Redis + S3 (RustFS) only
 	$(COMPOSE) up -d --wait postgres redis s3

@@ -3,20 +3,6 @@ from pathlib import Path
 
 import inspect_task
 
-EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-
-
-def test_audit_catches_the_hidden_login_in_configure_git_webserver():
-    r = inspect_task.audit(EXAMPLES / "configure-git-webserver")
-    assert r["verdict"].startswith("SUSPECT")
-    assert {(x["kind"], x["value"]) for x in r["unstated"]} == {
-        ("user@host", "git@localhost"), ("credential", "password")}
-
-
-def test_audit_passes_examples_that_state_what_they_test():
-    for name in ("openssl-selfsigned-cert", "log-summary-date-ranges", "fix-code-vulnerability"):
-        assert inspect_task.audit(EXAMPLES / name)["verdict"] == "OK", name
-
 
 def test_audit_accepts_values_stated_in_prose_or_provided_by_the_environment(tmp_path):
     (tmp_path / "environment").mkdir()

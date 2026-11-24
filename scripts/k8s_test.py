@@ -37,7 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CTX, NS, KUBECONFIG = "k3d-sde", "sde", None
-FIXTURE = ROOT / "output" / "p1" / "p1-local-1" / "task"
+FIXTURE = ROOT / "tests" / "fixtures" / "p1-local-1" / "task"
 POD_FIXTURE = "/tmp/k8s-test-fixture"
 DECIDED = ("ACCEPTED", "REJECTED", "CANCELLED")
 DRY = False

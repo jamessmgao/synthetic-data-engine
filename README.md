@@ -8,9 +8,9 @@ The output is RL training environments in the Harbor / Terminal-Bench 2 task for
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
 `glm-5.3-flash` at `reasoning_effort=high`.
 
-![The synthetic-data-engine presentation in 9 slides](docs/slides/synthetic-data-engine-slides.png)
+![The synthetic-data-engine presentation in 9 slides](docs/archive/slides/synthetic-data-engine-slides.png)
 
-*The presentation in 9 slides* (the deck: [docs/slides/synthetic-data-engine-presentation-v7.pptx](docs/slides/synthetic-data-engine-presentation-v7.pptx)).
+*The presentation in 9 slides* (the deck: [docs/archive/slides/synthetic-data-engine-presentation-v7.pptx](docs/archive/slides/synthetic-data-engine-presentation-v7.pptx)).
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
@@ -73,7 +73,7 @@ optimizations as the highest leverage:
 **Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
 77). Why the accepted tasks are hard:
 [docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). Example tasks with links to the runs:
-[docs/DEMO_EXAMPLES.md](docs/DEMO_EXAMPLES.md).
+[docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md).
 
 ## What it does
 
@@ -162,7 +162,7 @@ POST /v1/tasks | /v1/batches
 ```
 
 The architecture diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw);
-the original design spec is [`docs/SPEC.md`](docs/SPEC.md).
+the original design spec is [`docs/archive/SPEC.md`](docs/archive/SPEC.md).
 
 ## Services
 
@@ -233,8 +233,7 @@ curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H" -H 'Content-Type: ap
   OVERLAY=aws-prod` applies the production overlay (`infra/k8s/overlays/aws-prod`). Agent
   mode: `make aws-author-mode MODE=agent`.
 
-See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment and every runtime setting,
-[docs/DEPLOY.md](docs/DEPLOY.md) for agent mode,
+See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment, agent mode and every runtime setting,
 [docs/CAPACITY.md](docs/CAPACITY.md) for the cluster's size, concurrency limits and cost, and
 [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for the load test with mocked models. CPU is the
 bottleneck; there were 0 INVALID in 230 agent runs.
@@ -242,13 +241,13 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 ## Docs
 
 **Start here**
-- [docs/slides/](docs/slides/): the presentation (the 9-slide image above, and the deck).
-- [docs/DEMO_EXAMPLES.md](docs/DEMO_EXAMPLES.md): seven example tasks for the demo, with links to the runs in the dashboard.
+- [docs/archive/slides/](docs/archive/slides/): the presentation (the 9-slide image above, and the deck).
+- [docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md): seven example tasks for the demo, with links to the runs in the dashboard.
 - [CHANGELOG.md](CHANGELOG.md): every change, with commits.
 
 **Design**
 - [docs/PRD.md](docs/PRD.md): requirements, data model, API, the services-on-queues design, deep dives.
-- [docs/SPEC.md](docs/SPEC.md): the original implementation spec (historical; the PRD is current).
+- [docs/archive/SPEC.md](docs/archive/SPEC.md): the original implementation spec (historical; the PRD is current).
 - [docs/DURABILITY.md](docs/DURABILITY.md): every durability and recovery guarantee, with its code, test and limits.
 - [docs/WORKER_INTERFACE.md](docs/WORKER_INTERFACE.md): the job-function contract between the services and the task-building code.
 - [docs/ARCHITECTURE_REVIEW.md](docs/ARCHITECTURE_REVIEW.md): every review finding, with its resolution and commit.
@@ -280,4 +279,4 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 - [web/README.md](web/README.md): the dashboard (Overview, Batches, Tasks, Analytics).
 - [docs/TODO.md](docs/TODO.md): deferred work.
 
-**Archive** ([docs/archive/](docs/archive/)): early analyses kept for the record (`ANALYSIS.md`, `PILOT_RESULTS.md`, `LINKS.md`).
+**Archive** ([docs/archive/](docs/archive/)): early analyses kept for the record (`ANALYSIS.md`, `PILOT_RESULTS.md`, `LINKS.md`, `K3S_PLAN.md`, `K8S_PLAN.md`, `AGENT_MODE_DEPLOY.md`).

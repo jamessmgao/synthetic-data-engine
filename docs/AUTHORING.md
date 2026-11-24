@@ -83,7 +83,7 @@ production hill climb ([HILLCLIMBING.md](HILLCLIMBING.md), [ITERATION_LOG.md](IT
 | INF1 | `world` / `world_check` jobs, handoffs, world artifacts, Docker slots | 626b4ef |
 | EX1 | too easy → world mutation; deterministic operator rules recorded as `{operator, rule, evidence}` | e489e6b, 3a8d040 |
 
-**P1** (the first prototype, local, 2026-11-17; `scripts/p1_prototype.py`): one world in
+**P1** (the first prototype, local, 2026-11-17; `experiments/p1_prototype.py`): one world in
 $0.51 / 5.4 min (18 steps), world_check OK; the task in $2.39 / 21.6 min, validate OK. Agent
 run 1 was `VALID_FAIL` (the agent changed the documented crash hook); agent run 2 stalled on a
 model call. It found the Harbor 0.26 artifacts-path bug (fixed in 6d231bb).

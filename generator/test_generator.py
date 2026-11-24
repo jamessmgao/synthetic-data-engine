@@ -780,7 +780,7 @@ def test_leak_gate_adopts_its_review_on_retry(tmp_path, monkeypatch):
 
 def test_leak_gate_skips_bundles_without_a_hidden_spec(tmp_path):
     from validator import gates
-    gate = gates.gate_leak(Path(config.ROOT_DIR) / "examples" / "fix-git", tmp_path / "trace")
+    gate = gates.gate_leak(tmp_path / "fix-git", tmp_path / "trace")
     assert gate.passed and "no hidden spec" in gate.detail["skipped"]
 
 

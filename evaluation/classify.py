@@ -20,7 +20,7 @@ the verifier wrote a binary reward. Everything else is INVALID, which means
                 a model failure (a wedged terminal, a loop) becomes VALID_FAIL, anything
                 else INVALID, retried as before. A timeout with any other reward stays INVALID.
 
-Field names follow Harbor 0.26.0's ``TrialResult`` (harbor/models/trial/result.py).
+Field names follow Harbor 0.26.0's ``TrialResult`` (harbor.models.trial.result).
 """
 
 from dataclasses import dataclass

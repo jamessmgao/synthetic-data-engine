@@ -226,7 +226,7 @@ round needed.
 | Rollouts | `evaluation/harbor.py` | With `SDE_MOCK_LLM=1`, `pinned_agent()` returns `mock:oracle\|nop`. Each rollout holds its slot for `SDE_MOCK_ROLLOUT_S` (±30%, cancellable), then runs Harbor's built-in `oracle` agent with probability `SDE_MOCK_PASS_P`, else `nop`. No model, no agent config pinned (`classify` checks none). Real image build, real verifier, real reward. |
 | Settings on AWS | `deploy/remote-deploy.sh` | `SDE_MOCK_LLM`, `SDE_MOCK_LLM_S`, `SDE_MOCK_ROLLOUT_S`, `SDE_MOCK_PASS_P` come from SSM (`/sde/mock_llm`, `/sde/mock_llm_s`, `/sde/mock_rollout_s`, `/sde/mock_pass_p`); off unless `/sde/mock_llm` is `1`. |
 | Tasks | `scripts/inject_task.py` (existing) | Puts a task directory into the artifact store and creates the task row with its `validate` job, exactly as the Generation Service would. From there everything is real: gates, 5 rollouts, Trace Parser, decision. |
-| Fixture | `output/p1/p1-local-1/task` | P1's real task: a `reservation` service with a lease/crash/redelivery bug and 8 pytest tests. Shipped in every release (from `2f9d456`). |
+| Fixture | `tests/fixtures/p1-local-1/task` | P1's real task: a `reservation` service with a lease/crash/redelivery bug and 8 pytest tests. Shipped in every release (from `2f9d456`). |
 | Driver | `scripts/loadtest.py <step> <n> [--interval S] [--no-inject] [--timeout S]` | Injects n copies (`lt-<step>-NNN`), all at once or one every `--interval` s. Samples the queue every 15 s and waits until every task is decided. Prints JSON: wall time, tasks/min, peak READY / LEASED per type, and per type the count, INVALID count, p50/p95 queue wait and run time. `--no-inject` reports on a step that already exists. |
 
 Settings used in every run: `SDE_MOCK_LLM_S=3`, `SDE_MOCK_ROLLOUT_S=30`, `SDE_MOCK_PASS_P=0.4`.
@@ -245,7 +245,7 @@ How to run a step (from a laptop with AWS access; the scratch helpers wrap `aws_
 # on the control runner (aws_ops.runners()[0]): a detached one-off container with the
 # services' environment and the fixture mounted from the release dir
 cd /opt/sde/current && docker compose --env-file /opt/sde/runtime.env -f deploy/compose.prod.yaml \
-  run -d --name lt-s30 -v /opt/sde/current/output/p1:/fixture:ro --entrypoint python worker-control \
+  run -d --name lt-s30 -v /opt/sde/current/tests/fixtures:/fixture:ro --entrypoint python worker-control \
   scripts/loadtest.py s30 30 --task-dir /fixture/p1-local-1/task
 docker logs lt-s30          # the JSON report, when it's done
 ```

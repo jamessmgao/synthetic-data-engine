@@ -35,3 +35,7 @@ deploy/make.env
 
 # Local backup of the S3 artifacts and the Postgres dump (never commit: s3-tfstate holds the DB password)
 .data/
+
+# Runtime output (accepted tasks from the reconciler, prototype runs); only the placeholder is tracked
+output/*
+!output/.gitkeep

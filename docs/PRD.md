@@ -182,7 +182,7 @@ agent run slot, 3 claims per job before DEAD.
 
 ### Below the line
 
-- Human-likeness: blind side-by-side comparison against `examples/` on a 1–5 rubric.
+- Human-likeness: blind side-by-side comparison against hand-written reference tasks on a 1–5 rubric.
 - Optional Postgres / Redis / MinIO backend through `deploy/compose.dev.yaml`.
 - Independent rechecks (a second 5-trial run) to measure band stability.
 
@@ -430,9 +430,6 @@ python -m validator.service validate                       Build + Validate
 python -m evaluation.executor                            Executor (the run queue)
 python -m evaluation.trace_parser_service                Trace Parser (the analyze queue)
 ```
-
-Developer tools: `scripts/generate.sh "<topic>"` (one draft + gates, no evaluation),
-`scripts/evaluate.sh <task_dir>` (five agent runs of an existing task directory).
 
 `summary.json` (all counts over **initial candidates**, not versions; `null` = not measured):
 
@@ -906,7 +903,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 - **Spread:** a new task takes an unused (domain, task type, environment) combination across
   every task so far; repeats only once all have been used.
 - **Lexical novelty:** word 5-gram MinHash Jaccard of instruction + `TaskSpec.root_cause` against
-  every earlier bundle and the six `examples/`. Above 0.3 → new pitch. This is a heuristic, not
+  every earlier bundle and the reference tasks. Above 0.3 → new pitch. This is a heuristic, not
   semantic novelty (that's the deferred embedding feature).
 - **Report:** distribution of every dimension across the reported tasks.
 
@@ -962,7 +959,7 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
 1. **M0 housekeeping:** commit the spec, diagram, `schema.py`, this PRD and the `config.py` change;
    `pyproject.toml` / `.env.example`.
 2. **M1 one valid task:** client, sampler, prompt, materialize, gates 1–5 with repairs.
-   `sde generate` produces a task with oracle = 1 and nop = 0. Hand-review it against `examples/`.
+   `sde generate` produces a task with oracle = 1 and nop = 0. Hand-review it against the reference tasks.
 3. **M2 calibration:** executor workers (trial runner, classifier, trace upload, retries). Pilot
    3–5 candidates and tune the v1 difficulty default from what `glm-5.3-flash` actually does.
 4. **M3 robustness:** SQLite store (2 tables), job leases, adoption, the service entry points, kill and
@@ -973,4 +970,4 @@ Taxonomy (from `TASK_GENERATION_RULES.md`), kept in `config/taxonomy.yaml`:
    revision / repair / reject. Owner per stage transition as in §5.1.
 6. **M4 revision loop:** operators, v2…v8 through the Generation Service's revision path, before/after in the report.
 7. **M5 run:** 10+ candidates via `scripts/run_tasks.py` (one batch), its batch report, update `CHANGELOG.md` with measured results.
-8. **M6 human-likeness:** blind rubric comparison with `examples/`; optional compose backend.
+8. **M6 human-likeness:** blind rubric comparison with the reference tasks; optional compose backend.

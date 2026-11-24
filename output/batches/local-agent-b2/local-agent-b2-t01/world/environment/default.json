@@ -1,4 +1,0 @@
-{
-  "template": "{{ macro line }}{{ let amount = quantity }}[{{ output amount }}]{{ end }}{{ let quantity = 2 }}first={{ use line }};{{ let quantity = 7 }}second={{ use line }}",
-  "environment": {"quantity": 0}
-}

@@ -6,7 +6,7 @@ it starts refuses network connections that leave the machine
 
 | Command | What runs | Needs |
 |---|---|---|
-| `make test-unit` | every component's unit tests: `tests/shared` (incl. the services' hand-offs and the Trace Parser's decisions), `api`, `generator`, `evaluation` | nothing |
+| `make test-unit` | every component's unit tests: `tests/shared` (incl. the services' hand-offs and the Trace Parser's decisions), `tests/deploy`, `api`, `generator`, `evaluation`, `validator`, `authoring`, `experiments` | nothing |
 | `make test-e2e` | the whole pipeline as processes (below), on SQLite and, if it is up, the compose cluster | nothing; the cluster is optional |
 | `make test-infra` | `tests/shared` on SQLite, Postgres, Postgres+Redis and S3 | `make deps-up` |
 | `make test-all` | all of the above against the cluster | `make deps-up` |
@@ -14,7 +14,7 @@ it starts refuses network connections that leave the machine
 Use `.venv/bin/python` with `shared/requirements.txt` and `generator/requirements.txt`
 installed, plus `pytest` and `httpx`.
 
-The full suite in one command: `.venv/bin/python -m pytest -q tests evaluation generator api validator authoring`.
+The full suite in one command: `.venv/bin/python -m pytest -q tests evaluation generator api validator authoring experiments`.
 
 ## Component tests for agent mode, the gates and the cap
 
@@ -34,7 +34,7 @@ harness.
 | `tests/shared/jobs/test_cancel.py` | a cancel during world, world_check, create, validate, rollout and analyze (nothing more is claimed or handed off, the in-flight cost is kept); a worker cancelled mid-run; reject / accept / CAS after a cancel are no-ops; the relabel script |
 | `tests/shared/jobs/test_authoring.py` | the agent hand-offs: world → check → create chains, world repairs, a leaking create repaired (create FAILED / author → repair1 → validate) |
 | `api/tests/test_api.py`, `api/tests/test_families.py` | the API: batches with `budget_usd`, cancel endpoints, `/healthz` and report budget blocks, `instruction_tokens`, families and the v2 sampler (a 3-family batch gets one task per family) |
-| `tests/p1/test_p1_prototype.py` | `scripts/p1_prototype.py` on a fake chain: dry run by default, the budget stop, resume from the ledger |
+| `experiments/test_p1_prototype.py` | `experiments/p1_prototype.py` on a fake chain: dry run by default, the budget stop, resume from the ledger |
 
 ### On Postgres, Redis and S3
 

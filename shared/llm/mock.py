@@ -25,7 +25,7 @@ AUTHOR_STEPS = int(os.environ.get("SDE_MOCK_AUTHOR_STEPS", "10"))
 ROLLOUT_S = float(os.environ.get("SDE_MOCK_ROLLOUT_S", "30"))
 PASS_P = float(os.environ.get("SDE_MOCK_PASS_P", "0.4"))
 FIXTURE = os.environ.get("SDE_MOCK_FIXTURE") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "output", "p1", "p1-local-1")
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "tests", "fixtures", "p1-local-1")
 
 # Canned answers by response-format name; anything else is built from its schema.
 _REGISTERED: dict[str, Any] = {

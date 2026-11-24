@@ -11,7 +11,7 @@ Artifacts go to the shared store (config.WORK_DIR): bundles/, drafts/, llm/,
 traces/<job_id>/. A summary of the run is written to runs/<run_id>.json, and a
 valid task is copied to output/<name>/.
 
-Usage: bash scripts/generate.sh <prompt-file | prompt text | spec.json>
+Usage: python scripts/generate.py <prompt-file | prompt text | spec.json>
 """
 
 import argparse

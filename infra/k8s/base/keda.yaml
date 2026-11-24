@@ -1,4 +1,4 @@
-# Autoscaling for `executor` with KEDA (docs/KUBERNETES.md §4, docs/DEPLOY.md §8).
+# Autoscaling for `executor` with KEDA (docs/DEPLOY.md §8.3; the plan: docs/archive/K3S_PLAN.md §4).
 #
 # KEDA itself is installed once per cluster, from its official release manifest, pinned:
 #   kubectl --context k3d-sde apply --server-side \

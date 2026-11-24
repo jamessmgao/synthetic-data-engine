@@ -578,7 +578,7 @@ def main() -> None:
 
     pilot = Pilot(args.pilot, args.validate_slots, args.rollout_slots)
     jobs: list[tuple[str, dict | None, str | None]] = []
-    if not args.no_examples:
+    if not args.no_examples and (ROOT / "examples").is_dir():  # the calibration set was removed from the repo
         for ex in sorted((ROOT / "examples").iterdir()):
             if (ex / "task.toml").exists() and ex.name not in SKIPPED_EXAMPLES:
                 jobs.append((f"ex-{ex.name}", None, str(ex)))

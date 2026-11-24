@@ -38,7 +38,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("step")
     p.add_argument("n", type=int)
-    p.add_argument("--task-dir", type=Path, default=ROOT / "output" / "p1" / "p1-local-1" / "task")
+    p.add_argument("--task-dir", type=Path, default=ROOT / "tests" / "fixtures" / "p1-local-1" / "task")
     p.add_argument("--timeout", type=float, default=3 * 3600)
     p.add_argument("--no-inject", action="store_true", help="report on a step's existing tasks")
     p.add_argument("--interval", type=float, default=0, help="seconds between injected tasks (0 = a burst)")
