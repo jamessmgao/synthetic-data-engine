@@ -2,7 +2,7 @@
 
     up        stop compose on every runner; K3s server on runners()[0], agents on the rest;
               build + import sde-pipeline:local on every node (crictl-checked); install KEDA
-    deploy    ship REF (default HEAD), rebuild + import the image, apply infra/k8s/overlays/aws,
+    deploy    ship REF (default HEAD), rebuild + import the image, apply deploy/k8s/overlays/aws,
               wait for the rollouts. `--overlay aws-prod`: the real stores and model from SSM
               (Secret sde-secrets), the authoring image on every node, the dashboard, and an IMDS
               check. `--only ui,api,…` (aws-prod): build, apply and roll just those components;
@@ -30,7 +30,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aws_ops  # noqa: E402
 from aws_ops import COMPOSE, REGION, REPO, aws, on_all, outputs, remote, run, runners  # noqa: E402
 
@@ -340,7 +340,7 @@ def pin_tags(release: str, images: tuple[str, ...]) -> list[str]:
     the version it was deployed with, never whatever :local a later build left on its node.
     Idempotent (a release dir is reused when the same sha is deployed again); fails if the line
     isn't there, rather than deploying :local by accident."""
-    k = "infra/k8s/overlays/aws-prod/kustomization.yaml"
+    k = "deploy/k8s/overlays/aws-prod/kustomization.yaml"
     tag = release_tag(release)
     cmds = []
     for name in images:
@@ -410,7 +410,7 @@ def cmd_deploy_only(ref: str, path: str, only: list[str]) -> None:
     if pipeline:
         build_and_import(release)
         pre += prod_secret_cmds()
-    env = "infra/k8s/overlays/aws-prod/authoring.env"
+    env = "deploy/k8s/overlays/aws-prod/authoring.env"
     if "generation" in only:
         pre.append(f"echo SDE_AUTHORING_IMAGE={authoring_image(release)} > {env}")
     else:
@@ -440,7 +440,7 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
     if overlay not in OVERLAYS:
         sys.exit(f"--overlay must be one of {', '.join(OVERLAYS)}")
     prod = overlay.startswith("aws-prod")
-    path = f"infra/k8s/overlays/{overlay}"
+    path = f"deploy/k8s/overlays/{overlay}"
     if only:
         parts = [p for p in only.split(",") if p]
         bad = [p for p in parts if p not in COMPONENTS]
@@ -457,7 +457,7 @@ def cmd_deploy(ref: str = "HEAD", overlay: str = "aws", only: str = "") -> None:
         # The overlay merges this into sde-config (agreed with K1); the file is gitignored.
         # aws-prod's configMapGenerator reads it, also when aws-prod-mock builds on aws-prod.
         pre += [f"test -d {path} || {{ echo 'no {path} in this release' >&2; exit 1; }}",
-                f"echo SDE_AUTHORING_IMAGE={tag} > infra/k8s/overlays/aws-prod/authoring.env",
+                f"echo SDE_AUTHORING_IMAGE={tag} > deploy/k8s/overlays/aws-prod/authoring.env",
                 *prod_secret_cmds()]
     not_tunnels = "app.kubernetes.io/name notin (" + ",".join(TUNNELS) + ")"
     print(f"deploying {path}…", flush=True)

@@ -1,5 +1,5 @@
 # Agent-mode authoring: slots, and the authoring image loaded into this pod's dind from the
-# tarball scripts/k8s_aws.py saves on each instance (the one hostPath, read-only).
+# tarball deploy/k8s_aws.py saves on each instance (the one hostPath, read-only).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

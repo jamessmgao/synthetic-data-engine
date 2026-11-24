@@ -1,7 +1,7 @@
 # The dashboard (web/), public and read-only (the user's call, 2026-11-18: no password). Its
 # route forwards GETs only and adds the API key on the server, so the key never reaches a
 # browser; the pod gets that one key from sde-secrets, not the database or model secrets.
-# Built on the K3s server by scripts/k8s_aws.py (sde-dashboard:local) and pinned there, beside
+# Built on the K3s server by deploy/k8s_aws.py (sde-dashboard:local) and pinned there, beside
 # api and its tunnel, so it takes nothing from the workers' nodes.
 apiVersion: v1
 kind: Service
@@ -45,7 +45,7 @@ spec:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
 ---
-# Its own Cloudflare quick tunnel, as public-tunnel is for the API: `scripts/k8s_aws.py public`
+# Its own Cloudflare quick tunnel, as public-tunnel is for the API: `deploy/k8s_aws.py public`
 # prints both URLs, and both change whenever their tunnel pod restarts.
 apiVersion: apps/v1
 kind: Deployment

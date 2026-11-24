@@ -6,7 +6,7 @@
 #   - SDE_AGENT_SLOTS=0 on generation: mock mode doesn't cover authoring trials (they would
 #     call the real model), so generation pods start, load the authoring image, and claim
 #     no world / create / revise job.
-# Deploy: python scripts/k8s_aws.py deploy HEAD --overlay aws-prod-mock
+# Deploy: python deploy/k8s_aws.py deploy HEAD --overlay aws-prod-mock
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: sde

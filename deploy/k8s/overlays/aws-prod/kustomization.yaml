@@ -2,10 +2,10 @@
 # instead of the in-cluster data stores, live models (no mock), agent-mode authoring.
 # Render with (authoring.env is written by the deploy; any value works for a check):
 #
-#   echo SDE_AUTHORING_IMAGE=x > infra/k8s/overlays/aws-prod/authoring.env
-#   kubectl kustomize --load-restrictor LoadRestrictionsNone infra/k8s/overlays/aws-prod
+#   echo SDE_AUTHORING_IMAGE=x > deploy/k8s/overlays/aws-prod/authoring.env
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k8s/overlays/aws-prod
 #
-# Secret sde-secrets is not generated here: scripts/k8s_aws.py creates it from SSM (keys
+# Secret sde-secrets is not generated here: deploy/k8s_aws.py creates it from SSM (keys
 # DATABASE_URL, REDIS_URL, S3_BUCKET, OPENROUTER_API_KEY, OPENROUTER_API_BASE, SDE_API_KEY,
 # SDE_BUDGET_USD). S3 uses the instances' IAM role through IMDS (hop limit 2), so no keys.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -17,7 +17,7 @@ resources:
   - dashboard.yaml  # the dashboard (web/) and its own tunnel
   - spot-termination.yaml  # drains a Spot node on its 2-minute interruption notice
 images:
-  # Built and imported on every instance by scripts/k8s_aws.py, never pulled (the test
+  # Built and imported on every instance by deploy/k8s_aws.py, never pulled (the test
   # overlays get this tag from overlays/local; this one builds on the base directly).
   - {name: sde-pipeline, newName: sde-pipeline, newTag: local}
   - {name: sde-dashboard, newName: sde-dashboard, newTag: local}  # built on the server only
@@ -27,7 +27,7 @@ configMapGenerator:
     behavior: replace
     options:
       labels: {app.kubernetes.io/name: sde-config}  # `deploy --only` applies it with the pipeline pods
-    # SDE_AUTHORING_IMAGE=sde-authoring:<hash>, written by scripts/k8s_aws.py (gitignored).
+    # SDE_AUTHORING_IMAGE=sde-authoring:<hash>, written by deploy/k8s_aws.py (gitignored).
     envs: [authoring.env]
     literals:
       - SDE_MOCK_LLM=0

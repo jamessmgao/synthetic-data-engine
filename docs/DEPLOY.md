@@ -293,7 +293,7 @@ means deploying an older sha.
 | `authoring/Dockerfile` | the agent authoring image (Python 3.12, Go 1.22, Temurin 21, gcc, sqlite, psql, docker CLI, pytest, harbor 0.26, `sde-world` / `sde-task`) |
 | `shared/jobs/supervise.py` | per-container process supervisor |
 | `scripts/inject_task.py`, `scripts/loadtest.py` | test past generation; load test |
-| `infra/k8s/` | local Kubernetes manifests (§8) |
+| `deploy/k8s/` | local Kubernetes manifests (§8) |
 | `scripts/k8s_test.py` | the local Kubernetes chaos test (§8.4) |
 
 ## 8. Local Kubernetes (k3d)
@@ -342,7 +342,7 @@ What it costs:
 
 ### 8.3 Autoscaling (KEDA)
 
-`infra/k8s/base/keda.yaml` holds a ScaledObject on `executor` that uses the postgresql
+`deploy/k8s/base/keda.yaml` holds a ScaledObject on `executor` that uses the postgresql
 scaler:
 - the metric is outstanding rollout work in the `jobs` table: READY + LEASED rollouts.
   Counting LEASED means a scale-down never removes a pod that is still running a rollout
@@ -375,7 +375,7 @@ make k8s-status             # pods, Deployments, StatefulSets, the ScaledObject
 make k8s-logs SVC=executor
 make k8s-test               # the chaos test below (mock mode); ARGS="--tasks 10" for a burst
 make k8s-down
-kubectl kustomize infra/k8s/overlays/local   # exactly what gets applied
+kubectl kustomize deploy/k8s/overlays/local   # exactly what gets applied
 ```
 
 `make k8s-test` (`scripts/k8s_test.py`) runs against a stack deployed with `SDE_MOCK_LLM=1`:
@@ -455,7 +455,7 @@ container on the machine. On compose, the same command would kill everything on 
 instance; on K3s it kills only that pod's trials (one authoring session per pod in
 aws-prod). dind is privileged, so this contains accidents, not a determined escape.
 
-### 8.6 K3s on the AWS EC2 instances (`scripts/k8s_aws.py`)
+### 8.6 K3s on the AWS EC2 instances (`deploy/k8s_aws.py`)
 
 The same manifests run on the 8 EC2 instances as one K3s cluster: a server
 (`aws_ops.runners()[0]`) and 7 agents, installed over SSM. There are no new AWS resources

@@ -1,4 +1,4 @@
-# The dashboard as a container (scripts/k8s_aws.py builds it on the K3s server for the aws-prod
+# The dashboard as a container (deploy/k8s_aws.py builds it on the K3s server for the aws-prod
 # overlays): Next.js's standalone output, so the runtime image holds no dev dependencies.
 #   docker build -t sde-dashboard:local web
 FROM node:24-alpine AS build

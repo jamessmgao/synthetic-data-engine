@@ -1,7 +1,7 @@
 # Local cluster (k3d "sde"). Render with the load restrictor off, because the base reads the settings
 # from deploy/local.env, the one settings list (outside the kustomization dirs):
 #
-#   kubectl kustomize --load-restrictor LoadRestrictionsNone infra/k8s/overlays/local
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone deploy/k8s/overlays/local
 #
 # kubectl apply -k has no such flag, so pipe that into `kubectl apply -f -`.
 # deploy/local.env is optional and gitignored: create it empty if it doesn't exist.

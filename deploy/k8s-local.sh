@@ -4,13 +4,13 @@
 #
 #   up       create the cluster if needed (start it if it exists), install KEDA, build +
 #            import the image
-#   deploy   rebuild + import the image, apply infra/k8s/overlays/local, wait for the rollouts
+#   deploy   rebuild + import the image, apply deploy/k8s/overlays/local, wait for the rollouts
 #   status   nodes, pods, services
 #   logs     follow logs: SVC=api|control|validate|executor|generation|postgres|redis|s3|bootstrap
 #   down     delete the cluster and everything in it
 #
 # The kubectl context is passed explicitly; your current context is never switched.
-# Worker pods get Docker from a dind sidecar (variant B, infra/k8s): nodes mount nothing
+# Worker pods get Docker from a dind sidecar (variant B, deploy/k8s): nodes mount nothing
 # from the Mac.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -23,7 +23,7 @@ IMAGE=sde-pipeline:local
 # Pinned: K1's dind sidecar is a native sidecar (k8s >= 1.29). Applies at cluster creation.
 K3S_IMAGE=rancher/k3s:v1.35.5-k3s1
 KEDA_URL=https://github.com/kedacore/keda/releases/download/v2.16.1/keda-2.16.1.yaml
-OVERLAY=${SDE_K8S_OVERLAY:-infra/k8s/overlays/local}
+OVERLAY=${SDE_K8S_OVERLAY:-deploy/k8s/overlays/local}
 K=(kubectl --context "$CTX" -n "$NS")
 PLATFORM=linux/$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 

@@ -131,7 +131,7 @@ python deploy/aws_ops.py exec "k3s kubectl -n sde port-forward svc/api 8000:8000
 Or run `curl` inside the cluster:
 
 ```bash
-python scripts/k8s_aws.py status
+python deploy/k8s_aws.py status
 ```
 
 ## 7. Every route

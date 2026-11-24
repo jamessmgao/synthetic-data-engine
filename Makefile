@@ -58,14 +58,14 @@ ps:
 reconcile:       ## one reconciler pass against the current env's backends
 	$(PYTHON) -m shared.jobs.reconciler --once
 
-# --- Local Kubernetes (k3d cluster "sde", context k3d-sde; scripts/k8s-local.sh) ---
-K8S := bash scripts/k8s-local.sh
+# --- Local Kubernetes (k3d cluster "sde", context k3d-sde; deploy/k8s-local.sh) ---
+K8S := bash deploy/k8s-local.sh
 
 .PHONY: k8s-up k8s-deploy k8s-status k8s-logs k8s-down
 
 k8s-up:          ## create (or start) the k3d cluster, build + import sde-pipeline:local
 	$(K8S) up
-k8s-deploy:      ## rebuild + import the image, apply infra/k8s/overlays/local, wait
+k8s-deploy:      ## rebuild + import the image, apply deploy/k8s/overlays/local, wait
 	$(K8S) deploy
 k8s-status:
 	$(K8S) status
@@ -111,8 +111,8 @@ aws-up: aws-bootstrap aws-apply aws-secrets aws-deploy aws-smoke  ## all of the 
 k8s-test:        ## chaos test on the k3d cluster (mock mode): kill an executor mid-rollout, restart Postgres
 	$(PYTHON) scripts/k8s_test.py $(ARGS)
 
-# K3s across the runners instead of compose (scripts/k8s_aws.py; docs/KUBERNETES.md).
-K8S_AWS := $(PYTHON) scripts/k8s_aws.py
+# K3s across the runners instead of compose (deploy/k8s_aws.py; docs/KUBERNETES.md).
+K8S_AWS := $(PYTHON) deploy/k8s_aws.py
 
 .PHONY: aws-k8s-up aws-k8s-deploy aws-k8s-deploy-ui aws-k8s-status aws-k8s-logs aws-k8s-test aws-k8s-test-log aws-k8s-down
 

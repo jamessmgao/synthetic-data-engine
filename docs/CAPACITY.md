@@ -86,9 +86,9 @@ Per task (tonight):
 
 ## How to re-measure
 
-- Limits: `infra/k8s/overlays/aws-prod/kustomization.yaml` and `generation.yaml`; live:
-  `scripts/k8s_aws.py status`.
-- Node CPU / memory: `kubectl top nodes` (on the server via `scripts/k8s_aws.py`).
+- Limits: `deploy/k8s/overlays/aws-prod/kustomization.yaml` and `generation.yaml`; live:
+  `deploy/k8s_aws.py status`.
+- Node CPU / memory: `kubectl top nodes` (on the server via `deploy/k8s_aws.py`).
 - Queue by stage: `GET /v1/queue` (READY = waiting, LEASED = running).
 - Spend: `GET /healthz` (`spent_usd`); per task `cost_usd` in `GET /v1/tasks/<id>`; the
   dashboard's Prod view.

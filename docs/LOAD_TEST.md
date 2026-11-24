@@ -149,12 +149,12 @@ matters most is yield (TASK_GENERATION_RULES.md, the leak review), not cluster s
 ### 0.6 How to re-measure
 
 - **Node CPU and pods:** run `kubectl top nodes` and `kubectl get pods` through
-  `scripts/k8s_aws.py`'s `remote` on runner 0.
+  `deploy/k8s_aws.py`'s `remote` on runner 0.
 - **Queue:** `GET /v1/queue` (READY = waiting, LEASED = running).
 - **Spend:** `GET /healthz`.
 - **RDS connections:** `pg_stat_activity` from `deploy/control`.
 - **Guard and pool signals:** `kubectl logs … | grep -cE 'guard: cpu|waited .* for a database connection'`.
-- **Limits:** `infra/k8s/overlays/aws-prod/kustomization.yaml`; see also docs/CAPACITY.md.
+- **Limits:** `deploy/k8s/overlays/aws-prod/kustomization.yaml`; see also docs/CAPACITY.md.
 
 ---
 

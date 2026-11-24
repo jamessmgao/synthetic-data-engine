@@ -230,7 +230,7 @@ curl -s -X POST localhost:8000/v1/batches/b1/cancel -H "$H" -H 'Content-Type: ap
 - **AWS:** Terraform under `deploy/terraform` creates the EC2 instances, RDS Postgres,
   ElastiCache Redis, S3 and SSM-only access, operated with `deploy/aws_ops.py` / `make aws-*`.
   `make aws-k8s-up` installs K3s and KEDA across the EC2 instances; `make aws-k8s-deploy
-  OVERLAY=aws-prod` applies the production overlay (`infra/k8s/overlays/aws-prod`). Agent
+  OVERLAY=aws-prod` applies the production overlay (`deploy/k8s/overlays/aws-prod`). Agent
   mode: `make aws-author-mode MODE=agent`.
 
 See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment, agent mode and every runtime setting,

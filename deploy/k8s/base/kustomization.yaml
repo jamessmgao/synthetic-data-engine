@@ -24,7 +24,7 @@ configMapGenerator:
   # The one settings list, the same file compose reads (gitignored, optional: create it
   # empty). Overlays merge their own keys over it.
   - name: sde-config
-    envs: [../../../deploy/local.env]
+    envs: [../../local.env]
 configurations:
   - keda-kustomizeconfig.yaml
 patches:

@@ -44,7 +44,7 @@ and runs one Harbor trial (one agent run) each (`evaluation/harbor.py:run_trial`
 - **Shutdown.** On a deploy or KEDA scale-in, the executor drains: running agent runs finish,
   for up to `SDE_DRAIN_ON_TERM_S` (3700 s in aws-prod). A Spot interruption hands jobs back at
   once. Production runs KEDA 2–16 executor pods × 2 agent runs, each pod requesting 500m CPU
-  (`infra/k8s/overlays/aws-prod`).
+  (`deploy/k8s/overlays/aws-prod`).
 
 ## 2. Trace Parser: analyze → accept / mutate / ease / repair / reject
 
