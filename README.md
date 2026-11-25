@@ -292,6 +292,7 @@ The full record of what was tried, and what each change did, is in
 **Running it**
 - [docs/DEPLOY.md](docs/DEPLOY.md): deployment (Compose, k3d, K3s on AWS), agent mode, and every runtime setting.
 - [docs/KUBERNETES.md](docs/KUBERNETES.md): the K3s / KEDA cluster as built.
+- [docs/SHOWCASE.md](docs/SHOWCASE.md): the read-only site on one small instance, and restoring everything from a backup.
 - [docs/CAPACITY.md](docs/CAPACITY.md): concurrency limits, throughput, utilization and cost.
 - [docs/LOAD_TEST.md](docs/LOAD_TEST.md): finding the bottleneck: mocked-model and real-load tests.
 - [docs/API.md](docs/API.md): every route, with request and response shapes.
