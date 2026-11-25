@@ -102,7 +102,8 @@ commits in this repository.
   seeding, trace-driven mutations and generation control.
 - **Slides (5ebbb16, a3fdfac, 134ecf3).** docs/slides/ (now docs/archive/slides/) holds the deck
   (`synthetic-data-engine-presentation-v7.pptx`) and the 9-slide overview image
-  (`synthetic-data-engine-slides.png`), which the README embeds.
+  (`synthetic-data-engine-slides.png`), which the README embeds. (Replaced on 2026-11-25 by
+  `agentic-rl-environment-generation-platform.pptx` and its `-slides.png`.)
 - **Demo examples (e71fa8d).** docs/DEMO_EXAMPLES.md (now docs/archive/DEMO_EXAMPLES.md) lists example tasks with links to each
   agent run in the dashboard.
 

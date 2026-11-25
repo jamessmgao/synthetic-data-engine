@@ -1,4 +1,4 @@
-# synthetic-data-engine
+# Agentic RL Environment Generation Platform
 
 A closed-loop synthetic data engine: agents build executable bug-worlds, author tasks from
 them, a pinned solver calibrates their difficulty, and a durable job scheduler runs the whole
@@ -8,9 +8,9 @@ The output is RL training environments in the Harbor / Terminal-Bench 2 task for
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
 `glm-5.3-flash` at `reasoning_effort=high`.
 
-![The synthetic-data-engine presentation in 9 slides](docs/archive/slides/synthetic-data-engine-slides.png)
+![Agentic RL Environment Generation Platform: the presentation in 9 slides](docs/archive/slides/agentic-rl-environment-generation-platform-slides.png)
 
-*The presentation in 9 slides* (the deck: [docs/archive/slides/synthetic-data-engine-presentation-v7.pptx](docs/archive/slides/synthetic-data-engine-presentation-v7.pptx)).
+*The presentation in 9 slides* (the deck: [docs/archive/slides/agentic-rl-environment-generation-platform.pptx](docs/archive/slides/agentic-rl-environment-generation-platform.pptx)).
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
