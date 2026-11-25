@@ -242,6 +242,7 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 ## Docs
 
 **Start here**
+- [accepted_tasks.zip](accepted_tasks.zip): the 46 accepted tasks, each with its `verdict.md`: its versions and world mutations, every agent run, and why the failed runs failed.
 - [docs/archive/slides/](docs/archive/slides/): the presentation (the 9-slide image above, and the deck).
 - [docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md): seven example tasks, with links to the runs in the dashboard.
 - [CHANGELOG.md](CHANGELOG.md): every change, with commits.
