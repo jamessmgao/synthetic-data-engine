@@ -14,127 +14,70 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
-## How we got here
-
-I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the
-**learnable band at a high yield**. This is the method for all three. A taxonomy seeds the bug generation: it spreads the tasks
-out and draws inspiration from frontier complexity in software. Then feedback loops raise the
-yield, and their mutations keep pushing tasks with random variations and issues.
-
-### 1. A taxonomy that seeds bug generation, mixed with world generation
-
-I started with distributed systems, the problems I knew. The worlds were small, with too few
-components, and every idea came from the same place. So I built a taxonomy of bug
-mechanisms with an external model (ChatGPT) and used it to seed bug generation, so the ideas didn't
-all come from the model that authors the tasks, with the same data and the same blind spots.
-
-Diversity then comes from three things:
-- **An expanded taxonomy:** 22 → 62 bug mechanisms across six families
-  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py), [docs/DIFFICULTY.md](docs/DIFFICULTY.md)).
-- **Mixing it with world generation:** each task samples a family, a mechanism, an environment and
-  one of 40+ application domains, least-used first, so the same bug pattern lands in different
-  systems ([`generator/families.py`](generator/families.py)).
-- **Separate steps:** choosing the idea, building the world and writing the task are separate jobs
-  ([docs/AUTHORING.md](docs/AUTHORING.md)). One world can carry several tasks, and one mechanism can
-  be planted in several worlds.
-
-### 2. A double feedback loop
-
-At the start it was impossible to one-shot a task in the band: the first 16 tasks produced 0. So I
-hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
-
-- **Loop 1, inside the pipeline:** the Trace Parser reads each task's five agent runs and revises
-  the task until it lands in the band. A too-easy task gets a world mutation, a too-hard one an
-  easier revision ([docs/EVALUATION.md](docs/EVALUATION.md)). The mutations are also where the
-  **novel tasks** come from: each one changes the world itself, so the task that comes out is one
-  nobody wrote down in advance.
-- **Loop 2, around the pipeline:** an agentic coding feedback loop, run with `/goal` (the goal text
-  is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). Sliding-window deployments with rolling restarts
-  meant I could patch single task-builder pods at a time to test refinements. Coding agents read the trajectories and proposed one subtle,
-  targeted change per finding, each on its own branch per mini-batch "lane"
-  (38 lane branches). I checked their changes, and each one was
-  judged on the tasks authored after it ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
-
-This was the inflection point for the yield rate. The prompts became good enough to one-shot a
-significant share of tasks: 18 of the 43 accepted tasks were accepted at their first version.
-
-The double feedback loop drove many refinements for specific tasks, but it surfaced these four
-optimizations as the highest leverage:
-- **Prompt engineering:** instructions state outcomes, with no solution cues or semantic leaks. They
-  went from 342 to 92 words ([`81d547c`](https://github.com/jamessmgao/synthetic-data-engine/commit/81d547c), [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
-- **Taxonomy seeding:** 22 → 62 bug mechanisms, spread across 40+ application domains
-  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py)).
-- **Trace-driven mutations:** the passing agent runs decide what to add: concurrency, cross-component
-  paths, interacting invariants ([`evaluation/calibration.py`](evaluation/calibration.py),
-  [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
-- **Generation control:** bounded prompt length, authoring scope and unproductive reasoning, so
-  sessions finish instead of stalling ([`cfcc8f7`](https://github.com/jamessmgao/synthetic-data-engine/commit/cfcc8f7)).
-
-**Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
-77). Why the accepted tasks are hard:
-[docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). The accepted tasks themselves:
-[accepted_tasks.zip](accepted_tasks.zip).
-
 ## What it does
 
-### 1. Builds worlds
+We demonstrated a pathway toward scalable, weak-to-strong RL environment generation: using
+automated agents to construct verified challenges for potentially more capable coding models,
+without requiring a stronger model to supply every solution.
 
-A terminus-2 + glm-5.1 agent session (in the `sde-authoring` image) builds an executable
-**world**: a small buggy system with invariants, a reproducible counterexample, a real fix and
-a plausible wrong fix. A deterministic **world_check** proves it: the world builds, the repro
-fails, the fix passes, the symptom is visible, the fix isn't local, and the wrong fix fools the
-symptom (hardness checks set by `SDE_WORLD_HARDNESS`). A failing world goes to world-repair
-(≤2). When a task is too easy, the **world** is mutated, not the wording. See
-[docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md) and
+Hard coding environments for RL post-training are usually written by human experts, one at a
+time. This platform generates them with no person writing each one.
+
+Each environment is a small software system with a real bug, a request to fix it, and hidden
+tests that check the fix. The aim is a steady supply that is **new**, **varied** and **hard in
+the right amount**: a given model should solve each one some of the time, but not every time. A
+problem it always solves teaches it nothing, and a problem it never solves gives it nothing to
+learn from.
+
+Why it works:
+
+- **Building a hard problem is easier than solving it.** An agent that plants a bug in a system
+  it has just built knows where the bug is. The solver has to find it. So the authoring model
+  does not need to be stronger than the model being trained.
+- **Difficulty is measured, not guessed.** Every problem is attempted five times by a fixed
+  solver. Only the ones it solves 1 to 3 times out of 5 are kept.
+
+The platform generates and calibrates the environments. It does not train a model.
+
+### 1. Builds a world
+
+An authoring agent builds a small working system with a planted bug: the code, a way to
+reproduce the failure, the real fix, and a plausible fix that looks right but isn't. Nothing is
+taken on trust. The platform runs the system and checks that the failure reproduces, that the
+real fix removes it, and that the wrong fix doesn't. A world that fails these checks is sent
+back for repair, at most twice. See [docs/WORLD_CONSTRUCTION.md](docs/WORLD_CONSTRUCTION.md) and
 [docs/AUTHORING.md](docs/AUTHORING.md).
 
-### 2. Creates tasks
+### 2. Writes a task from it
 
-A second agent session writes a **task** from the world: the instruction, Dockerfile, tests
-and reference solution. The validate gates check it: structural, lint, oracle ×2, nop,
-wrong_fix, and a blind leak review. A failing task goes to repair (≤2). See
-[docs/VALIDATION.md](docs/VALIDATION.md).
+A second agent writes what the solver will see: a short description of the symptom in a user's
+voice, the environment, hidden tests and a reference solution. Automatic checks confirm that
+the reference solution passes the tests, that the untouched system fails them, that the wrong
+fix fails them, and that the description doesn't give the answer away. A task that fails goes
+back for repair, at most twice. See [docs/VALIDATION.md](docs/VALIDATION.md).
 
-A one-shot mode (`SDE_AUTHOR_MODE=oneshot`, the default) drafts the whole bundle in one
-strict-JSON glm-5.1 call instead. It's the baseline, and the fallback for raw prompts and v1
-specs. The mode is chosen per job: a create or revise job with a `world_sha256` runs the agent
-author (`generator/service.py:draft_fn`).
+### 3. Measures how hard it is
 
-### 3. Calibrates difficulty
+A fixed solver agent (`terminus-2` + `glm-5.3-flash`, high reasoning) attempts the task five
+times. Each failed attempt is then read to decide whose fault it was: the solver's, or a flaw in
+the task. Timeouts and infrastructure errors never count against the solver. Then:
 
-The **Executor** runs 5 agent runs on the pinned solver (terminus-2 + glm-5.3-flash,
-reasoning high). The **Trace Parser** decides whether each failure is the model's fault or the
-task's; timeouts and infrastructure errors never count as model failures. Calibration then
-routes the task:
-
-- 1–3 of 5 valid passes, failures blamed on the model → **accepted** (published);
-- too easy (4–5/5) → **world mutation** (v+1): 1–2 operators aimed at what passed;
-- too hard (0/5) → **revise easier** on the same world;
-- the task at fault → **repair**;
-- at most 8 versions (`SDE_MAX_VERSIONS`), then rejected.
+- solved 1 to 3 times out of 5, and the failures are the solver's → **accepted** and published;
+- solved 4 or 5 times → too easy: the world is changed to defeat the shortcut the solver used,
+  and the new version is measured again;
+- never solved → too hard: the task is rewritten with clearer guidance on the same world;
+- a flaw in the task → repaired;
+- still out of range after 8 versions → rejected.
 
 See [docs/EVALUATION.md](docs/EVALUATION.md).
 
-### 4. Schedules jobs
+### 4. Runs it reliably at scale
 
-Every arrow in the loop is a job on a durable, Postgres-backed scheduler:
-
-- the `jobs` table is the queue, the outbox and the audit log; Redis sorted sets (one per job
-  type) are only a dispatch index;
-- workers are stateless; claims are leased and fenced by a token, with heartbeats that survive
-  store errors (`shared/jobs/worker.py:run_one`, `evaluation/executor.py:Executor._heartbeat`);
-- hand-offs commit the next job in the same transaction as the settle
-  (`shared/jobs/handoffs.py:after_world`, `after_world_check`, `after_generation`, `after_validate`);
-- a reconciler re-publishes lost queue entries and dead-letters jobs that keep failing (and
-  rejects their task);
-- Docker slots, agent slots, a memory guard and a CPU guard gate each claim
-  (`shared/jobs/jobqueue.py:JobQueue.claim`).
-
-Any service can be killed, restarted or run as several copies without losing or re-paying
-work. The same code runs locally on Docker Compose (or a local k3d cluster) and in production
-on AWS: K3s on EC2 instances with KEDA autoscaling the Executor, RDS Postgres, ElastiCache
-Redis and S3. The backends come from the environment: SQLite or Postgres, the jobs table or
-Redis, files or S3.
+Every step is a job in a durable queue. Any service can be killed, restarted or run as several
+copies without losing work or paying for it twice: a job that was in progress when a worker died
+is picked up by another, and a finished result is never run again. The same code runs on a
+laptop with Docker and on a cloud cluster (K3s on AWS, which adds solver capacity as the queue
+grows). See [docs/DURABILITY.md](docs/DURABILITY.md) and [docs/PRD.md](docs/PRD.md).
 
 ## The flow
 
@@ -239,6 +182,70 @@ See [docs/DEPLOY.md](docs/DEPLOY.md) for deployment, agent mode and every runtim
 [docs/CAPACITY.md](docs/CAPACITY.md) for the cluster's size, concurrency limits and cost, and
 [docs/LOAD_TEST.md](docs/LOAD_TEST.md) for the load test with mocked models. CPU is the
 bottleneck; there were 0 INVALID in 230 agent runs.
+
+## How we got here
+
+I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the
+**learnable band at a high yield**. This is the method for all three. A taxonomy seeds the bug generation: it spreads the tasks
+out and draws inspiration from frontier complexity in software. Then feedback loops raise the
+yield, and their mutations keep pushing tasks with random variations and issues.
+
+### 1. A taxonomy that seeds bug generation, mixed with world generation
+
+I started with distributed systems, the problems I knew. The worlds were small, with too few
+components, and every idea came from the same place. So I built a taxonomy of bug
+mechanisms with an external model (ChatGPT) and used it to seed bug generation, so the ideas didn't
+all come from the model that authors the tasks, with the same data and the same blind spots.
+
+Diversity then comes from three things:
+- **An expanded taxonomy:** 22 → 62 bug mechanisms across six families
+  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py), [docs/DIFFICULTY.md](docs/DIFFICULTY.md)).
+- **Mixing it with world generation:** each task samples a family, a mechanism, an environment and
+  one of 40+ application domains, least-used first, so the same bug pattern lands in different
+  systems ([`generator/families.py`](generator/families.py)).
+- **Separate steps:** choosing the idea, building the world and writing the task are separate jobs
+  ([docs/AUTHORING.md](docs/AUTHORING.md)). One world can carry several tasks, and one mechanism can
+  be planted in several worlds.
+
+### 2. A double feedback loop
+
+At the start it was impossible to one-shot a task in the band: the first 16 tasks produced 0. So I
+hill-climbed with two loops ([docs/HILLCLIMBING.md](docs/HILLCLIMBING.md)):
+
+- **Loop 1, inside the pipeline:** the Trace Parser reads each task's five agent runs and revises
+  the task until it lands in the band. A too-easy task gets a world mutation, a too-hard one an
+  easier revision ([docs/EVALUATION.md](docs/EVALUATION.md)). The mutations are also where the
+  **novel tasks** come from: each one changes the world itself, so the task that comes out is one
+  nobody wrote down in advance.
+- **Loop 2, around the pipeline:** an agentic coding feedback loop, run with `/goal` (the goal text
+  is in [docs/HILLCLIMBING.md](docs/HILLCLIMBING.md) §1). Sliding-window deployments with rolling restarts
+  meant I could patch single task-builder pods at a time to test refinements. Coding agents read the trajectories and proposed one subtle,
+  targeted change per finding, each on its own branch per mini-batch "lane"
+  (38 lane branches). I checked their changes, and each one was
+  judged on the tasks authored after it ([docs/ITERATION_LOG.md](docs/ITERATION_LOG.md)).
+
+This was the inflection point for the yield rate. The prompts became good enough to one-shot a
+significant share of tasks: 18 of the 43 accepted tasks were accepted at their first version.
+
+The double feedback loop drove many refinements for specific tasks, but it surfaced these four
+optimizations as the highest leverage:
+- **Prompt engineering:** instructions state outcomes, with no solution cues or semantic leaks. They
+  went from 342 to 92 words ([`81d547c`](https://github.com/jamessmgao/synthetic-data-engine/commit/81d547c), [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
+- **Taxonomy seeding:** 22 → 62 bug mechanisms, spread across 40+ application domains
+  ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py)).
+- **Trace-driven mutations:** the passing agent runs decide what to add: concurrency, cross-component
+  paths, interacting invariants ([`evaluation/calibration.py`](evaluation/calibration.py),
+  [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
+- **Generation control:** bounded prompt length, authoring scope and unproductive reasoning, so
+  sessions finish instead of stalling ([`cfcc8f7`](https://github.com/jamessmgao/synthetic-data-engine/commit/cfcc8f7)).
+
+**Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
+77). Why the accepted tasks are hard:
+[docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). The accepted tasks themselves:
+[accepted_tasks.zip](accepted_tasks.zip).
+
+The full record of what was tried, and what each change did, is in
+[CHANGELOG.md](CHANGELOG.md) and [docs/ITERATION_LOG.md](docs/ITERATION_LOG.md).
 
 ## Docs
 
