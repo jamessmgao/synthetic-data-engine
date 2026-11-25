@@ -61,14 +61,14 @@ significant share of tasks: 18 of the 43 accepted tasks were accepted at their f
 The double feedback loop drove many refinements for specific tasks, but it surfaced these four
 optimizations as the highest leverage:
 - **Prompt engineering:** instructions state outcomes, with no solution cues or semantic leaks. They
-  went from 342 to 92 words ([`671c5c5`](https://github.com/jamessmgao/synthetic-data-engine/commit/671c5c5), [`aba0e60`](https://github.com/jamessmgao/synthetic-data-engine/commit/aba0e60)).
+  went from 342 to 92 words ([`81d547c`](https://github.com/jamessmgao/synthetic-data-engine/commit/81d547c), [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
 - **Taxonomy seeding:** 22 → 62 bug mechanisms, spread across 40+ application domains
   ([`shared/taxonomy/taxonomy.py`](shared/taxonomy/taxonomy.py)).
 - **Trace-driven mutations:** the passing agent runs decide what to add: concurrency, cross-component
   paths, interacting invariants ([`evaluation/calibration.py`](evaluation/calibration.py),
-  [`aba0e60`](https://github.com/jamessmgao/synthetic-data-engine/commit/aba0e60)).
+  [`9ace2e2`](https://github.com/jamessmgao/synthetic-data-engine/commit/9ace2e2)).
 - **Generation control:** bounded prompt length, authoring scope and unproductive reasoning, so
-  sessions finish instead of stalling ([`79e3978`](https://github.com/jamessmgao/synthetic-data-engine/commit/79e3978)).
+  sessions finish instead of stalling ([`cfcc8f7`](https://github.com/jamessmgao/synthetic-data-engine/commit/cfcc8f7)).
 
 **Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
 77). Why the accepted tasks are hard:
