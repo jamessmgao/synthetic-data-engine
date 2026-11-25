@@ -1,6 +1,6 @@
 ---
 name: sde-pipeline-api
-description: Drive the synthetic-data-engine pipeline's HTTP API (SDE Pipeline): check health and spend, submit batches of new tasks across the six families, watch queues and tasks, read accepted tasks and failure explanations, and cancel stuck work. Use when asked to check the jobs, top up the queue, submit or cancel tasks or batches, report yield or cost, or look up a task, batch, world or agent run.
+description: Drive the synthetic-data-engine pipeline's HTTP API (the Agentic RL Environment Generation Platform): check health and spend, submit batches of new tasks across the six families, watch queues and tasks, read accepted tasks and failure explanations, and cancel stuck work. Use when asked to check the jobs, top up the queue, submit or cancel tasks or batches, report yield or cost, or look up a task, batch, world or agent run.
 ---
 
 # Driving the pipeline's API

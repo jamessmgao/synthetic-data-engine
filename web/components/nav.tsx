@@ -26,8 +26,8 @@ export function Nav() {
   return (
     <header className="border-b bg-background">
       <div className="mx-auto flex h-14 max-w-7xl items-center gap-6 px-4">
-        <Link href="/" className="font-semibold tracking-tight">
-          SDE Pipeline
+        <Link href="/" className="font-semibold tracking-tight whitespace-nowrap" title="Agentic RL Environment Generation Platform">
+          RL Environment Platform
         </Link>
         <nav className="flex items-center gap-1 text-sm">
           {LINKS.map((l) => (
