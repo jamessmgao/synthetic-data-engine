@@ -10,7 +10,7 @@ contract). Items marked **(open)** still need a decision; see §7.
 **One-line summary:** GLM-5.1 writes original Terminal-Bench 2 / Harbor tasks. The pipeline
 proves each one works (the reference solution passes, an untouched container fails), then runs
 `terminus-2` + `glm-5.3-flash` five times. It ships only tasks where 1–3 runs pass, and explains
-every failure. Tasks outside the band are revised, up to `MAX_VERSIONS` versions (8), then rejected. Everything is recorded so a reviewer
+every failure. Tasks outside the band are revised, up to `MAX_VERSIONS` versions (8), then rejected. Everything is recorded so anyone
 can check each verdict without reading code, and the pipeline survives being killed or run twice.
 
 ---
@@ -182,7 +182,8 @@ agent run slot, 3 claims per job before DEAD.
 
 ### Below the line
 
-- Human-likeness: blind side-by-side comparison against hand-written reference tasks on a 1–5 rubric.
+- Human-likeness: blind side-by-side comparison of generated tasks against hand-written reference tasks on a
+  1–5 rubric.
 - Optional Postgres / Redis / MinIO backend through `deploy/compose.dev.yaml`.
 - Independent rechecks (a second 5-trial run) to measure band stability.
 

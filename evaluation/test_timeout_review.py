@@ -1,5 +1,5 @@
 """
-A run at the agent time limit gets no automatic verdict (timeouts don't count as the
+A run at the agent time limit gets no automatic verdict (a timeout doesn't count as the
 model failing). It settles as TIMEOUT; the Trace Parser rules on it from its trace: the model's
 own failure → VALID_FAIL, anything else → INVALID, retried as before.
 

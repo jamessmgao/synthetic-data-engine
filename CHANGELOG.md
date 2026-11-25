@@ -13,10 +13,13 @@ commits in this repository.
 - **Deck.** docs/slides/ holds the new presentation
   (`agentic-rl-environment-generation-platform.pptx`) and its 9-slide image, which the README
   embeds. They replace the earlier deck.
+- **System design sketch.** The README embeds `docs/diagrams/system-architecture.png`, and its
+  opening says what the platform produces.
 - **Accepted tasks.** `accepted_tasks.zip` at the repo root holds the 46 accepted tasks, each
   with its `verdict.md`: the versions and world mutations, every agent run, and why the failed
   runs failed.
-- **docs/archive/ is deleted.** The early analyses, the plans, the first design spec, the goals checklist and the demo list are gone from the tree. References to them in docs and
+- **docs/archive/ is deleted.** The early analyses, the plans, the first design spec, the
+  goals checklist and the demo list are gone from the tree. References to them in docs and
   comments were removed.
 
 **Why**
@@ -135,7 +138,7 @@ commits in this repository.
 
 **What changed**
 - **Project rename (3aefff5, f5cd88e).** The project is `synthetic-data-engine`, with a new
-  README. The original spec is
+  README. The first design spec was
   docs/SPEC.md (deleted on 2026-11-25).
 - **Merged docs (f5cd88e, 925adf4, d58c922, 4c37f01).**
   - docs/HILLCLIMBING.md merges the algorithm, the goal and the runbook.

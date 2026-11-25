@@ -1,8 +1,8 @@
 # Agentic RL Environment Generation Platform
 
-A closed-loop synthetic data engine: agents build executable bug-worlds, author tasks from
-them, a pinned solver calibrates their difficulty, and a durable job scheduler runs the whole
-loop at scale.
+A closed-loop platform that generates RL training environments for coding agents. Agents build
+executable bug-worlds and author tasks from them, a pinned solver calibrates their difficulty,
+and a durable job scheduler runs the whole loop at scale.
 
 The output is RL training environments in the Harbor / Terminal-Bench 2 task format. A task is
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
@@ -16,8 +16,8 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 ## How we got here
 
-I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the **learnable band
-at a high yield**. This is the method for all three. A taxonomy seeds the bug generation: it spreads the tasks
+I wanted three things from the generated tasks: that they are **diverse**, **novel**, and in the
+**learnable band at a high yield**. This is the method for all three. A taxonomy seeds the bug generation: it spreads the tasks
 out and draws inspiration from frontier complexity in software. Then feedback loops raise the
 yield, and their mutations keep pushing tasks with random variations and issues.
 
@@ -161,7 +161,9 @@ POST /v1/tasks | /v1/batches
         └─ out of band at MAX_VERSIONS (8) ──► REJECTED exhausted
 ```
 
-The architecture diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw).
+![System architecture: the API, the queues, the Generation Service, Build + Validate, the Executor, the Trace Parser and the stores](docs/diagrams/system-architecture.png)
+
+*The system design sketch.* The current diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw).
 
 ## Services
 
