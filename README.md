@@ -8,9 +8,9 @@ The output is RL training environments in the Harbor / Terminal-Bench 2 task for
 kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
 `glm-5.3-flash` at `reasoning_effort=high`.
 
-![Agentic RL Environment Generation Platform: the presentation in 9 slides](docs/archive/slides/agentic-rl-environment-generation-platform-slides.png)
+![Agentic RL Environment Generation Platform: the presentation in 9 slides](docs/slides/agentic-rl-environment-generation-platform-slides.png)
 
-*The presentation in 9 slides* (the deck: [docs/archive/slides/agentic-rl-environment-generation-platform.pptx](docs/archive/slides/agentic-rl-environment-generation-platform.pptx)).
+*The presentation in 9 slides* (the deck: [docs/slides/agentic-rl-environment-generation-platform.pptx](docs/slides/agentic-rl-environment-generation-platform.pptx)).
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
@@ -72,8 +72,8 @@ optimizations as the highest leverage:
 
 **Result:** 0 of the first 16 tasks in band; about 60% of decided tasks at the end (46 accepted of
 77). Why the accepted tasks are hard:
-[docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). Example tasks with links to the runs:
-[docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md).
+[docs/AGENT_FAILURE_ANALYSIS.md](docs/AGENT_FAILURE_ANALYSIS.md). The accepted tasks themselves:
+[accepted_tasks.zip](accepted_tasks.zip).
 
 ## What it does
 
@@ -161,8 +161,7 @@ POST /v1/tasks | /v1/batches
         └─ out of band at MAX_VERSIONS (8) ──► REJECTED exhausted
 ```
 
-The architecture diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw);
-the original design spec is [`docs/archive/SPEC.md`](docs/archive/SPEC.md).
+The architecture diagram is [`docs/diagrams/synthetic-data-engine.excalidraw`](docs/diagrams/synthetic-data-engine.excalidraw).
 
 ## Services
 
@@ -243,13 +242,11 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 
 **Start here**
 - [accepted_tasks.zip](accepted_tasks.zip): the 46 accepted tasks, each with its `verdict.md`: its versions and world mutations, every agent run, and why the failed runs failed.
-- [docs/archive/slides/](docs/archive/slides/): the presentation (the 9-slide image above, and the deck).
-- [docs/archive/DEMO_EXAMPLES.md](docs/archive/DEMO_EXAMPLES.md): seven example tasks, with links to the runs in the dashboard.
+- [docs/slides/](docs/slides/): the presentation (the 9-slide image above, and the deck).
 - [CHANGELOG.md](CHANGELOG.md): every change, with commits.
 
 **Design**
 - [docs/PRD.md](docs/PRD.md): requirements, data model, API, the services-on-queues design, deep dives.
-- [docs/archive/SPEC.md](docs/archive/SPEC.md): the original implementation spec (historical; the PRD is current).
 - [docs/DURABILITY.md](docs/DURABILITY.md): every durability and recovery guarantee, with its code, test and limits.
 - [docs/WORKER_INTERFACE.md](docs/WORKER_INTERFACE.md): the job-function contract between the services and the task-building code.
 - [docs/ARCHITECTURE_REVIEW.md](docs/ARCHITECTURE_REVIEW.md): every review finding, with its resolution and commit.
@@ -280,5 +277,3 @@ bottleneck; there were 0 INVALID in 230 agent runs.
 - [docs/TESTING.md](docs/TESTING.md): the test suites, the e2e harness and the agent-mode scenarios.
 - [web/README.md](web/README.md): the dashboard (Overview, Batches, Tasks, Analytics).
 - [docs/TODO.md](docs/TODO.md): deferred work.
-
-**Archive** ([docs/archive/](docs/archive/)): early analyses kept for the record (`ANALYSIS.md`, `PILOT_RESULTS.md`, `LINKS.md`, `K3S_PLAN.md`, `K8S_PLAN.md`, `AGENT_MODE_DEPLOY.md`).

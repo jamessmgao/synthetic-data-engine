@@ -25,7 +25,7 @@ and runs one Harbor trial (one agent run) each (`evaluation/harbor.py:run_trial`
   RDS out of connections, is logged and retried every 5 s. Only a *refused* heartbeat
   (another owner holds the lease) cancels the trial. Settle is token-fenced either way.
   Before `60e561b`, the exception killed the heartbeat thread, the lease lapsed under a
-  running trial, and another EC2 instance re-ran it (seen live on AWS, archive/ANALYSIS.md §11).
+  running trial, and another EC2 instance re-ran it (seen live on AWS).
 - **Classification** (`evaluation/classify.py:classify`):
   - `VALID_PASS` or `VALID_FAIL`;
   - `TIMEOUT`: the agent hit its 1-hour limit with reward 0. The run waits for the Trace

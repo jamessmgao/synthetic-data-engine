@@ -101,7 +101,7 @@ MAX_MUTATIONS = 2  # difficulty operators per mutation; remove_cues comes on top
 # extend_cross_component_dependency and introduce_global_invariant took 3 tasks into the band.
 LAST_RESORT = ("add_persistent_state",)
 
-# How the passing agents won → the mutations that defeat it (docs/archive/ANALYSIS.md §5). Each
+# How the passing agents won → the mutations that defeat it. Each
 # rule: (name, phrases in the pass review's fix_applied / simple_strategy, code patterns
 # in the passing runs' commands, operators, why). Commands are matched only on specific
 # code patterns: plain words like "set" or "lock" appear in ordinary commands.

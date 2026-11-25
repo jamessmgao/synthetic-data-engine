@@ -1,4 +1,4 @@
-# The pipeline on Kubernetes (docs/DEPLOY.md §8.1; the design: docs/archive/K8S_PLAN.md §2):
+# The pipeline on Kubernetes (docs/DEPLOY.md §8.1):
 # data stores, the bootstrap Job, and one Deployment per process. Overlays set the image tag,
 # settings and secrets.
 apiVersion: kustomize.config.k8s.io/v1beta1

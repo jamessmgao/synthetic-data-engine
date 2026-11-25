@@ -1,7 +1,6 @@
 # Kubernetes (K3s on AWS, k3d locally)
 
-An index. The cluster as built is described in the deployment doc; the plans it was built from
-are archived.
+An index. The cluster as built is described in the deployment doc.
 
 **As built**
 - [DEPLOY.md](DEPLOY.md) §8: what runs where (§8.1), the Docker sidecar per worker pod (§8.2),
@@ -10,9 +9,3 @@ are archived.
 - [CAPACITY.md](CAPACITY.md): the cluster's size, concurrency limits and cost.
 - The manifests are in `deploy/k8s/` (`base/` and `overlays/`); the scripts are
   `deploy/k8s-local.sh`, `deploy/k8s_aws.py` and `scripts/k8s_test.py`.
-
-**The plans (historical)**
-- [archive/K8S_PLAN.md](archive/K8S_PLAN.md): the pipeline on a local K3s cluster: the design
-  (§2), how worker pods get Docker (§3), and the same cluster on the AWS runners (§10).
-- [archive/K3S_PLAN.md](archive/K3S_PLAN.md): the first plan for K3s on local k3d and AWS, with
-  autoscaling (§4).

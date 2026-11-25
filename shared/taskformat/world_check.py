@@ -35,7 +35,7 @@ skipped). symptom_check.sh and wrong_fix.sh are required files only when enforce
     fix_not_local           the fix can't be one local patch: fix.sh changes 2+ files, or
                             dependent_check.sh exits 0 on the world and after fix.sh but 1
                             after wrong_fix.sh (a one-file patch breaks a dependent: the f1
-                            pattern, docs/archive/ANALYSIS.md)
+                            pattern)
     wrong_fix_survives      after wrong_fix.sh, symptom_check.sh exits 0 (it passes the
                             agent's own check) and repro.sh still exits 1 (deeper schedules
                             break it)

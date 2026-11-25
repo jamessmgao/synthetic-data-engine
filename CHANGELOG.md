@@ -5,6 +5,30 @@ first commit. (docs/ITERATION_LOG.md uses UTC, 8 hours ahead.) The history was s
 2026-11-24: commit ids cited here and in docs/ are labels from the development history, not
 commits in this repository.
 
+## 2026-11-25, 1 PM PST: new title and deck, the accepted tasks, no archive
+
+**What changed**
+- **Title.** The README is titled "Agentic RL Environment Generation Platform". The repository
+  name and the `sde` prefix are unchanged.
+- **Deck.** docs/slides/ holds the new presentation
+  (`agentic-rl-environment-generation-platform.pptx`) and its 9-slide image, which the README
+  embeds. They replace the earlier deck.
+- **Accepted tasks.** `accepted_tasks.zip` at the repo root holds the 46 accepted tasks, each
+  with its `verdict.md`: the versions and world mutations, every agent run, and why the failed
+  runs failed.
+- **docs/archive/ is deleted.** The early analyses, the plans, the first design spec, the goals checklist and the demo list are gone from the tree. References to them in docs and
+  comments were removed.
+
+**Why**
+- The archive held superseded plans and one-off material. The current docs describe the
+  system as built.
+
+**Tradeoffs**
+- Older entries below still name files that were in docs/archive/; none of them exists now.
+- The bundles in `accepted_tasks.zip` use the repo's current names (task org, author, `sde_*`
+  scaffold modules), so they differ from the accepted bytes by those renames. They were not
+  re-run.
+
 ## 2026-11-24, 12 PM PST: layout tidy: leftovers deleted, deploy tooling in one place, real packages
 
 **What changed**
@@ -18,7 +42,8 @@ commits in this repository.
   (the load test and the chaos test inject it). The P1 prototype, its prompt renderer and its
   test moved from `scripts/` and `tests/p1/` to `experiments/`.
 - **Docs archived (e8d8cdc).** `K3S_PLAN.md`, `K8S_PLAN.md`, `SPEC.md`,
-  `DEMO_EXAMPLES.md`, `AGENT_MODE_DEPLOY.md` and `slides/` moved to docs/archive/. The two
+  `DEMO_EXAMPLES.md`, `AGENT_MODE_DEPLOY.md` and `slides/` moved to docs/archive/ (deleted the
+  next day; the slides are back in docs/slides/). The two
   "Moved" pointers (`HILLCLIMBING_ALGORITHM.md`, `ITERATION_RUNBOOK.md`) are gone.
   docs/KUBERNETES.md is an index: docs/DEPLOY.md §8 for the cluster as built, the archived
   plans for the design.
@@ -87,7 +112,6 @@ commits in this repository.
 - Local state under the earlier prefix is orphaned: the SQLite file in `work/`, the compose
   Postgres volume, a k3d cluster, and settings in `deploy/local.env` or `.env`. Rename the
   settings to `SDE_*` and recreate the rest.
-- docs/archive/ keeps its old paths in prose. Only its links were fixed.
 
 ## 2026-11-18, 5 PM PST: the final result, the README's "How we got here" and the presentation
 
@@ -100,11 +124,11 @@ commits in this repository.
   Parser's revisions inside the pipeline. Loop 2 is the agentic coding loop around it, run with
   `/goal`. It lists the loop's four highest-leverage optimizations: prompt engineering, taxonomy
   seeding, trace-driven mutations and generation control.
-- **Slides (5ebbb16, a3fdfac, 134ecf3).** docs/slides/ (now docs/archive/slides/) holds the deck
+- **Slides (5ebbb16, a3fdfac, 134ecf3).** docs/slides/ holds the deck
   (`synthetic-data-engine-presentation-v7.pptx`) and the 9-slide overview image
   (`synthetic-data-engine-slides.png`), which the README embeds. (Replaced on 2026-11-25 by
   `agentic-rl-environment-generation-platform.pptx` and its `-slides.png`.)
-- **Demo examples (e71fa8d).** docs/DEMO_EXAMPLES.md (now docs/archive/DEMO_EXAMPLES.md) lists example tasks with links to each
+- **Demo examples (e71fa8d).** docs/DEMO_EXAMPLES.md (deleted on 2026-11-25) lists example tasks with links to each
   agent run in the dashboard.
 
 ## 2026-11-18, 5 PM PST: docs cleanup, the API reference and a Claude skill
@@ -112,7 +136,7 @@ commits in this repository.
 **What changed**
 - **Project rename (3aefff5, f5cd88e).** The project is `synthetic-data-engine`, with a new
   README. The original spec is
-  docs/SPEC.md (now docs/archive/SPEC.md).
+  docs/SPEC.md (deleted on 2026-11-25).
 - **Merged docs (f5cd88e, 925adf4, d58c922, 4c37f01).**
   - docs/HILLCLIMBING.md merges the algorithm, the goal and the runbook.
     docs/HILLCLIMBING_ALGORITHM.md and docs/ITERATION_RUNBOOK.md are now pointers to it
@@ -139,7 +163,7 @@ commits in this repository.
 
 **Tradeoffs**
 - docs/KUBERNETES.md is only an index. The as-built merge of docs/K3S_PLAN.md and
-  docs/K8S_PLAN.md (both now in docs/archive/) is still to do.
+  docs/K8S_PLAN.md (both deleted on 2026-11-25) is still to do.
 
 ## 2026-11-18, 3 PM PST: Trace Parser revision loop: early stopping, timeout review, review-led mutations
 

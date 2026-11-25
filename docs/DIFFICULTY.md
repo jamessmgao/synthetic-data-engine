@@ -144,7 +144,7 @@ in `shared/taxonomy/taxonomy.py` `MECHANISM_NOTES`.
 
 ## 5. What we measured
 
-Against terminus-2 + glm-5.3-flash (pilots p1–p4 in [archive/PILOT_RESULTS.md](archive/PILOT_RESULTS.md),
+Against terminus-2 + glm-5.3-flash (pilots p1–p4, whose records are in `experiments/results/`,
 then the production runs of 2026-11-18/19 in [ITERATION_LOG.md](ITERATION_LOG.md)).
 
 **It is very good at:**

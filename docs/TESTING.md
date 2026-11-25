@@ -159,7 +159,7 @@ Two kinds of live test:
 
 Watch progress with `GET /v1/tasks` and read each verdict with `GET /v1/tasks/{id}`.
 
-What the live runs found is in docs/archive/ANALYSIS.md §11–12. In particular, an injected pilot
+One finding from the live runs: an injected pilot
 task whose race tests detect the bug only some of the time passed nop once and failed it
 the next time; the gates caught the flake.
 

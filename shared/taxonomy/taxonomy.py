@@ -42,7 +42,7 @@ UNIQUE_DIMENSIONS = ("domain", "task_type", "environment")
 # generic counts: task-builder's pilots found easy/medium/hard labels and file or
 # constraint counts didn't move the pass rate, while the coupled behavior-preserving
 # change (a local fix that silently breaks a dependent module) gave the only genuine
-# model failure (docs/archive/ANALYSIS.md §9). Dial 1-3 turns its difficulty.
+# model failure in the pilots. Dial 1-3 turns its difficulty.
 DEFAULT_DIFFICULTY = {"form": "behavior_preserving", "dial": 2}
 
 
