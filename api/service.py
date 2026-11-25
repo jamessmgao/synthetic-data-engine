@@ -568,7 +568,7 @@ def _yield(summary: dict) -> dict:
 
 
 def cancel_tasks(store: SqlStore, task_ids: list[str], by: str = "user", note: str = "") -> dict:
-    """Cancel tasks in one transaction (pipeline/tasks.cancel). Idempotent: an already
+    """Cancel tasks in one transaction (shared/jobs/tasks.cancel). Idempotent: an already
     decided task is left as it is and counted under `already_decided`."""
     with store.tx() as conn:
         results = [task_state.cancel(conn, t, by, note) for t in task_ids]

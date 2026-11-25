@@ -17,7 +17,7 @@ UNIT_TESTS := tests/test_boundaries.py tests/shared tests/deploy api generator e
 .PHONY: test test-unit test-e2e test-all deps-up test-infra up up-agent authoring-image down logs ps reconcile
 
 test:            ## infrastructure tests on SQLite + files (no services needed)
-	$(PYTHON) -m pytest tests/shared -q
+	$(PYTHON) -m pytest tests/shared evaluation/test_timeout_review.py -q
 
 test-unit:       ## every component's unit tests (no services, no model calls)
 	$(PYTHON) -m pytest $(UNIT_TESTS) -q
@@ -32,7 +32,7 @@ deps-up:         ## Postgres + Redis + S3 (RustFS) only
 	$(COMPOSE) up -d --wait postgres redis s3
 
 test-infra: deps-up  ## the same tests on SQLite, Postgres and Postgres+Redis, plus S3
-	$(TEST_ENV) $(PYTHON) -m pytest tests/shared -q
+	$(TEST_ENV) $(PYTHON) -m pytest tests/shared evaluation/test_timeout_review.py -q
 
 up:              ## the whole stack, workers included (oneshot authoring)
 	rm -f deploy/make.env

@@ -3,8 +3,10 @@ lives under shared/, and inside shared/ the dependencies go one way.
 
 Every non-test .py file under the five services and shared/ is parsed, and each import of
 a repo package is checked: `import x`, `from x import y` at any nesting depth (so a lazy
-import inside a function counts), and `importlib.import_module("x")`, `__import__("x")`
-and `sys.modules["x"]` with a literal string.
+import inside a function counts), and `importlib.import_module("x")` (also under an alias or
+with `name=`), `__import__("x")`, `runpy.run_module("x")`, and `sys.modules["x"]` /
+`sys.modules.get("x")` with a literal string. A top-level package the lists below don't name
+fails too: it could carry a service's code to another service unseen.
 """
 
 import ast
@@ -16,6 +18,8 @@ SERVICES = ("api", "generator", "validator", "evaluation", "authoring")
 SHARED = "shared"
 TOOLING = ("scripts", "experiments", "deploy", "tests")
 SKIP_DIRS = ("authoring/scaffold",)  # stdlib-only code copied into generated worlds, never imported
+NOT_PACKAGES = ("web", "docs", "config", "output", "work")  # top-level directories that hold no importable code
+IMPORT_CALLS = ("importlib.import_module", "import_module", "__import__", "runpy.run_module", "run_module")
 
 # Inside shared/: which subpackage may import which. Anything not listed is forbidden.
 SHARED_EDGES = {
@@ -67,7 +71,11 @@ def imports_of(source: str, package: str) -> list[tuple[int, str]]:
     of the file, for relative imports. `from x import y` yields `x.y` as well as `x`: `y`
     may be a submodule (`from shared import storage`)."""
     found: list[tuple[int, str]] = []
-    for node in ast.walk(ast.parse(source)):
+    tree = ast.parse(source)
+    # `from importlib import import_module as load`: `load("x")` is an import too.
+    aliases = {a.asname for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module in ("importlib", "runpy")
+               for a in n.names if a.asname and a.name in ("import_module", "run_module")}
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found += [(node.lineno, alias.name) for alias in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -77,8 +85,12 @@ def imports_of(source: str, package: str) -> list[tuple[int, str]]:
                 base = ".".join([*up, base] if base else up)
             found.append((node.lineno, base))
             found += [(node.lineno, f"{base}.{alias.name}") for alias in node.names if alias.name != "*"]
-        elif isinstance(node, ast.Call) and node.args and (name := _literal(node.args[0])):
-            if _dotted(node.func) in ("importlib.import_module", "import_module", "__import__"):
+        elif isinstance(node, ast.Call):
+            func = _dotted(node.func)
+            arg = node.args[0] if node.args else next(
+                (k.value for k in node.keywords if k.arg in ("name", "mod_name")), None)
+            name = _literal(arg) if arg is not None else None
+            if name and (func in IMPORT_CALLS or func in aliases or func in ("sys.modules.get", "sys.modules.pop")):
                 found.append((node.lineno, name))
         elif isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.modules" and (name := _literal(node.slice)):
             found.append((node.lineno, name))
@@ -147,6 +159,14 @@ def test_every_shared_package_has_its_edges_listed():
     assert packages == set(SHARED_EDGES)
 
 
+def test_every_top_level_package_is_listed():
+    """A new top-level package would be invisible to the rule (its imports unchecked, and
+    imports of it treated as third-party): it must be a service, shared/ or tooling."""
+    packages = {p.name for p in ROOT.iterdir() if p.is_dir() and not p.name.startswith(".")
+                and p.name not in NOT_PACKAGES and any(p.rglob("*.py"))}
+    assert packages <= {*SERVICES, SHARED, *TOOLING}, sorted(packages - {*SERVICES, SHARED, *TOOLING})
+
+
 def test_the_allowed_shared_edges_have_no_cycle():
     def reaches(a: str, b: str, seen: frozenset = frozenset()) -> bool:
         return any(n == b or (n not in seen and reaches(n, b, seen | {n})) for n in SHARED_EDGES[a])
@@ -180,6 +200,10 @@ def test_the_checker_catches_planted_violations(tmp_path):
     write("shared/llm/j.py", "from . import k\nfrom ..taskformat import schema\n")
     write("api/test_k.py", "from evaluation import verdict\n")  # a test file: may import anything
     write("authoring/scaffold/l.py", "from generator import author\n")  # copied into worlds: skipped
+    write("validator/n.py", "import sys\nm = sys.modules.get('generator.author')\n")
+    write("validator/o.py", "from importlib import import_module as load\nm = load('generator.llm')\n")
+    write("validator/p.py", "import importlib\nm = importlib.import_module(name='generator.llm')\n")
+    write("validator/q.py", "import runpy\nrunpy.run_module('generator.service')\n")
     write("shared/newarea/__init__.py", "")
     write("shared/newarea/m.py", "from shared.contracts import models\n")
 
@@ -196,6 +220,10 @@ def test_the_checker_catches_planted_violations(tmp_path):
         ("generator/i.py:1:", "generator -> tooling"),
         ("shared/llm/j.py:2:", "shared.llm -> shared.taskformat"),
         ("shared/newarea/m.py:1:", "shared.newarea -> shared.contracts"),
+        ("validator/n.py:2:", "validator -> generator"),
+        ("validator/o.py:2:", "validator -> generator"),
+        ("validator/p.py:2:", "validator -> generator"),
+        ("validator/q.py:2:", "validator -> generator"),
     ]
     for where, edge in expected:
         assert any(v.startswith(where) and edge in v for v in found), (where, edge, found)
