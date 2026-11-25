@@ -1,12 +1,20 @@
 # Agentic RL Environment Generation Platform
 
-A closed-loop platform that generates RL training environments for coding agents. Agents build
-executable bug-worlds and author tasks from them, a pinned solver calibrates their difficulty,
-and a durable job scheduler runs the whole loop at scale.
+Creating high-quality software engineering environments for reinforcement learning is expensive.
+Each task needs a runnable codebase, a meaningful problem, and reliable tests that can tell a
+correct solution from an incomplete one. Traditionally this has taken substantial human
+engineering and review.
 
-The output is RL training environments in the Harbor / Terminal-Bench 2 task format. A task is
-kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` +
-`glm-5.3-flash` at `reasoning_effort=high`.
+**We built an agentic platform that automates this process**: it generates, validates and
+calibrates coding environments without a human authoring each task.
+
+Each environment contains a small software system with a deliberately introduced defect, a
+realistic request to resolve it, and hidden tests that verify the result. Most defects are bugs
+to fix. Some are performance or resource problems to solve without changing behaviour.
+
+The goal is a continuous supply of **diverse, verifiable tasks at the right difficulty level**.
+Tasks should challenge the target model without being consistently impossible. They come out in
+the Harbor / Terminal-Bench 2 task format.
 
 ![Agentic RL Environment Generation Platform: the presentation in 9 slides](docs/slides/agentic-rl-environment-generation-platform-slides.png)
 
@@ -14,34 +22,38 @@ kept only when it's **learnable**: 1–3 of 5 agent runs pass with `terminus-2` 
 
 **All documentation is indexed in [Docs](#docs) at the end of this README.**
 
-## What it does
+## How it works
 
-We demonstrated a pathway toward scalable, weak-to-strong RL environment generation: using
-automated agents to construct verified challenges for potentially more capable coding models,
-without requiring a stronger model to supply every solution.
+- **Construct difficulty deliberately.** Generate defects that involve interacting constraints,
+  concurrency, shared state and edge cases, where an obvious fix may not be enough.
+- **Verify solutions independently.** Use reproducible failures, reference fixes, hidden tests
+  and plausible wrong fixes to check that the task is valid and difficult for the intended
+  reasons.
+- **Measure difficulty empirically.** Run five solver attempts and analyze their outcomes.
+  Accept tasks with 1 to 3 successful runs, provided the failures are attributable to the
+  solver and not to faulty task design. The 1 to 3 of 5 band is a practical calibration
+  criterion, not a universal rule.
+- **Refine automatically.** Use solver traces to identify shortcuts, missed constraints and
+  failure patterns, then revise tasks that are too easy, too difficult or invalid.
 
-Hard coding environments for RL post-training are usually written by human experts, one at a
-time. This platform generates them with no person writing each one.
+## Why this matters
 
-Each environment is a small software system with a real bug, a request to fix it, and hidden
-tests that check the fix. The aim is a steady supply that is **new**, **varied** and **hard in
-the right amount**: a given model should solve each one some of the time, but not every time. A
-problem it always solves teaches it nothing, and a problem it never solves gives it nothing to
-learn from.
+**The model generating a problem doesn't necessarily need to be stronger than the model solving
+it.** The generator builds the system, so it knows how the defect works; the solver has to
+discover that on its own. Executable verification then establishes that the task is correct
+without the generator having to outperform the solver.
 
-Why it works:
+This provides a potential route to **scalable, weak-to-strong RL environment generation**,
+reducing reliance on stronger teacher models to supply every training example or solution.
 
-- **Building a hard problem is easier than solving it.** An agent that plants a bug in a system
-  it has just built knows where the bug is. The solver has to find it. So the authoring model
-  does not need to be stronger than the model being trained.
-- **Difficulty is measured, not guessed.** Every problem is attempted five times by a fixed
-  solver. Only the ones it solves 1 to 3 times out of 5 are kept.
+**The platform generates and calibrates RL-ready environments; it does not itself train a model
+or demonstrate improvements in a model's weights.**
 
-The platform generates and calibrates the environments. It does not train a model.
+## What it does, step by step
 
 ### 1. Builds a world
 
-An authoring agent builds a small working system with a planted bug: the code, a way to
+An authoring agent builds a small working system with a planted defect: the code, a way to
 reproduce the failure, the real fix, and a plausible fix that looks right but isn't. Nothing is
 taken on trust. The platform runs the system and checks that the failure reproduces, that the
 real fix removes it, and that the wrong fix doesn't. A world that fails these checks is sent
