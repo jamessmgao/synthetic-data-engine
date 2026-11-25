@@ -5,41 +5,13 @@ band, which revision operator to try next, and the evidence handed to GLM-5.1.
 Operator names are `generator.prompting.OPERATORS`.
 """
 
-import hashlib
-import json
 import re
 from statistics import median
 from typing import Any
 
-from shared.contracts import config
+from shared.contracts import config  # noqa: F401  (calibration.config: the band settings)
+from shared.contracts.band import config_hash, eval_config, in_band, too_easy, too_hard  # noqa: F401  (the band rules)
 from shared.contracts.models import Outcome
-
-
-def eval_config() -> dict[str, Any]:
-    """The pinned evaluation config every scored rollout of a version must share."""
-    return {
-        "agent": config.EVAL_AGENT,
-        "model": config.EVAL_MODEL,
-        "agent_kwargs": {"reasoning_effort": config.EVAL_REASONING_EFFORT},
-        "n_runs": config.N_RUNS,
-        "band": [config.BAND_LOW, config.BAND_HIGH],
-    }
-
-
-def config_hash() -> str:
-    return hashlib.sha256(json.dumps(eval_config(), sort_keys=True).encode()).hexdigest()[:16]
-
-
-def in_band(pass_count: int) -> bool:
-    return config.BAND_LOW <= pass_count <= config.BAND_HIGH
-
-
-def too_easy(pass_count: int) -> bool:
-    return pass_count > config.BAND_HIGH
-
-
-def too_hard(pass_count: int) -> bool:
-    return pass_count < config.BAND_LOW
 
 # Tried in order; an operator already used on this task is skipped.
 HARDER = ["increase_diagnosis_depth", "increase_constraint_interaction", "increase_cross_component_dependency"]

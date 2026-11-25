@@ -9,12 +9,15 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 # Set per process or per container, not by the operator.
 NOT_SETTINGS = {"SDE_API_KEY", "SDE_DOCKER_LABEL", "SDE_ENV_FILE", "SDE_RELEASE", "SDE_WORK_DIR",
-                "SDE_MOCK_AUTHOR_STEPS", "SDE_MOCK_AUTHOR_STEP_S", "SDE_MOCK_FIXTURE"}
+                "SDE_MOCK_AUTHOR_STEPS", "SDE_MOCK_AUTHOR_STEP_S", "SDE_MOCK_FIXTURE",
+                # sde-task's own knob (shared/taskformat/task_check.py), read where sde-task runs:
+                # in the authoring container. It was never a compose setting.
+                "SDE_TASK_PARALLEL"}
 
 
 def settings_in_code() -> set[str]:
     names = set()
-    for d in ("pipeline", "generator", "evaluation", "validator", "api"):
+    for d in ("shared", "generator", "evaluation", "validator", "api"):
         for f in (ROOT / d).rglob("*.py"):
             if not f.name.startswith("test_"):
                 names |= set(re.findall(r'"(SDE_[A-Z0-9_]+)"', f.read_text()))

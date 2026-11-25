@@ -9,7 +9,7 @@
 # Commands per process (override via env; the defaults assume every branch is merged):
 #   SDE_GENERATION_CMD    Generation Service (create + revise queues) + the one reconciler
 #   SDE_TRACE_PARSER_CMD  Trace Parser service (analyze queue: accept / revise / reject)
-#   SDE_VALIDATE_CMD      Build + Validate (shared/jobs/worker.py → task-builder gates)
+#   SDE_VALIDATE_CMD      Build + Validate (validator/service.py → task-builder gates)
 #   SDE_EXECUTOR_CMD      Executor (the run queue)
 #   SDE_API_CMD           the API service
 #   SDE_RUNNER_GENERATION_CMD  Generation Service on worker-runner (agent mode only)

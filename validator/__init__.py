@@ -1,1 +1,1 @@
-"""Validation: the structural validator, the world check and the validate gates."""
+"""Validation: the structural validator, the validate gates, and Build + Validate (service.py)."""

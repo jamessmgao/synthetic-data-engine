@@ -98,7 +98,7 @@ wrong_fix, and a blind leak review. A failing task goes to repair (≤2). See
 A one-shot mode (`SDE_AUTHOR_MODE=oneshot`, the default) drafts the whole bundle in one
 strict-JSON glm-5.1 call instead. It's the baseline, and the fallback for raw prompts and v1
 specs. The mode is chosen per job: a create or revise job with a `world_sha256` runs the agent
-author (`shared/jobs/worker.py:draft_fn`).
+author (`generator/service.py:draft_fn`).
 
 ### 3. Calibrates difficulty
 
@@ -169,8 +169,8 @@ the original design spec is [`docs/archive/SPEC.md`](docs/archive/SPEC.md).
 | Service | Entry point | Consumes | Code |
 |---|---|---|---|
 | API | `python -m api` | HTTP | `api/app.py:create_app`, `api/submit.py:create_task` / `create_batch` |
-| Generation Service | `python -m generator.service generation` | `world`, `create`, `revise` | `shared/jobs/worker.py:serve_generation`, `world_fn`, `draft_fn`; `generator/author.py:run_world_job`, `generator/author_task.py:run_create_job`, `generator/worker.py:run_generate_job` (one-shot) |
-| Build + Validate | `python -m validator.service validate` | `validate`, `world_check` | `validator/gates.py:run_validate_job` (`gate_wrong_fix`, `gate_leak`), `shared/taskformat/world_check.py:run_world_check_job` |
+| Generation Service | `python -m generator.service generation` | `world`, `create`, `revise` | `generator/service.py:serve_generation`, `world_fn`, `draft_fn`; `generator/author.py:run_world_job`, `generator/author_task.py:run_create_job`, `generator/worker.py:run_generate_job` (one-shot) |
+| Build + Validate | `python -m validator.service validate` | `validate`, `world_check` | `validator/service.py:serve_validate`, `validator/gates.py:run_validate_job` (`gate_wrong_fix`), `shared/taskformat/leak.py:gate_leak`, `shared/taskformat/world_check.py:run_world_check_job` |
 | Executor | `python -m evaluation.executor` | `rollout` (agent runs) | `evaluation/executor.py:Executor`, `evaluation/harbor.py:run_trial`, `evaluation/classify.py` |
 | Trace Parser | `python -m evaluation.trace_parser_service` | `analyze` | `evaluation/trace_parser_service.py:TraceParserService.analyze` / `next_job`, `evaluation/trace_parser.py:parse` / `review_passes`, `evaluation/calibration.py:choose_mutations` |
 | Reconciler | `python -m shared.jobs.reconciler` | (timer) | `shared/jobs/reconciler.py:reconcile`: re-publishes lost queue entries, dead-letters poison jobs (and rejects their task), sweeps staging |

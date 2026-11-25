@@ -94,7 +94,7 @@ One heredoc per file, or a short Python script in `/tmp` that writes them (and `
 `draft.json`). **Never nested heredocs sharing a delimiter**: the inner `EOF` ends the outer
 one (P1 lost ~3 minutes to it).
 
-### The self-check: `sde-task` (`authoring/sde_task.py`)
+### The self-check: `sde-task` (`authoring/sde_task.py`, the checks in `shared/taskformat/task_check.py`)
 
 ```
 sde-task schema                                     # the TaskDraft JSON schema: run it first

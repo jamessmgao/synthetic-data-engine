@@ -3,13 +3,13 @@ One copy of the whole pipeline in one process, with the fakes from fakes.py in
 place of GLM-5.1 (drafting and the failure review), the Harbor gates and Harbor
 trials. Everything else is the production code path:
 
-    shared.jobs.worker.serve_generation    ─┐  claim → heartbeat → run → settle,
+    generator.service.serve_generation   ─┐  claim → heartbeat → run → settle,
       (create, revise; world in agent)   │  each settle handing off to the next
-    shared.jobs.worker.serve_validate       │  stage in the same transaction
+    validator.service.serve_validate     │  stage in the same transaction
       (validate; world_check in agent)   │
     evaluation.executor.Executor         │
     evaluation.trace_parser_service      ─┘  (+ the real classifier and trace parser)
-    shared.jobs.reconciler                  dead-letters, re-publishes to Redis
+    shared.jobs.reconciler                 dead-letters, re-publishes to Redis
 
 Backends come from the environment exactly as in production (DATABASE_URL,
 REDIS_URL, S3_*, SDE_WORK_DIR). The process exits 0 once every task is final and
@@ -39,7 +39,8 @@ from evaluation.trace_parser_service import TraceParserService  # noqa: E402
 from shared.jobs import reconciler  # noqa: E402
 from shared.storage import from_env  # noqa: E402
 from shared.contracts.models import DOCKER_SLOTS, POLL_S  # noqa: E402
-from shared.jobs.worker import serve_generation, serve_validate  # noqa: E402
+from generator.service import serve_generation  # noqa: E402
+from validator.service import serve_validate  # noqa: E402
 
 import fakes  # noqa: E402
 
@@ -52,10 +53,11 @@ def all_final(backend, parser: TraceParserService) -> bool:
 
 
 def real_adapters(backend):
-    """shared/jobs/worker.py's agent adapters as production runs them (artifact fetch and
-    register, trial saving, result mapping), over author / world_check with only the
+    """The services' agent adapters (generator/service.py, validator/service.py) as production
+    runs them (artifact fetch and register, trial saving, result mapping), over author / world_check with only the
     authoring trial and Docker replaced (fakes.author_* and fakes.docker)."""
-    from shared.jobs import worker
+    from generator import service as generation_service
+    from validator import service as validate_service
 
     from generator import author  # generator/author.py; draft_fn and world_fn import from it per call
     from shared.taskformat import world_check  # shared/taskformat/world_check.py; gates re-exports its run_world_check_job
@@ -63,8 +65,8 @@ def real_adapters(backend):
     author.run_world_job = fakes.author_world_job
     author.run_create_job = fakes.author_create_job
     world_check._docker = fakes.docker
-    generation = worker.generation_fns(backend, mode="agent")
-    gates = {"validate": fakes.validate(backend), "world_check": worker.world_check_fn(backend)}
+    generation = generation_service.generation_fns(backend, mode="agent")
+    gates = {"validate": fakes.validate(backend), "world_check": validate_service.world_check_fn(backend)}
     return generation, gates
 
 

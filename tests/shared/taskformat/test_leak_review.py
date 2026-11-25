@@ -1,4 +1,4 @@
-"""The semantic leak check (gates.gate_leak) on P1's real task: its instruction, its
+"""The semantic leak check (leak.gate_leak) on P1's real task: its instruction, its
 world and its fix (tests/shared/taskformat/fixtures/p1, from origin/task-builder 2f9d456). The
 model calls are scripted (no spend); what is tested is what each call is shown, how
 findings are verified and graded, and the verdict rules."""
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from shared.llm import llm
-from validator import gates
+from shared.taskformat import leak
 
 HERE = Path(__file__).resolve().parent
 
@@ -72,12 +72,12 @@ class Model:
 
 @pytest.fixture(autouse=True)
 def review_on(monkeypatch):
-    monkeypatch.setattr(gates.config, "LEAK_REVIEW", True)
+    monkeypatch.setattr(leak.config, "LEAK_REVIEW", True)
 
 
 def run(tmp_path, monkeypatch, instruction, model):
     monkeypatch.setattr(llm, "complete", model)
-    return gates.gate_leak(bundle(tmp_path, instruction), tmp_path / "trace")
+    return leak.gate_leak(bundle(tmp_path, instruction), tmp_path / "trace")
 
 
 def finding(quote, severity="direct", reveals="the fix"):
@@ -157,18 +157,18 @@ def test_the_review_is_adopted_and_an_old_record_is_reviewed_again(tmp_path, mon
     b = bundle(tmp_path, P1_INSTRUCTION)
     model = Model({"verdict": "clean", "leaks": []})
     monkeypatch.setattr(llm, "complete", model)
-    record = gates.leak_review_dir(b, tmp_path / "trace") / "review.json"
+    record = leak.leak_review_dir(b, tmp_path / "trace") / "review.json"
     record.parent.mkdir(parents=True)
     record.write_text(json.dumps({"review": {"verdict": "clean", "leaks": []}, "cost_usd": 0.01}))  # v1
-    first = gates.gate_leak(b, tmp_path / "trace")
+    first = leak.gate_leak(b, tmp_path / "trace")
     assert first.detail["adopted"] is False and len(model.seen) == 3  # a v1 record has no blind check
     model.seen.clear()
-    again = gates.gate_leak(b, tmp_path / "trace")
+    again = leak.gate_leak(b, tmp_path / "trace")
     assert again.detail["adopted"] and again.detail["cost_usd"] == 0.0 and not model.seen
 
 
 def test_the_blind_check_can_be_switched_off(tmp_path, monkeypatch):
-    monkeypatch.setattr(gates.config, "LEAK_BLIND", False)
+    monkeypatch.setattr(leak.config, "LEAK_BLIND", False)
     model = Model({"verdict": "leak", "leaks": [finding(FIX)]}, judge="specific")
     gate = run(tmp_path, monkeypatch, P1_INSTRUCTION, model)
     assert not gate.passed and set(model.seen) == {"leak-review"} and not gate.detail["blind_leak"]
@@ -182,7 +182,7 @@ def test_a_mutated_world_tells_the_judge_the_parent_fix_is_known(tmp_path, monke
     meta["lineage"] = {"mutations": [{"defeats": "commit-before-ack now also promotes a rejected over-limit batch"}]}
     world_json.write_text(json.dumps(meta))
     model = Model({"verdict": "clean", "leaks": []})
-    run_gate = gates.gate_leak
+    run_gate = leak.gate_leak
     monkeypatch.setattr(llm, "complete", model)
     run_gate(b, tmp_path / "trace")
     judge = model.seen["leak-judge"]
@@ -195,5 +195,5 @@ def test_without_the_world_the_review_still_runs_on_the_bundle(tmp_path, monkeyp
     (b / "task.toml").write_text("")  # no world recorded
     model = Model({"verdict": "clean", "leaks": []})
     monkeypatch.setattr(llm, "complete", model)
-    gate = gates.gate_leak(b, tmp_path / "trace")
+    gate = leak.gate_leak(b, tmp_path / "trace")
     assert gate.passed and not gate.detail["had_world"] and "REFERENCE SOLUTION" in model.seen["leak-review"]

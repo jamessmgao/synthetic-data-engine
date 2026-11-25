@@ -35,7 +35,7 @@ moved on (decided, or a copy got there first), nothing is enqueued.
 import re
 from typing import Any
 
-from evaluation.calibration import config_hash, eval_config
+from shared.contracts.band import config_hash, eval_config
 from shared.jobs import tasks
 from shared.storage import Backend
 from shared.storage.sql import Conn, job_id, rollout_job_id

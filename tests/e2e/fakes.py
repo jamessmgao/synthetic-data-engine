@@ -4,11 +4,11 @@ model endpoint and no Docker is touched; everything else is the real code.
 
 | Real                                   | Fake                    | Plugged in at                         |
 |----------------------------------------|-------------------------|---------------------------------------|
-| GLM-5.1 drafting (run_generate_job,    | `generate`              | shared.jobs.worker.serve_generation      |
+| GLM-5.1 drafting (run_generate_job,    | `generate`              | generator.service.serve_generation    |
 |   run_create_job from a world)         |                         |                                       |
-| World authoring (run_world_job)        | `world`                 | shared.jobs.worker.serve_generation      |
-| Harbor gates (run_validate_job)        | `validate`              | shared.jobs.worker.serve_validate        |
-| World check (run_world_check_job)      | `world_check`           | shared.jobs.worker.serve_validate        |
+| World authoring (run_world_job)        | `world`                 | generator.service.serve_generation    |
+| Harbor gates (run_validate_job)        | `validate`              | validator.service.serve_validate      |
+| World check (run_world_check_job)      | `world_check`           | validator.service.serve_validate      |
 | Harbor terminus-2 trial (run_trial)    | `run_trial`             | evaluation.executor.Executor          |
 | GLM-5.1 failure review (llm.complete)  | `review`                | evaluation.trace_parser_service       |
 
@@ -272,7 +272,7 @@ def run_trial(task_dir: Path, job_id: str, agent: harbor.AgentConfig, cancel, tr
 
 # --- the REAL agent adapters, with only the authoring trial and Docker faked ---------
 #
-# shared/jobs/worker.py's world_fn / draft_fn / world_check_fn run for real: they fetch
+# generator/service.py's world_fn / draft_fn and validator/service.py's world_check_fn run for real: they fetch
 # worlds, bundles and draft records from the artifact store (S3 in cluster mode),
 # register what the author wrote, save the authoring trial, and map results. Only
 # what needs a model or Docker is replaced: author.run_world_job / run_create_job (at

@@ -133,7 +133,7 @@ replace; [AUTHORING.md](AUTHORING.md)), not by the Trace Parser.
 - the decision;
 - the spec;
 - a versions table: origin (the version's first non-repair world/create/revise job,
-  `verdict.version_input`), operator, mutation operators, world (sha and world_check
+  `shared/contracts/decision.py:version_input`), operator, mutation operators, world (sha and world_check
   outcome), bundle, gates, e.g. `OK (wrong_fix ✓, leak ✗)`, and pass pattern;
 - the world mutation lineage, with why and aimed-at;
 - every agent run with its trace URI;

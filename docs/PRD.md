@@ -47,7 +47,7 @@ with one strict-JSON GLM-5.1 call (`generator/worker.py:run_generate_job`, §6.1
 `generator/author.py:run_world_job` builds a **world** (an executable system, its
 invariants, a reproducible counterexample, a fix and a plausible wrong fix), and
 `generator/author_task.py:run_create_job` writes a task **from that world**. In agent mode
-`shared/jobs/worker.py:draft_fn` picks per job: a create or revise whose input has
+`generator/service.py:draft_fn` picks per job: a create or revise whose input has
 `world_sha256` runs the agent author, and anything else (raw prompts, v1 specs, tasks in
 flight when the mode switched) runs one-shot.
 
@@ -504,8 +504,8 @@ containerized execution and S3. The diagram is
 | Component | Queue in → what it does → queue out | Module |
 |---|---|---|
 | **API service (FastAPI)** | Entry point, not a worker. `POST /v1/tasks` writes one task and its `create` job in one transaction and returns `202`. Read endpoints serve status, verdicts and reports (§4). It is also the diagram's "API Gateway": no separate gateway product sits in front of it. | `api/` |
-| **Generation Service** | **create queue** (`sde:create`): GLM-5.1 drafts a new task from its spec. **revise queue** (`sde:revise`): GLM-5.1 changes an existing task, either a *repair* (it failed its gates) or a *revision* (the Trace Parser found it too easy, too hard or unfair), continuing from the old task plus the evidence (§6.1, §6.6). Either way: bundle to S3, then enqueue `validate`. Revise jobs run before create jobs, so started tasks finish first. | `generator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
-| **Build + Validate** | `sde:validate` → build, structural validator, `harbor lint`, oracle × 2, nop (§6.3) → **pass:** 5 jobs on the run queue; **fail:** a repair on the revise queue (≤ 2 per version), else reject the task (`invalid`). | `validator/` + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
+| **Generation Service** | **create queue** (`sde:create`): GLM-5.1 drafts a new task from its spec. **revise queue** (`sde:revise`): GLM-5.1 changes an existing task, either a *repair* (it failed its gates) or a *revision* (the Trace Parser found it too easy, too hard or unfair), continuing from the old task plus the evidence (§6.1, §6.6). Either way: bundle to S3, then enqueue `validate`. Revise jobs run before create jobs, so started tasks finish first. | `generator/` (`generator/service.py`) + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
+| **Build + Validate** | `sde:validate` → build, structural validator, `harbor lint`, oracle × 2, nop (§6.3) → **pass:** 5 jobs on the run queue; **fail:** a repair on the revise queue (≤ 2 per version), else reject the task (`invalid`). | `validator/` (`validator/service.py`) + `shared/jobs/worker.py` + `shared/jobs/handoffs.py` |
 | **Executor** | **run queue** (`sde:rollout`) → one Harbor run in an Execution Pod, timeouts and resource limits enforced → upload the whole trace (trajectory, terminal output, verifier logs, result) to S3 → record outcome, reward, cost → **always** enqueue an `analyze` ping; an `INVALID` run also enqueues a retry of the same slot. | `evaluation/executor.py` |
 | **Execution Pods** | Run each agent attempt in an isolated container (Harbor task container, 1 CPU / 2 GB). | Harbor + Docker |
 | **Trace Parser** (analysis + revision) | `sde:analyze` → if the version doesn't have 5 valid runs yet, finish (`wait`). Otherwise read the 5 traces from S3, extract metrics and evidence, have GLM-5.1 review each failed run (§6.5), write `trace_metrics` and `failure` onto the run rows, and **decide** (§6.6): accept and publish; or put a revision on the revise queue; or reject. The only component that judges difficulty. Its own service; not a cron batch. | `evaluation/trace_parser_service.py` + `trace_parser.py` |

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from shared.contracts import config
 from shared.llm import llm
+from shared.taskformat import leak
 from shared.taskformat.materialize import bundle_sha256, materialize, write_bundle
 from shared.taskformat.schema import BASE_IMAGES, TaskDraft
 from generator.worker import RESPONSE_FORMAT, run_generate_job
@@ -729,10 +730,8 @@ class LeakModel(FakeModel):
                           "judge": json.dumps({"match": judge, "why": "-"})}
 
     def __call__(self, messages, response_format, timeout=None):
-        from validator import gates
-
         system = messages[0]["content"]
-        kind = {gates.LEAK_SYSTEM: "review", gates.BLIND_SYSTEM: "blind", gates.JUDGE_SYSTEM: "judge"}[system]
+        kind = {leak.LEAK_SYSTEM: "review", leak.BLIND_SYSTEM: "blind", leak.JUDGE_SYSTEM: "judge"}[system]
         self.responses = [self.by_system[kind]]
         return super().__call__(messages, response_format)
 

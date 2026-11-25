@@ -24,7 +24,7 @@ Two layers, in this order:
    version, over its fastest passing runs; ``review_passes``): why the agents
    passed so easily, the simple strategy that worked, the cues in the task that
    led them to it, the fix they applied, and up to three semantic changes (named
-   from ``prompting.HARDENING_TECHNIQUES``) that would defeat that strategy. The
+   from ``shared.contracts.hardening.HARDENING_TECHNIQUES``) that would defeat that strategy. The
    Trace Parser service puts it into the revision job, so the next version is
    hardened against what the agents actually did. Untrusted (cites no real
    evidence) or failed reviews are recorded and left out of the revision prompt.
@@ -363,8 +363,8 @@ PASS_COMMANDS = 12  # commands quoted per run
 
 def _hardening_techniques() -> dict[str, str]:
     _llm()  # as before the package layout: loads shared.contracts.config (and the repo's .env) first
-    from generator import prompting
-    return prompting.HARDENING_TECHNIQUES
+    from shared.contracts.hardening import HARDENING_TECHNIQUES
+    return HARDENING_TECHNIQUES
 
 
 SOLVER_RUN_BYTES = 10_000  # per passing run, for the world-mutation author

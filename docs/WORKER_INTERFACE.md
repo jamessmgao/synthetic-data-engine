@@ -151,7 +151,7 @@ After the trial, in order:
 3. **the self-check guard** (`generator/self_check.py:ensure_task_checked`): the author's
    saved `sde-task check` result, or the check run here (deterministic, free). Failing →
    FAILED / author with the errors, the bundle kept;
-4. **the leak review** (`validator/gates.py:gate_leak`, the same gate validate runs, without
+4. **the leak review** (`shared/taskformat/leak.py:gate_leak`, the same gate validate runs, without
    a Docker slot): recorded by bundle sha at `<work>/leak_reviews/<sha>/review.json`, so
    validate adopts it at no cost. A leak → FAILED / author with the reviewer's feedback and
    the bundle. If the review call itself errors, the job still succeeds and validate

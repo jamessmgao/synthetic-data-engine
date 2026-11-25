@@ -17,6 +17,9 @@ venv/
 # Harbor run outputs (written by `harbor run`)
 jobs/
 trials/
+# ...but not the queue package and its tests
+!shared/jobs/
+!tests/shared/jobs/
 .harbor/
 dist.tar.gz
 

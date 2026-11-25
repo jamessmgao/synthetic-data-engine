@@ -135,20 +135,20 @@ def test_a_cancel_stops_the_running_authoring_trial(backend, jq, monkeypatch):
 
 def test_the_generation_service_stops_lost_authoring_trials(monkeypatch):
     """serve_generation wires on_lost to the harness's stop_trial in agent mode."""
+    from generator import service as generation
     from shared.contracts import models
-    from shared.jobs import worker
 
     seen = {}
     monkeypatch.setattr(models, "AUTHOR_MODE", "agent")
-    monkeypatch.setattr(worker, "AUTHOR_MODE", "agent")
-    monkeypatch.setattr(worker, "serve", lambda *a, **kw: seen.update(kw))
-    worker.serve_generation(type("B", (), {"store": None, "queue": None, "artifacts": None})(), lambda j: {})
-    assert seen["on_lost"] is worker.stop_authoring_trial
+    monkeypatch.setattr(generation, "AUTHOR_MODE", "agent")
+    monkeypatch.setattr(generation, "serve", lambda *a, **kw: seen.update(kw))
+    generation.serve_generation(type("B", (), {"store": None, "queue": None, "artifacts": None})(), lambda j: {})
+    assert seen["on_lost"] is generation.stop_authoring_trial
     from generator import authoring_harness
 
     called = []
     monkeypatch.setattr(authoring_harness, "stop_trial", lambda jid: called.append(jid) or True)
-    worker.stop_authoring_trial({"id": "t-v1-world"})
+    generation.stop_authoring_trial({"id": "t-v1-world"})
     assert called == ["t-v1-world"]
 
 

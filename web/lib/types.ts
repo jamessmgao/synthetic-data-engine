@@ -146,7 +146,7 @@ export interface Version {
   leak_attempts: LeakReview[]; // earlier drafts (an author_task or repair it sent back)
 }
 
-// The leak gate (validator/gates.py gate_leak) on one bundle: a semantic review of the
+// The leak gate (shared/taskformat/leak.py gate_leak) on one bundle: a semantic review of the
 // instruction against the hidden fix, and a blind prediction from the instruction alone,
 // judged against the real fix (only "specific" is a leak).
 export interface LeakReview {

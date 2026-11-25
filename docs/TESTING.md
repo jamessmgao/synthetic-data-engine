@@ -6,7 +6,7 @@ it starts refuses network connections that leave the machine
 
 | Command | What runs | Needs |
 |---|---|---|
-| `make test-unit` | every component's unit tests: `tests/shared` (incl. the services' hand-offs and the Trace Parser's decisions), `tests/deploy`, `api`, `generator`, `evaluation`, `validator`, `authoring`, `experiments` | nothing |
+| `make test-unit` | every component's unit tests: `tests/test_boundaries.py` (the package boundaries, see `CLAUDE.md`), `tests/shared` (the shared code, incl. the services' hand-offs and the Trace Parser's decisions), `tests/deploy`, `api`, `generator`, `evaluation`, `validator`, `authoring`, `experiments` | nothing |
 | `make test-e2e` | the whole pipeline as processes (below), on SQLite and, if it is up, the compose cluster | nothing; the cluster is optional |
 | `make test-infra` | `tests/shared` on SQLite, Postgres, Postgres+Redis and S3 | `make deps-up` |
 | `make test-all` | all of the above against the cluster | `make deps-up` |
@@ -32,13 +32,14 @@ harness.
 | `authoring/scaffold/test_scaffold.py` | the world scaffolds: replay is exact, `explore` finds a lost update, faults fire on the planned hit, repro exit codes, stdlib only (`python -I -S`), the README's C snippet compiles under `-Werror` and crashes on cue |
 | `tests/shared/storage/test_budget.py` | the spend cap: claims stop at `SDE_BUDGET_USD` and resume when it rises, leased jobs count at their estimate, 16 concurrent claimers with room for 5 get exactly 5, unpaid jobs continue, the batch cap holds back only its batch, the tighter cap wins |
 | `tests/shared/jobs/test_cancel.py` | a cancel during world, world_check, create, validate, rollout and analyze (nothing more is claimed or handed off, the in-flight cost is kept); a worker cancelled mid-run; reject / accept / CAS after a cancel are no-ops; the relabel script |
+| `tests/test_boundaries.py` | the package boundaries: no service imports another service, nothing under `shared/` imports a service, and inside `shared/` only the listed edges exist (every import is read with `ast`, lazy ones and `importlib.import_module` / `__import__` / `sys.modules[...]` with literal strings included); a planted violation of each kind is caught |
 | `tests/shared/jobs/test_authoring.py` | the agent hand-offs: world → check → create chains, world repairs, a leaking create repaired (create FAILED / author → repair1 → validate) |
 | `api/tests/test_api.py`, `api/tests/test_families.py` | the API: batches with `budget_usd`, cancel endpoints, `/healthz` and report budget blocks, `instruction_tokens`, families and the v2 sampler (a 3-family batch gets one task per family) |
 | `experiments/test_p1_prototype.py` | `experiments/p1_prototype.py` on a fake chain: dry run by default, the budget stop, resume from the ledger |
 
 ### On Postgres, Redis and S3
 
-`tests/shared` and `api` run on every backend in `tests/shared/conftest.py`'s matrix:
+`tests/shared`, `evaluation/test_timeout_review.py` and `api` run on every backend in `tests/shared/conftest.py`'s matrix:
 SQLite always, plus Postgres when `SDE_TEST_DATABASE_URL` is set and Postgres+Redis when
 `SDE_TEST_REDIS_URL` is too (each test gets its own database and Redis key prefix). Use
 `make deps-up`, or throwaway containers that can't touch a running stack:
@@ -47,7 +48,7 @@ SQLite always, plus Postgres when `SDE_TEST_DATABASE_URL` is set and Postgres+Re
 docker run -d --rm --name t-pg -e POSTGRES_USER=sde -e POSTGRES_PASSWORD=sde -e POSTGRES_DB=sde_test -p 25432:5432 postgres:16.4-alpine
 docker run -d --rm --name t-redis -p 26379:6379 redis:7
 SDE_TEST_DATABASE_URL=postgresql://sde:sde@localhost:25432/sde_test SDE_TEST_REDIS_URL=redis://localhost:26379/15 \
-    .venv/bin/python -m pytest -q tests/shared api
+    .venv/bin/python -m pytest -q tests/shared evaluation/test_timeout_review.py api
 docker stop t-pg t-redis
 ```
 
@@ -123,7 +124,7 @@ one fake per job type (`tests/e2e/stack.py`).
 | `test_a_world_that_never_checks_out_is_repaired_then_rejected` | 3 failing world checks → 2 world repairs, each carrying the last world and the feedback → REJECTED invalid, with no create. A world repaired once is used for the task. |
 | `test_a_leaking_draft_is_repaired_from_its_world_not_rejected` | create FAILED (`failure_kind: author`, the leak review) → `repair1`, carrying the world, the leaked bundle and the feedback → validate → accepted. |
 | `test_too_hard_revises_the_task_on_the_same_world` | 0/5 → `revise` origin `easier` with the same `world_sha256`; no new world. |
-| `test_the_real_agent_adapters_across_two_machines` (cluster only) | With `SDE_E2E_REAL_ADAPTERS=1`, `shared/jobs/worker.py`'s real `world_fn`, `draft_fn` and `world_check_fn` run as production does: fetching worlds, bundles and drafts from S3, registering what was written, saving authoring trials, mapping results. Only `author.run_world_job` / `run_create_job` and `world_check._docker` are replaced (`fakes.author_*`, `fakes.docker`); the real structure check, Dockerfile rules and check-image flow run. Two machines share S3, so the stand-ins' assertions that everything is local prove the cross-machine fetches. |
+| `test_the_real_agent_adapters_across_two_machines` (cluster only) | With `SDE_E2E_REAL_ADAPTERS=1`, `generator/service.py`'s real `world_fn` and `draft_fn` and `validator/service.py`'s `world_check_fn` run as production does: fetching worlds, bundles and drafts from S3, registering what was written, saving authoring trials, mapping results. Only `author.run_world_job` / `run_create_job` and `world_check._docker` are replaced (`fakes.author_*`, `fakes.docker`); the real structure check, Dockerfile rules and check-image flow run. Two machines share S3, so the stand-ins' assertions that everything is local prove the cross-machine fetches. |
 
 **"Never paid twice."** The fakes log `start`, `finish` and `adopt` per job id. The suite
 asserts that no model call or trial finishes twice. The one exception is the case PRD N2

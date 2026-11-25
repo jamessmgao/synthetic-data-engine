@@ -42,10 +42,9 @@ ENV PATH=/usr/local/go/bin:/opt/jdk/bin:$PATH JAVA_HOME=/opt/jdk
 # harbor: materialize builds task.toml through Harbor's own TaskConfig (and brings pydantic).
 RUN pip install "pytest==8.4.1" "harbor==0.26.0" "toml==0.10.2"
 
-# Our generator and validator, for the self-check CLIs (sde-world, sde-task).
+# The shared task format and checks, for the self-check CLIs (sde-world, sde-task).
 COPY config/ /opt/sde/config/
-COPY generator/ /opt/sde/generator/
-COPY validator/ /opt/sde/validator/
+COPY shared/ /opt/sde/shared/
 COPY authoring/ /opt/sde/authoring/
 RUN chmod +x /opt/sde/authoring/bin/* && ln -s /opt/sde/authoring/bin/* /usr/local/bin/ \
  && cp -r /opt/sde/authoring/scaffold /opt/sde/scaffold \

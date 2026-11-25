@@ -1,1 +1,1 @@
-"""Task generation: prompts, the draft schema, the one-shot and agent authors, materialization."""
+"""Task generation: prompts, the one-shot and agent authors, and the Generation Service (service.py)."""

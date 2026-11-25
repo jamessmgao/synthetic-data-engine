@@ -10,8 +10,9 @@ TEST_ENV := SDE_TEST_DATABASE_URL=postgresql://sde:sde@localhost:$${SDE_PG_PORT:
             SDE_TEST_S3_ENDPOINT=http://localhost:$${SDE_S3_PORT:-9000} \
             AWS_ACCESS_KEY_ID=sde-dev AWS_SECRET_ACCESS_KEY=sde-dev-secret AWS_DEFAULT_REGION=us-east-1
 
-# Every unit-test suite: the packages' own tests plus tests/shared and tests/deploy.
-UNIT_TESTS := tests/shared tests/deploy api generator evaluation validator authoring experiments
+# Every unit-test suite: the packages' own tests plus tests/shared (the shared code), tests/deploy
+# and the package boundaries (tests/test_boundaries.py).
+UNIT_TESTS := tests/test_boundaries.py tests/shared tests/deploy api generator evaluation validator authoring experiments
 
 .PHONY: test test-unit test-e2e test-all deps-up test-infra up up-agent authoring-image down logs ps reconcile
 

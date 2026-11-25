@@ -34,7 +34,7 @@ def test_llm_complete_uses_the_mock_when_enabled(monkeypatch):
 
 def test_mock_answers_pass_the_leak_gate():
     """Load tests measure the clean path: no mock answer may read as a leak."""
-    from validator import gates
+    from shared.taskformat import leak
 
-    assert json.loads(mock.content_for(gates.LEAK_FORMAT))["verdict"] == "clean"
-    assert json.loads(mock.content_for(gates.JUDGE_FORMAT))["match"] != "specific"
+    assert json.loads(mock.content_for(leak.LEAK_FORMAT))["verdict"] == "clean"
+    assert json.loads(mock.content_for(leak.JUDGE_FORMAT))["match"] != "specific"

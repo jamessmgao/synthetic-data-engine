@@ -145,7 +145,7 @@ def test_a_leaking_draft_is_repaired_from_its_world_not_rejected(agent_pipeline)
 
 
 def test_the_real_agent_adapters_across_two_machines(make_pipeline, monkeypatch):
-    """shared/jobs/worker.py's world_fn / draft_fn / world_check_fn for real, on two machines
+    """generator/service.py's world_fn / draft_fn and validator/service.py's world_check_fn for real, on two machines
     sharing S3: every world, bundle and draft record a job needs was written on whichever
     machine ran the job before it, so the adapters must fetch it (the fakes assert it is
     local before they start) and register what they wrote. Only the authoring trial and

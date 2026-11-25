@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { usd } from "@/lib/format";
 import type { LeakReview } from "@/lib/types";
 
-// The leak gate on one bundle (validator/gates.py gate_leak): the semantic review's verdict and
+// The leak gate on one bundle (shared/taskformat/leak.py gate_leak): the semantic review's verdict and
 // quotes, and the blind check (a model that saw only the instruction predicts the fix; a judge
 // compares it with the real fix: only "specific" is a leak). Shown whether it passed or not.
 export function LeakReviewPanel({ review, title }: { review: LeakReview; title: string }) {

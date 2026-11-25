@@ -292,7 +292,7 @@ def authoring_image(release: str, targets: list[str] | None = None) -> str:
     cmds = [
         f"cd {release}",
         # Tagged by the content of what it bakes in: a change rebuilds, an unchanged one is reused.
-        "tag=$(find authoring config generator validator -type f ! -path '*/__pycache__/*' -print0"
+        "tag=$(find authoring config shared -type f ! -path '*/__pycache__/*' -print0"
         " | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)",
         "img=sde-authoring:$tag",
         "docker image inspect $img >/dev/null 2>&1"

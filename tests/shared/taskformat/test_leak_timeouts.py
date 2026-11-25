@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from shared.llm import llm
-from validator import gates
+from shared.taskformat import leak
 from tests.shared.taskformat.test_leak_review import P1_INSTRUCTION, bundle
 
 HERE = Path(__file__).resolve().parent
@@ -23,9 +23,9 @@ NO_MATCH = {"match": "none", "why": "-"}
 
 @pytest.fixture(autouse=True)
 def review_on(monkeypatch):
-    monkeypatch.setattr(gates.config, "LEAK_REVIEW", True)
-    monkeypatch.setattr(gates.config, "LEAK_BLIND", True)
-    monkeypatch.setattr(gates.config, "LEAK_INCONCLUSIVE", "warn")
+    monkeypatch.setattr(leak.config, "LEAK_REVIEW", True)
+    monkeypatch.setattr(leak.config, "LEAK_BLIND", True)
+    monkeypatch.setattr(leak.config, "LEAK_INCONCLUSIVE", "warn")
 
 
 class Scripted:
@@ -53,7 +53,7 @@ class Scripted:
 
 def run(tmp_path, monkeypatch, model):
     monkeypatch.setattr(llm, "complete", model)
-    return gates.gate_leak(bundle(tmp_path, P1_INSTRUCTION), tmp_path / "trace")
+    return leak.gate_leak(bundle(tmp_path, P1_INSTRUCTION), tmp_path / "trace")
 
 
 # --- llm.complete's timeout ------------------------------------------------------------------
@@ -115,7 +115,7 @@ def test_the_gate_passes_its_timeout_to_every_call(tmp_path, monkeypatch):
         return Scripted({"leak-review": [CLEAN], "leak-blind": [PREDICTION], "leak-judge": [NO_MATCH]})(
             messages, fmt, llm_dir, cache_key)
 
-    monkeypatch.setattr(gates.config, "LEAK_CALL_TIMEOUT_S", 180.0)
+    monkeypatch.setattr(leak.config, "LEAK_CALL_TIMEOUT_S", 180.0)
     run(tmp_path, monkeypatch, complete)
     assert sorted(seen) == [("leak-blind", 180.0, 2), ("leak-judge", 180.0, 2), ("leak-review", 180.0, 2)]
 
@@ -147,7 +147,7 @@ def test_a_call_that_keeps_timing_out_is_inconclusive_not_a_crash(tmp_path, monk
 
 @pytest.mark.parametrize("mode,passes", [("warn", True), ("fail", False)])
 def test_an_unparseable_judge_is_retried_once_then_inconclusive(tmp_path, monkeypatch, mode, passes):
-    monkeypatch.setattr(gates.config, "LEAK_INCONCLUSIVE", mode)
+    monkeypatch.setattr(leak.config, "LEAK_INCONCLUSIVE", mode)
     model = Scripted({"leak-review": [CLEAN], "leak-blind": [PREDICTION], "leak-judge": ["not json", "still not"]})
     gate = run(tmp_path, monkeypatch, model)
     assert model.keys.count("leak-judge") == 1 and model.keys.count("leak-judge-retry1") == 1
@@ -181,7 +181,7 @@ def test_a_pointer_prediction_is_a_placeholder_too(tmp_path, monkeypatch):
     model = Scripted({"leak-review": [CLEAN], "leak-blind": [pointer, pointer], "leak-judge": [NO_MATCH]})
     gate = run(tmp_path, monkeypatch, model)
     assert "leak-judge" not in model.keys and gate.detail["inconclusive"] == ["blind"]
-    assert not gates._placeholder("index the ledger once, then binary-search each report's range")
+    assert not leak._placeholder("index the ledger once, then binary-search each report's range")
 
 
 def test_a_placeholder_then_a_real_prediction_is_judged(tmp_path, monkeypatch):

@@ -32,11 +32,11 @@ param_or() { param "$1" 2>/dev/null || echo "$2"; }
 author_mode=$(param_or /sde/author_mode oneshot)
 
 # The authoring image, when this release has one: built into each runner's Docker
-# (context = the release root: it bakes in config/, generator/ and validator/), tagged by the
+# (context = the release root: it bakes in config/ and shared/), tagged by the
 # content of those dirs so a change rebuilds it and an unchanged one is reused.
 authoring_image=""
 if [ -f "$release/authoring/Dockerfile" ]; then
-  tag=$(cd "$release" && find authoring config generator validator -type f ! -path '*/__pycache__/*' -print0 \
+  tag=$(cd "$release" && find authoring config shared -type f ! -path '*/__pycache__/*' -print0 \
         | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12)
   authoring_image="sde-authoring:$tag"
   docker image inspect "$authoring_image" >/dev/null 2>&1 \
@@ -86,14 +86,14 @@ umask 077
   # Docker slot, so they run SDE_GENERATION_CONCURRENCY at a time per runner; agent
   # jobs are further capped by SDE_AGENT_SLOTS.
   echo "SDE_GENERATION_CMD=python -m shared.jobs.reconciler"
-  if [ -e "$release/generator/worker.py" ]; then
+  if [ -e "$release/generator/service.py" ]; then
     echo "SDE_RUNNER_GENERATION_CMD=python -m generator.service generation"
   else
     echo "SDE_RUNNER_GENERATION_CMD="
   fi
   echo "SDE_GENERATION_CONCURRENCY=$(param_or /sde/generation_concurrency 8)"
   cmd evaluation/trace_parser_service.py SDE_TRACE_PARSER_CMD "python -m evaluation.trace_parser_service"
-  cmd validator/gates.py SDE_VALIDATE_CMD "python -m validator.service validate"
+  cmd validator/service.py SDE_VALIDATE_CMD "python -m validator.service validate"
   cmd evaluation/executor.py SDE_EXECUTOR_CMD "python -m evaluation.executor"
   cmd api SDE_API_CMD "python -m api --host 0.0.0.0 --port 8000"
   echo "SDE_API_KEY=$(param /sde/api_key)"

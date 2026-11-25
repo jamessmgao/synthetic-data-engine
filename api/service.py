@@ -22,8 +22,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from evaluation.calibration import eval_config, in_band
-from evaluation.verdict import decision_text, pass_pattern, version_input
+from shared.contracts.band import eval_config, in_band
+from shared.contracts.decision import decision_text, pass_pattern, version_input
 from api import submit
 from shared.storage import budget
 from shared.jobs import tasks as task_state
@@ -362,7 +362,7 @@ def _artifact_root(artifacts: LocalArtifactStore, kind: str, key: str) -> Path:
         raise NotFound(f"no artifact {kind}/{key}")
     if kind == "traces":
         root = artifacts.trace_dir(key) if artifacts.fetch_trace(key) else None
-    elif kind == "leak_reviews":  # by bundle sha: leak_reviews/<sha>/review.json (shared/jobs/worker.py)
+    elif kind == "leak_reviews":  # by bundle sha: leak_reviews/<sha>/review.json (shared/taskformat/leak.py)
         root = artifacts.root / kind / key if artifacts.fetch_file(f"{kind}/{key}/review.json") else None
     else:
         root = artifacts.tree_path(kind, key)

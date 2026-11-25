@@ -35,7 +35,7 @@ export function StatusBadge({ value, className }: { value: string | null | undef
   );
 }
 
-// "✓✗··✓": one mark per agent run slot (evaluation/verdict.py:pass_pattern).
+// "✓✗··✓": one mark per agent run slot (shared/contracts/decision.py:pass_pattern).
 export function PassPattern({ pattern }: { pattern: string }) {
   return (
     <span className="inline-flex gap-0.5 font-mono text-sm" title={`${[...pattern].filter((c) => c === "✓").length} passed`}>

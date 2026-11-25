@@ -237,7 +237,7 @@ def revise_request(job_input: dict, origin: str | None = None) -> str:
 
 def earlier_tasks_section(job_input: dict) -> str:
     """For a new task on a reused world: the instructions of the tasks already written on it
-    (shared/jobs/worker.py earlier_instructions), which the new one must not repeat. Empty
+    (generator/service.py earlier_instructions), which the new one must not repeat. Empty
     otherwise."""
     earlier = job_input.get("earlier_instructions") or []
     if not earlier:
@@ -526,7 +526,7 @@ def _ensure_task_checked(draft_path: Path, world_dir: Path, artifacts_dir: Path)
 
 
 def _leak_review(bundle_dir: Path, trace_dir: Path):
-    """validator/gates.py's leak gate."""
-    from validator.gates import gate_leak
+    """The leak gate (shared/taskformat/leak.py), which the validate job runs too."""
+    from shared.taskformat.leak import gate_leak
 
     return gate_leak(bundle_dir, trace_dir)

@@ -13,6 +13,7 @@ from generator import author_task as at
 from generator.families import brief_for
 from generator.test_generator import VALID, WRONG_FIX, draft_with
 from generator.worker import load_draft_record
+from shared.taskformat import leak
 
 WORLD = {
     "spec": {"family": "database_consistency", "mechanism": "write_skew", "shape": "fix",
@@ -175,13 +176,11 @@ def test_a_reused_world_shows_its_earlier_tasks_and_asks_for_a_different_one(wor
 
 
 def test_the_leak_review_flags_counterexample_shaped_text_and_crash_hooks():
-    from validator import gates
-
     for needle in ("describes the failing scenario itself", "where a crash or fault hook fires",
                    "tick --milliseconds 30001", "must reuse that exact durable result",
                    "A crash hook or stage list in the instruction", "SEMANTICALLY", "Synonyms and paraphrases count",
                    "without reading\nand reasoning about the code", '"direct"', '"strong_hint"'):
-        assert needle in gates.LEAK_SYSTEM, needle
+        assert needle in leak.LEAK_SYSTEM, needle
 
 
 def test_the_world_instruction_has_the_scaffolds_and_the_time_box():
@@ -415,10 +414,8 @@ def test_a_failed_review_call_does_not_fail_the_create(work):
 
 
 def test_a_leak_review_outside_the_bundle_store_stays_in_the_trace_dir(tmp_path):
-    from validator import gates
-
-    assert gates.leak_review_dir(tmp_path / "examples" / "x", tmp_path / "tr") == tmp_path / "tr" / "leak"
-    assert gates.leak_review_dir(tmp_path / "bundles" / "abc", tmp_path / "tr") == tmp_path / "leak_reviews" / "abc"
+    assert leak.leak_review_dir(tmp_path / "examples" / "x", tmp_path / "tr") == tmp_path / "tr" / "leak"
+    assert leak.leak_review_dir(tmp_path / "bundles" / "abc", tmp_path / "tr") == tmp_path / "leak_reviews" / "abc"
 
 
 # --- the world mutation prompt -------------------------------------------------------------

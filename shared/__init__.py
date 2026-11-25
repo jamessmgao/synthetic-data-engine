@@ -1,4 +1,4 @@
-"""Calibrated task-generation pipeline: durable job store, workers and the `sde` CLI.
+"""Code every service uses: storage, the job queue, contracts, the taxonomy, the task format and the model client.
 
-See docs/PRD.md §3–§6 for the data model, state machines and coordination rules.
+Nothing here imports a service (CLAUDE.md; tests/test_boundaries.py enforces it).
 """

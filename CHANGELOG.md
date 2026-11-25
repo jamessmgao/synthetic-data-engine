@@ -32,6 +32,12 @@ commits in this repository.
   `materialize.py`, `gates.py`) swaps its own directory for the root on the import path, so
   the authoring image needs no `PYTHONPATH`. `authoring/scaffold` stays flat, because it is
   copied into generated worlds.
+- **Service boundaries.** The service packages (`api`, `generator`, `validator`, `evaluation`,
+  `authoring`) no longer import each other. What they share is under `shared/` (`storage`,
+  `jobs`, `contracts`, `taxonomy`, `taskformat`, `llm`), and `pipeline/` is gone. The two worker
+  entry points are `python -m generator.service` and `python -m validator.service`, with the
+  arguments `python -m pipeline.worker` took. No behaviour change. `CLAUDE.md` states the rule
+  and `tests/test_boundaries.py` enforces it.
 - **e2e tests fixed (33391b6).** `tests/e2e` had failed 6 to 8 of 15 tests since early
   stopping landed (af4cdb8): it decides a version on whichever agent runs finish first, and the
   scripted scenarios assert exact jobs and pass counts. The test stack now pins early stopping

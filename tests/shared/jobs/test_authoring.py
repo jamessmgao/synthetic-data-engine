@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 from tests.shared.conftest import S3, add_task
 
-from shared.jobs import handoffs, worker
+from generator import service as generation
+from shared.jobs import handoffs
+from validator import service as validation
 from shared.storage import Backend
 from shared.storage.artifacts import S3ArtifactStore
 from shared.storage.sql import insert_job
@@ -282,11 +284,11 @@ def authoring(monkeypatch):
 
 def test_agent_adapters_register_and_settle(backend, authoring):
     t = add_task(backend)
-    fns = worker.generation_fns(backend, mode="agent")
+    fns = generation.generation_fns(backend, mode="agent")
     w = fns["world"]({"id": f"{t}-v1-world", "type": "world", "input": {"origin": "initial", "spec": {}}})
     world = w["result"]["world_sha256"]
     assert w["outcome"] == "OK" and w["cost_usd"] == 0.3 and w["trace_uri"]
-    chk = worker.gate_fns(backend, mode="agent")["world_check"](
+    chk = validation.gate_fns(backend, mode="agent")["world_check"](
         {"id": f"{t}-v1-world-check-r0", "type": "world_check", "input": {"world_sha256": world}})
     assert chk["outcome"] == "OK" and chk["result"]["checks"]["repro_fails"] and chk["result"]["world_sha256"] == world
     c = fns["create"]({"id": f"{t}-v1-create", "type": "create", "bundle_sha256": None,
@@ -304,23 +306,23 @@ def test_worlds_drafts_and_trials_follow_the_job_across_machines(tmp_path, backe
 
     m1, m2, m3, m4 = (machine(f"m{i}") for i in range(1, 5))
     t = add_task(backend)
-    world = worker.world_fn(m1)({"id": f"{t}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    world = generation.world_fn(m1)({"id": f"{t}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
     # The world check runs on another runner: it downloads the world.
-    worker.world_check_fn(m2)({"id": f"{t}-v1-world-check-r0", "input": {"world_sha256": world}})
+    validation.world_check_fn(m2)({"id": f"{t}-v1-world-check-r0", "input": {"world_sha256": world}})
     assert authoring[-1] == {"fn": "world_check", "world_ok": True}
     # So does the create job, on a third.
-    bundle = worker.draft_fn(m3, "agent")({"id": f"{t}-v1-create", "bundle_sha256": None,
+    bundle = generation.draft_fn(m3, "agent")({"id": f"{t}-v1-create", "bundle_sha256": None,
                                           "input": {"origin": "initial", "world_sha256": world}})["bundle_sha256"]
     assert authoring[-1]["world_local"] is True
     # A mutation on a fourth gets the parent world; a repair of the task gets the bundle + draft.
-    worker.world_fn(m4)({"id": f"{t}-v2-world", "input": {"origin": "mutation", "parent_world_sha256": world}})
+    generation.world_fn(m4)({"id": f"{t}-v2-world", "input": {"origin": "mutation", "parent_world_sha256": world}})
     assert authoring[-1]["parent_local"] is True
-    worker.draft_fn(m1, "agent")({"id": f"{t}-v1-repair1", "bundle_sha256": None,
+    generation.draft_fn(m1, "agent")({"id": f"{t}-v1-repair1", "bundle_sha256": None,
                                   "input": {"origin": "repair", "bundle_sha256": bundle, "world_sha256": world}})
     assert (m1.work_dir / "drafts" / f"{bundle}.json").is_file()  # m3 wrote it; m1 fetched it
     assert (m1.work_dir / "bundles" / bundle / "instruction.md").is_file()
     # A machine that reclaims a finished agent job adopts its saved trial.
-    worker.world_fn(m2)({"id": f"{t}-v2-world", "input": {"origin": "mutation", "parent_world_sha256": world}})
+    generation.world_fn(m2)({"id": f"{t}-v2-world", "input": {"origin": "mutation", "parent_world_sha256": world}})
     assert authoring[-1]["trial_adopted"] is True
 
 
@@ -335,14 +337,14 @@ def test_agent_mode_picks_the_draft_function_per_job(backend, authoring, monkeyp
 
     monkeypatch.setitem(sys.modules, "generator.worker", types.SimpleNamespace(run_generate_job=run_generate_job))
     t = add_task(backend)
-    draft = worker.draft_fn(backend, "agent")
+    draft = generation.draft_fn(backend, "agent")
     fields = draft({"id": f"{t}-v1-create", "bundle_sha256": None, "input": {"origin": "initial", "prompt": "x"}})
     assert oneshot == [f"{t}-v1-create"] and "trace_uri" not in fields and not authoring
     revised = draft({"id": f"{t}-v2-revise", "bundle_sha256": None,
                      "input": {"origin": "revision", "operator": "increase_diagnosis_depth"}})
     assert oneshot[-1] == f"{t}-v2-revise" and revised["outcome"] == "FAILED"
 
-    world = worker.world_fn(backend)({"id": f"{t}-w", "input": {"spec": {}}})["result"]["world_sha256"]
+    world = generation.world_fn(backend)({"id": f"{t}-w", "input": {"spec": {}}})["result"]["world_sha256"]
     fields = draft({"id": f"{t}-v3-create", "bundle_sha256": None,
                     "input": {"origin": "initial", "world_sha256": world}})
     assert authoring[-1]["fn"] == "create" and fields["result"]["world_sha256"] == world
@@ -425,7 +427,7 @@ def test_a_trial_is_saved_even_when_the_authoring_function_raises(backend, monke
                                                                      run_create_job=None))
     monkeypatch.setattr(backend.artifacts, "save_trace", lambda jid: saved.append(jid) or f"traces/{jid}/")
     with pytest.raises(RuntimeError):
-        worker.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})
+        generation.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})
     assert saved == ["t-v1-world"]
 
 
@@ -443,14 +445,14 @@ def test_the_create_jobs_leak_review_is_shared_with_validate(backend, monkeypatc
         return out
 
     monkeypatch.setattr(sys.modules["generator.author"], "run_create_job", create_with_review)
-    world = worker.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
-    sha = worker.draft_fn(backend, "agent")({"id": "t-v1-create", "bundle_sha256": None,
+    world = generation.world_fn(backend)({"id": "t-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    sha = generation.draft_fn(backend, "agent")({"id": "t-v1-create", "bundle_sha256": None,
                                              "input": {"origin": "initial", "world_sha256": world}})["bundle_sha256"]
     assert f"leak_reviews/{sha}/review.json" in registered
     monkeypatch.setitem(sys.modules, "validator.gates", types.SimpleNamespace(
         run_validate_job=lambda b, t, **kw: {"outcome": "OK", "result": {"gates": {}}, "feedback": ""},
         run_world_check_job=None))
-    worker.validate_fn(backend)({"id": "t-v1-validate-r0", "bundle_sha256": sha, "input": {}})
+    validation.validate_fn(backend)({"id": "t-v1-validate-r0", "bundle_sha256": sha, "input": {}})
     assert f"leak_reviews/{sha}/review.json" in fetched
 
 
@@ -519,7 +521,7 @@ def test_oneshot_create_is_unchanged(backend, monkeypatch):
         return {"outcome": "FAILED", "error": "no draft", "cost_usd": 0.01, "result": {}}
 
     monkeypatch.setitem(sys.modules, "generator.worker", types.SimpleNamespace(run_generate_job=run_generate_job))
-    fns = worker.generation_fns(backend)
+    fns = generation.generation_fns(backend)
     assert set(fns) == {"create", "revise"}
     fields = fns["create"]({"id": "x-v1-create", "type": "create", "bundle_sha256": None,
                             "input": {"origin": "initial"}})
@@ -538,10 +540,10 @@ def test_a_reused_worlds_create_gets_the_earlier_tasks_instructions(backend, aut
         return real(job_id, job_input, work_dir)
 
     monkeypatch.setattr(sys.modules["generator.author"], "run_create_job", run_create_job)
-    draft = worker.draft_fn(backend, "agent")
+    draft = generation.draft_fn(backend, "agent")
     src, other, new = add_task(backend), add_task(backend), add_task(backend)
-    world = worker.world_fn(backend)({"id": f"{src}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
-    elsewhere = worker.world_fn(backend)({"id": f"{other}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    world = generation.world_fn(backend)({"id": f"{src}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
+    elsewhere = generation.world_fn(backend)({"id": f"{other}-v1-world", "input": {"spec": {}}})["result"]["world_sha256"]
 
     def created(t, v, w, finished):
         out = draft({"id": f"{t}-v{v}-create", "task_id": t, "bundle_sha256": None,

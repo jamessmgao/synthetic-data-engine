@@ -62,7 +62,7 @@ def ensure_task_checked(draft_path: Path, world_dir: Path | None, artifacts_dir:
     Not ok: the feedback names each failing role's tests (local-agent-b2-t01 finished with
     its own oracle failing and was let through to validate)."""
     arts = Path(artifacts_dir) / "sde_task"
-    from authoring import sde_task
+    from shared.taskformat import task_check as sde_task
 
     stamp = _draft_stamp(Path(draft_path))
     current = lambda saved: saved if saved is not None and stamp and saved.get("stamp") == stamp else None  # noqa: E731
