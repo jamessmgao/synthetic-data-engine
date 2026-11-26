@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agentic RL Environment Generation Platform",
-  description: "Status and results of the RL environment generation pipeline",
+  title: "Agentic RL Task Generation Platform",
+  description: "Status and results of the RL task generation pipeline",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

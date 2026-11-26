@@ -1,4 +1,4 @@
-# Agentic RL Environment Generation Platform
+# Agentic RL Task Generation Platform
 
 Creating high-quality software engineering environments for reinforcement learning is expensive.
 Each task needs a runnable codebase, a meaningful problem, and reliable tests that can tell a
@@ -16,7 +16,7 @@ The goal is a continuous supply of **diverse, verifiable tasks at the right diff
 Tasks should challenge the target model without being consistently impossible. They come out in
 the Harbor / Terminal-Bench 2 task format.
 
-![Agentic RL Environment Generation Platform: the presentation in 9 slides](docs/slides/agentic-rl-environment-generation-platform-slides.png)
+![Agentic RL Task Generation Platform: the presentation in 9 slides](docs/slides/agentic-rl-environment-generation-platform-slides.png)
 
 *The presentation in 9 slides* (the deck: [docs/slides/agentic-rl-environment-generation-platform.pptx](docs/slides/agentic-rl-environment-generation-platform.pptx)).
 

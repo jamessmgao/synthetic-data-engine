@@ -8,7 +8,7 @@ commits in this repository.
 ## 2026-11-25, 1 PM PST: new title and deck, the accepted tasks, no archive
 
 **What changed**
-- **Title.** The README is titled "Agentic RL Environment Generation Platform". The repository
+- **Title.** The README is titled "Agentic RL Task Generation Platform". The repository
   name and the `sde` prefix are unchanged.
 - **Deck.** docs/slides/ holds the new presentation
   (`agentic-rl-environment-generation-platform.pptx`) and its 9-slide image, which the README
